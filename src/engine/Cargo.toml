@@ -1,0 +1,8 @@
+[package]
+name = "brass-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Brass: Birmingham game engine (Rust) - phase 1"
+
+[dependencies]
+rand = "0.8"
