@@ -191,6 +191,7 @@ impl Player {
 // GameState
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct GameState<R: Rng> {
     pub rng: R,
     pub era: Era,

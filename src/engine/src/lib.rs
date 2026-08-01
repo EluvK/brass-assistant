@@ -7,4 +7,5 @@ pub mod map;
 pub mod random_ai;
 pub mod rules;
 pub mod scoring;
+pub mod search_ai;
 pub mod state;

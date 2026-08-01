@@ -8,6 +8,7 @@ use brass_engine::heuristic_ai;
 use brass_engine::map::{city_slots, connections, ALL_LOCATIONS, Loc, CITY_COUNT};
 use brass_engine::rules::Move;
 use brass_engine::scoring;
+use brass_engine::search_ai;
 use brass_engine::state::{city_slot_offsets, GameState};
 use rand::SeedableRng;
 use std::env;
@@ -200,6 +201,11 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(7);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
+    // policy: "heuristic" (default) | "2ply"
+    let policy = args
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| "heuristic".to_string());
 
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
@@ -211,7 +217,7 @@ fn main() {
         "======================================================================"
     );
     println!(
-        "Replay: {players}玩家 启发式AI, seed={seed} | 起始顺位: {:?}",
+        "Replay: {players}玩家 {policy}AI, seed={seed} | 起始顺位: {:?}",
         state.turn_order
     );
     println!(
@@ -255,7 +261,10 @@ fn main() {
         }
 
         let pid = state.current_player_id();
-        let mv = heuristic_ai::choose_action(&mut state).mv;
+        let mv = match policy.as_str() {
+            "2ply" => search_ai::choose_action_2ply(&mut state).mv,
+            _ => heuristic_ai::choose_action(&mut state).mv,
+        };
         let detail = move_detail(&state, &mv);
         let before = player_state(&state, pid);
         let res = brass_engine::rules::apply_move(&mut state, &mv);

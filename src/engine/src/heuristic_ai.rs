@@ -26,56 +26,70 @@ pub struct Decision {
 }
 
 pub fn choose_action(state: &mut GameState<impl Rng>) -> Decision {
-    let pid = state.current_player_id();
-    let mut best: Option<Decision> = None;
+    candidate_actions(state)
+        .into_iter()
+        .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
+        .unwrap_or_else(|| pass_decision(state))
+}
 
-    let consider = |candidate: Option<Decision>, best: &mut Option<Decision>| {
+/// Best move per action type (the 1-ply candidate set). Used both by
+/// `choose_action` and by the 2-ply lookahead in search_ai.
+pub fn candidate_actions(state: &mut GameState<impl Rng>) -> Vec<Decision> {
+    let pid = state.current_player_id();
+    let mut out = Vec::new();
+
+    let consider = |candidate: Option<Decision>, out: &mut Vec<Decision>| {
         if let Some(d) = candidate {
-            let better = match best {
-                Some(b) => d.score > b.score,
-                None => true,
-            };
-            if better {
-                *best = Some(d);
+            if d.score != f64::NEG_INFINITY {
+                out.push(d);
             }
         }
     };
 
     // Build
-    consider(score_best_build(state, pid), &mut best);
+    consider(score_best_build(state, pid), &mut out);
     // Network (single)
-    consider(score_best_network(state, pid), &mut best);
+    consider(score_best_network(state, pid), &mut out);
     // Network double
-    consider(score_best_network_double(state, pid), &mut best);
+    consider(score_best_network_double(state, pid), &mut out);
     // Develop
-    consider(score_develop_plan(state, pid), &mut best);
+    consider(score_develop_plan(state, pid), &mut out);
     // Sell
-    consider(score_sell_plan(state, pid), &mut best);
+    consider(score_sell_plan(state, pid), &mut out);
     // Loan
-    consider(score_loan_result(state, pid), &mut best);
+    consider(score_loan_result(state, pid), &mut out);
     // Scout
-    consider(score_scout_plan(state, pid), &mut best);
+    consider(score_scout_plan(state, pid), &mut out);
     // Pass (always available as a fallback)
-    consider(score_pass_result(state, pid), &mut best);
+    consider(score_pass_result(state, pid), &mut out);
 
-    best.unwrap_or_else(|| score_pass_result(state, pid).unwrap())
+    out
+}
+
+/// Fallback "pass" decision (safe even on an empty hand).
+pub fn pass_decision(state: &GameState<impl Rng>) -> Decision {
+    let card_index = pick_any_card(state, state.current_player_id()).unwrap_or(0);
+    Decision {
+        mv: Move::Pass { card_index },
+        score: -0.5,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
+pub(crate) fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
     let proxy = state.deck.len() as f64 / state.player_count() as f64;
     proxy.clamp(1.0, 10.0)
 }
 
-fn income_weight(state: &GameState<impl Rng>) -> f64 {
+pub(crate) fn income_weight(state: &GameState<impl Rng>) -> f64 {
     BASE_INCOME_WEIGHT * (estimate_rounds_remaining(state) / 5.0)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn vp_equivalent(
+pub(crate) fn vp_equivalent(
     state: &GameState<impl Rng>,
     vp: f64,
     income: f64,

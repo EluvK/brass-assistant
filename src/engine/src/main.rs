@@ -2,6 +2,7 @@ use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
 use brass_engine::heuristic_ai;
 use brass_engine::random_ai::choose_random_move;
 use brass_engine::scoring;
+use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
 use std::env;
@@ -10,7 +11,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let games: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
-    // policy: "random" | "heuristic" (default heuristic)
+    // policy: "random" | "heuristic" | "2ply" (default heuristic)
     let policy = args.get(3).cloned().unwrap_or_else(|| "heuristic".to_string());
 
     let mut wins = vec![0u64; players];
@@ -36,10 +37,10 @@ fn main() {
                 break;
             }
 
-            let m = if policy == "random" {
-                choose_random_move(&mut state)
-            } else {
-                Some(heuristic_ai::choose_action(&mut state).mv)
+            let m = match policy.as_str() {
+                "random" => choose_random_move(&mut state),
+                "2ply" => Some(search_ai::choose_action_2ply(&mut state).mv),
+                _ => Some(heuristic_ai::choose_action(&mut state).mv),
             };
             if let Some(mv) = m {
                 let _ = brass_engine::rules::apply_move(&mut state, &mv);

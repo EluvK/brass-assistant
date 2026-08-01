@@ -40,6 +40,7 @@
 - `graph`：城市网络连通性（增量 BFS / 并查集）
 - `rules`：7 种行动的资源结算与合法性校验
 - `heuristic_ai`：启发式 AI（Baseline，参考 npow `aiPlayer.js`）
+- `search_ai`：2-ply 确定性前瞻（同回合两动 Combo，`score(first) + α·score(best second)`）
 - 数据对齐：`reference/npow-brass-birmingham/js/gameData.js`
 
 ### 2. TTS 隐蔽数据抽取 (Lua) — 阶段 2
