@@ -5,7 +5,9 @@
 //! executeSell / executeDevelop / executeLoan / canScout / executeScout).
 
 use crate::data::{Action, Era, IndustryType};
-use crate::graph::{cheapest_coal_for_connection, find_coal_sources, find_iron_sources};
+use crate::graph::{
+    cheapest_coal_for_connection, find_coal_sources, find_iron_sources, CoalSource, IronSource,
+};
 use crate::graph::{
     connected_locations, find_beer_sources, is_in_network, is_resource_depleted,
     player_has_presence, BeerSource, CoalSourceKind,
@@ -206,9 +208,21 @@ fn vacant_single_icon_exists(state: &GameState<impl Rng>, ind: IndustryType) -> 
 }
 
 pub fn get_valid_build_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<BuildTarget> {
+    // Precompute once per call: which industries still have a vacant
+    // single-icon slot somewhere (used to deprioritize multi-icon slots).
+    let mut single_icon_available = [false; 6];
+    for (i, ind) in IndustryType::ALL.iter().enumerate() {
+        single_icon_available[i] = vacant_single_icon_exists(state, *ind);
+    }
+
     let mut targets = Vec::new();
 
+    // Iron sources are location-independent: compute once for the whole call.
+    let iron_sources = find_iron_sources(state);
+
     for loc in ALL_LOCATIONS.iter().take(CITY_COUNT) {
+        // Coal sources depend only on `loc`: compute once per location.
+        let coal_sources = find_coal_sources(state, *loc);
         let slots = city_slots(*loc);
         for (slot_idx, allowed) in slots.iter().enumerate() {
             let key = state.city_slot_key(*loc, slot_idx).unwrap();
@@ -217,11 +231,20 @@ pub fn get_valid_build_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<B
             for &ind in allowed.iter() {
                 // Slot preference: skip multi-icon vacant slots when a vacant
                 // single-icon slot exists for this industry.
-                if existing.is_none() && allowed.len() > 1 && vacant_single_icon_exists(state, ind)
+                if existing.is_none() && allowed.len() > 1 && single_icon_available[ind as usize]
                 {
                     continue;
                 }
-                if let Some(t) = check_build_target(state, pid, *loc, slot_idx, ind, existing) {
+                if let Some(t) = check_build_target(
+                    state,
+                    pid,
+                    *loc,
+                    slot_idx,
+                    ind,
+                    existing,
+                    &coal_sources,
+                    &iron_sources,
+                ) {
                     targets.push(t);
                 }
             }
@@ -230,8 +253,18 @@ pub fn get_valid_build_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<B
 
     // Farm breweries: standalone brewery spaces, industry/wild cards only.
     for farm in [Loc::BreweryNorth, Loc::BrewerySouth] {
+        let coal_sources = find_coal_sources(state, farm);
         let existing = state.farm_tile(farm);
-        if let Some(t) = check_build_target(state, pid, farm, 0, IndustryType::Brewery, existing) {
+        if let Some(t) = check_build_target(
+            state,
+            pid,
+            farm,
+            0,
+            IndustryType::Brewery,
+            existing,
+            &coal_sources,
+            &iron_sources,
+        ) {
             targets.push(t);
         }
     }
@@ -239,6 +272,7 @@ pub fn get_valid_build_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<B
     targets
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_build_target(
     state: &GameState<impl Rng>,
     pid: usize,
@@ -246,6 +280,8 @@ fn check_build_target(
     slot_index: usize,
     ind: IndustryType,
     existing: Option<&BoardTile>,
+    coal_sources: &[CoalSource],
+    iron_sources: &[IronSource],
 ) -> Option<BuildTarget> {
     let player = &state.players[pid];
     let next_tile = player.next_tile(ind)?;
@@ -293,8 +329,8 @@ fn check_build_target(
         }
     }
 
-    // Cost
-    let cost = calculate_build_cost(state, pid, ind, loc)?;
+    // Cost (uses caller-provided sources to avoid redundant BFS/full scans)
+    let cost = calculate_build_cost_with_sources(state, pid, ind, coal_sources, iron_sources)?;
     if cost.cost_total > player.money {
         return None;
     }
@@ -332,6 +368,20 @@ pub fn calculate_build_cost(
     ind: IndustryType,
     loc: Loc,
 ) -> Option<BuildCost> {
+    let iron_sources = find_iron_sources(state);
+    let coal_sources = find_coal_sources(state, loc);
+    calculate_build_cost_with_sources(state, pid, ind, &coal_sources, &iron_sources)
+}
+
+/// Cost computation with caller-provided resource sources (avoids recomputing
+/// the same BFS/full-table scans for every candidate build target).
+fn calculate_build_cost_with_sources(
+    state: &GameState<impl Rng>,
+    pid: usize,
+    ind: IndustryType,
+    coal_sources: &[CoalSource],
+    iron_sources: &[IronSource],
+) -> Option<BuildCost> {
     let player = &state.players[pid];
     let tile = player.next_tile(ind)?;
 
@@ -341,9 +391,8 @@ pub fn calculate_build_cost(
 
     let coal_needed = tile.cost_coal;
     if coal_needed > 0 {
-        let sources = find_coal_sources(state, loc);
         let mut remaining = coal_needed;
-        for src in sources {
+        for src in coal_sources {
             if remaining == 0 {
                 break;
             }
@@ -361,9 +410,8 @@ pub fn calculate_build_cost(
 
     let iron_needed = tile.cost_iron;
     if iron_needed > 0 {
-        let sources = find_iron_sources(state);
         let mut remaining = iron_needed;
-        for src in sources {
+        for src in iron_sources {
             if remaining == 0 {
                 break;
             }

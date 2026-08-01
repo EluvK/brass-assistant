@@ -2,32 +2,85 @@
 //!
 //! Translated from gameState.js isInNetwork / getConnectedLocations /
 //! findCoalSource / findIronSource / findBeerSources.
+//!
+//! Performance notes (hot path for legal-move generation & AI evaluation):
+//! - A static adjacency table is built once and reused by every BFS, so we
+//!   never scan all 39 connections per node.
+//! - `visited` is a u32 bitmask over the 27 locations (no Vec::contains).
+//! - The BFS queue is a fixed-size stack array (no VecDeque heap allocation).
 
 use crate::data::IndustryType;
 use crate::map::{city_slots, connections, Loc};
 use crate::state::GameState;
 use rand::Rng;
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+const LOC_COUNT: usize = 27;
+
+/// (neighbor, conn_id) adjacency per location, built once from the static map.
+fn adjacency() -> &'static [Vec<(Loc, usize)>] {
+    static ADJ: OnceLock<Vec<Vec<(Loc, usize)>>> = OnceLock::new();
+    ADJ.get_or_init(|| {
+        let mut adj = vec![Vec::new(); LOC_COUNT];
+        for c in connections() {
+            let (a, b) = (c.a as usize, c.b as usize);
+            adj[a].push((c.b, c.id));
+            adj[b].push((c.a, c.id));
+            if let Some(v) = c.via_farm {
+                let v = v as usize;
+                adj[a].push((c.via_farm.unwrap(), c.id));
+                adj[b].push((c.via_farm.unwrap(), c.id));
+                adj[v].push((c.a, c.id));
+                adj[v].push((c.b, c.id));
+            }
+        }
+        adj
+    })
+}
+
+/// Connection ids touching each location (for cheap `is_in_network` checks).
+fn loc_connections() -> &'static [Vec<usize>] {
+    static LC: OnceLock<Vec<Vec<usize>>> = OnceLock::new();
+    LC.get_or_init(|| {
+        let mut v = vec![Vec::new(); LOC_COUNT];
+        for c in connections() {
+            v[c.a as usize].push(c.id);
+            v[c.b as usize].push(c.id);
+            if let Some(f) = c.via_farm {
+                v[f as usize].push(c.id);
+            }
+        }
+        v
+    })
+}
 
 /// Locations reachable from `start` by following ANY built link (regardless
 /// of owner). Includes `start` itself and brewery farms passed through.
 pub fn connected_locations(state: &GameState<impl Rng>, start: Loc) -> Vec<Loc> {
-    let mut visited = Vec::new();
-    let mut queue = VecDeque::new();
+    let mut visited: Vec<Loc> = Vec::with_capacity(LOC_COUNT);
+    let mut mask: u32 = 1u32 << (start as u8);
+    let mut queue = [Loc::Belper; LOC_COUNT];
+    let (mut head, mut tail) = (0usize, 0usize);
     visited.push(start);
-    queue.push_back(start);
+    queue[tail] = start;
+    tail += 1;
 
-    while let Some(loc) = queue.pop_front() {
-        for c in connections() {
-            let Some(_link) = &state.links[c.id] else { continue };
-            for nb in neighbors_of(c.a, c.b, c.via_farm, loc) {
-                if let Some(n) = nb {
-                    if !visited.contains(&n) {
-                        visited.push(n);
-                        queue.push_back(n);
-                    }
-                }
+    while head < tail {
+        let loc = queue[head];
+        head += 1;
+        for &(nb, conn_id) in &adjacency()[loc as usize] {
+            if state.links[conn_id].is_none() {
+                continue;
             }
+            let bit = 1u32 << (nb as u8);
+            if mask & bit != 0 {
+                continue;
+            }
+            mask |= bit;
+            visited.push(nb);
+            queue[tail] = nb;
+            tail += 1;
         }
     }
     visited
@@ -53,12 +106,9 @@ pub fn is_in_network(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> bool 
         }
     }
     // Own link touching the location
-    for c in connections() {
-        if let Some(link) = &state.links[c.id] {
-            if link.player != pid {
-                continue;
-            }
-            if c.a == loc || c.b == loc || c.via_farm == Some(loc) {
+    for &conn_id in &loc_connections()[loc as usize] {
+        if let Some(link) = &state.links[conn_id] {
+            if link.player == pid {
                 return true;
             }
         }
@@ -88,6 +138,7 @@ pub fn player_has_presence(state: &GameState<impl Rng>, pid: usize) -> bool {
 
 /// Given a connection (a,b,via) and the node you're at, which nodes can you
 /// move to next through this connection?
+#[allow(dead_code)]
 fn neighbors_of(a: Loc, b: Loc, via: Option<Loc>, here: Loc) -> [Option<Loc>; 2] {
     if here == a {
         return [Some(b), via];
@@ -124,12 +175,16 @@ pub struct CoalSource {
 /// merchant is reachable). One entry per cube.
 pub fn find_coal_sources(state: &GameState<impl Rng>, loc: Loc) -> Vec<CoalSource> {
     let mut sources = Vec::new();
-    let mut visited: Vec<(Loc, u8)> = Vec::new();
-    let mut queue: VecDeque<(Loc, u8)> = VecDeque::new();
-    visited.push((loc, 0));
-    queue.push_back((loc, 0));
+    let mut mask: u32 = 1u32 << (loc as u8);
+    let mut queue = [Loc::Belper; LOC_COUNT];
+    let (mut head, mut tail) = (0usize, 0usize);
+    queue[tail] = loc;
+    tail += 1;
+    let mut merchant_reached = loc.is_merchant();
 
-    while let Some((cur, dist)) = queue.pop_front() {
+    while head < tail {
+        let cur = queue[head];
+        head += 1;
         if cur.is_city() {
             for slot in 0..city_slots(cur).len() {
                 if let Some(k) = state.city_slot_key(cur, slot) {
@@ -152,23 +207,27 @@ pub fn find_coal_sources(state: &GameState<impl Rng>, loc: Loc) -> Vec<CoalSourc
             }
         }
 
-        for c in connections() {
-            let Some(_link) = &state.links[c.id] else { continue };
-            for nb in neighbors_of(c.a, c.b, c.via_farm, cur) {
-                if let Some(n) = nb {
-                    if !visited.iter().any(|(v, _)| *v == n) {
-                        visited.push((n, dist + 1));
-                        queue.push_back((n, dist + 1));
-                    }
-                }
+        for &(nb, conn_id) in &adjacency()[cur as usize] {
+            if state.links[conn_id].is_none() {
+                continue;
             }
+            let bit = 1u32 << (nb as u8);
+            if mask & bit != 0 {
+                continue;
+            }
+            mask |= bit;
+            if nb.is_merchant() {
+                merchant_reached = true;
+            }
+            queue[tail] = nb;
+            tail += 1;
         }
     }
 
     sources.sort_by_key(|s| if s.free { 0 } else { 1 });
 
     // Market coal requires a connection to a merchant location.
-    if visited.iter().any(|(v, _)| v.is_merchant()) {
+    if merchant_reached {
         for _ in 0..state.coal_market {
             sources.push(CoalSource {
                 kind: CoalSourceKind::Market,
@@ -288,11 +347,13 @@ pub fn find_beer_sources(
         }
     }
 
+    // Connected locations are computed once and reused for both opponent
+    // breweries and merchant beer checks.
     let connected = connected_locations(state, loc);
-    for reachable in connected {
+    for reachable in &connected {
         if reachable.is_city() {
-            for slot in 0..city_slots(reachable).len() {
-                if let Some(k) = state.city_slot_key(reachable, slot) {
+            for slot in 0..city_slots(*reachable).len() {
+                if let Some(k) = state.city_slot_key(*reachable, slot) {
                     if let Some(t) = &state.city_tiles[k] {
                         if t.ind == IndustryType::Brewery
                             && t.player != player_id
@@ -312,7 +373,7 @@ pub fn find_beer_sources(
                 }
             }
         }
-        if let Some(idx) = farm_index(reachable) {
+        if let Some(idx) = farm_index(*reachable) {
             if let Some(t) = &state.farm_tiles[idx] {
                 if t.player != player_id && !t.flipped && t.resource_cubes > 0 {
                     for _ in 0..t.resource_cubes {
@@ -329,7 +390,6 @@ pub fn find_beer_sources(
     }
 
     if !allowed_merchants.is_empty() {
-        let connected = connected_locations(state, loc);
         for &mi in allowed_merchants {
             if let Some(mt) = state.merchants.get(mi) {
                 if mt.has_beer && connected.contains(&mt.loc) {

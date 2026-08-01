@@ -37,7 +37,7 @@
 ### 1. Game Engine (Rust) — 阶段 1
 - `state`：纯数据、可序列化的游戏状态
 - `action_gen`：合法动作生成器（动作空间可能上百）
-- `graph`：城市网络连通性（增量 BFS / 并查集）
+- `graph`：城市网络连通性（**静态邻接表 + u32 位掩码 BFS，零堆分配**）
 - `rules`：7 种行动的资源结算与合法性校验
 - `heuristic_ai`：启发式 AI（Baseline，参考 npow `aiPlayer.js`）
 - `search_ai`：2-ply 确定性前瞻（同回合两动 Combo，`score(first) + α·score(best second)`）
