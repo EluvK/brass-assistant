@@ -18,6 +18,15 @@ struct GameStats {
     links: u64,
     canal_events: u64,
     stuck: bool,
+    /// Action counts across the whole game (all players summed).
+    builds: u64,
+    networks: u64,
+    develops: u64,
+    sells: u64,
+    loans: u64,
+    passes: u64,
+    /// Final income level per player.
+    final_income: [i64; 4],
     /// Mixed mode: MCTS-seat outcome.
     mcts_games: u64,
     mcts_wins: u64,
@@ -30,6 +39,12 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
     let mut state = GameState::new(rng, players);
     let mut canal_events = 0u64;
     let mut stuck = false;
+    let mut builds = 0u64;
+    let mut networks = 0u64;
+    let mut develops = 0u64;
+    let mut sells = 0u64;
+    let mut loans = 0u64;
+    let mut passes = 0u64;
 
     // "mcts-vs-2ply" / "mcts-vs-heur": exactly one seat plays MCTS, the rest
     // 2-ply or 1-ply heuristic. The MCTS seat rotates per game to cancel seat
@@ -82,6 +97,16 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
             }
         };
         if let Some(mv) = m {
+            use brass_engine::rules::Move;
+            match &mv {
+                Move::Build { .. } => builds += 1,
+                Move::Network { .. } | Move::NetworkDouble { .. } => networks += 1,
+                Move::Develop { .. } => develops += 1,
+                Move::Sell { .. } => sells += 1,
+                Move::Loan { .. } => loans += 1,
+                Move::Pass { .. } => passes += 1,
+                Move::Scout { .. } => {}
+            }
             let _ = brass_engine::rules::apply_move(&mut state, &mv);
         }
 
@@ -141,6 +166,13 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
             / (players.saturating_sub(1) as i64);
     }
 
+    let mut final_income = [0i64; 4];
+    for (i, p) in state.players.iter().enumerate() {
+        if i < final_income.len() {
+            final_income[i] = p.income_level() as i64;
+        }
+    }
+
     GameStats {
         wins,
         vp,
@@ -149,6 +181,13 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
         links,
         canal_events,
         stuck,
+        builds,
+        networks,
+        develops,
+        sells,
+        loans,
+        passes,
+        final_income,
         mcts_games,
         mcts_wins,
         mcts_vp,
@@ -197,6 +236,18 @@ fn main() {
                 links: a.links + b.links,
                 canal_events: a.canal_events + b.canal_events,
                 stuck: a.stuck || b.stuck,
+                builds: a.builds + b.builds,
+                networks: a.networks + b.networks,
+                develops: a.develops + b.develops,
+                sells: a.sells + b.sells,
+                loans: a.loans + b.loans,
+                passes: a.passes + b.passes,
+                final_income: [
+                    a.final_income[0] + b.final_income[0],
+                    a.final_income[1] + b.final_income[1],
+                    a.final_income[2] + b.final_income[2],
+                    a.final_income[3] + b.final_income[3],
+                ],
                 mcts_games: a.mcts_games + b.mcts_games,
                 mcts_wins: a.mcts_wins + b.mcts_wins,
                 mcts_vp: a.mcts_vp + b.mcts_vp,
@@ -241,6 +292,24 @@ fn main() {
         total.built as f64 / games as f64,
         total.flipped as f64 / games as f64,
         total.links as f64 / games as f64
+    );
+    let g = games as f64;
+    println!(
+        "Avg actions/game: build {:.1}, network {:.1}, develop {:.1}, sell {:.1}, loan {:.1}, pass {:.1}",
+        total.builds as f64 / g,
+        total.networks as f64 / g,
+        total.develops as f64 / g,
+        total.sells as f64 / g,
+        total.loans as f64 / g,
+        total.passes as f64 / g
+    );
+    println!(
+        "Avg final income per player: {:?}",
+        total
+            .final_income
+            .iter()
+            .map(|v| *v as f64 / g)
+            .collect::<Vec<_>>()
     );
     for (p, w) in total.wins.iter().enumerate() {
         if *w > 0 || games <= 4 {

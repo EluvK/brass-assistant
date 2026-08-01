@@ -5,7 +5,9 @@
 //! highest VP-equivalent score. One-ply, no search.
 
 use crate::data::{Era, IndustryType};
-use crate::graph::{connected_locations, find_iron_sources, is_in_network};
+use crate::graph::{
+    connected_locations, find_beer_sources, find_coal_sources, find_iron_sources, is_in_network,
+};
 use crate::map::{city_slots, connections, Loc};
 use crate::rules::{
     can_develop, can_scout, get_valid_build_targets, get_valid_network_targets,
@@ -131,8 +133,15 @@ pub(crate) fn evaluate_position(state: &GameState<impl Rng>, pid: usize) -> f64 
 // ---------------------------------------------------------------------------
 
 pub(crate) fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
-    let proxy = state.deck.len() as f64 / state.player_count() as f64;
-    proxy.clamp(1.0, 10.0)
+    // Unplayed cards = deck + all hands. Each action spends one card, and a
+    // round is actions_per_turn actions per player. The era ends only when the
+    // deck AND every hand are exhausted, so using deck length alone badly
+    // underestimates late-era rounds (deck empties before hands do).
+    let deck_cards = state.deck.len() as f64;
+    let hand_cards: f64 = state.players.iter().map(|p| p.hand.len() as f64).sum();
+    let total = deck_cards + hand_cards;
+    let actions_per_round = state.player_count() as f64 * state.actions_per_turn as f64;
+    (total / actions_per_round).clamp(1.0, 8.0)
 }
 
 pub(crate) fn income_weight(state: &GameState<impl Rng>) -> f64 {
@@ -154,31 +163,144 @@ pub(crate) fn vp_equivalent(
 // BUILD
 // ---------------------------------------------------------------------------
 
+/// How much cash a newly built coal/iron works would earn by selling its cubes
+/// into the market, and whether that sale empties the tile (flipping it for
+/// income). Mirrors `GameState::auto_sell_to_market`: cubes fill market spaces
+/// from the cheapest up, and stop when the market is full.
+struct MarketSale {
+    cash: f64,
+    sold: u8,
+    total: u8,
+    flips: bool,
+}
+
+fn simulate_market_sale(state: &GameState<impl Rng>, is_coal: bool, cubes: u8) -> MarketSale {
+    let (prices, market) = if is_coal {
+        (crate::map::COAL_MARKET_PRICES.as_slice(), state.coal_market)
+    } else {
+        (crate::map::IRON_MARKET_PRICES.as_slice(), state.iron_market)
+    };
+    let mut cash = 0.0;
+    let mut m = market;
+    let mut sold = 0u8;
+    while sold < cubes && m < prices.len() {
+        // Filling the cheapest open space first (same as auto_sell_to_market).
+        let idx = prices.len() - m - 1;
+        cash += prices[idx] as f64;
+        m += 1;
+        sold += 1;
+    }
+    MarketSale {
+        cash,
+        sold,
+        total: cubes,
+        flips: sold == cubes && cubes > 0,
+    }
+}
+
 fn estimate_flip_probability(
     state: &GameState<impl Rng>,
-    _pid: usize,
+    pid: usize,
     ind: IndustryType,
     city_id: Loc,
-) -> f64 {
-    let base = if matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks) {
-        0.7
+) -> f64 {    let base = if matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks) {
+        // Resources flip when consumed (building/networking) or when a build
+        // immediately sells its cubes into the market (iron always; coal if
+        // connected to a merchant). Flip odds follow MARKET HUNGER + ERA DEMAND:
+        //   * sparse market => opponents must consume this resource => flips fast;
+        //   * rail era is coal-hungry (every build/link needs coal) => near-guaranteed;
+        //   * a build that sells out on placement flips immediately.
+        let is_coal = ind == IndustryType::CoalMine;
+        let cubes = state
+            .players
+            .get(pid)
+            .and_then(|p| p.next_tile(ind))
+            .map(|t| t.resource_cubes)
+            .unwrap_or(1);
+        let capacity = if is_coal { 14.0 } else { 10.0 };
+        let market = if is_coal {
+            state.coal_market as f64
+        } else {
+            state.iron_market as f64
+        };
+        let scarcity = ((capacity - market) / capacity).clamp(0.0, 1.0);
+        let connected = connected_locations(state, city_id);
+        let can_sell = ind == IndustryType::IronWorks
+            || connected.iter().any(|l| l.is_merchant());
+        // Coal flips by selling to a merchant market OR being consumed by the
+        // table. A coal mine with NO merchant connection (an "island mine")
+        // can't sell on build and — especially in the canal era — nobody will
+        // build a link out to it, so it sits unflipped and vanishes at era end.
+        // Humans only build connected coal (build their own link, piggyback a
+        // neighbor's, or wild-city teleport in). Island coal is a bad move.
+        if is_coal && !can_sell {
+            if state.era == Era::Canal {
+                // Near-worthless: no merchant reach, tiles vanish at era end.
+                0.12
+            } else {
+                // Rail era: links DO get built out (double-rail spam), so the
+                // tile still has a real chance to be consumed. Lower but alive.
+                0.45
+            }
+        } else {
+            let sale = simulate_market_sale(state, is_coal, cubes);
+            if can_sell && sale.flips {
+                0.9
+            } else {
+                // Relies on consumption by the table. Coal demand is enormous
+                // in the rail era (all builds and links consume it); iron
+                // demand is steadier. Market scarcity adds urgency on top.
+                let era_demand = if is_coal {
+                    if state.era == Era::Rail { 0.85 } else { 0.55 }
+                } else {
+                    if state.era == Era::Rail { 0.5 } else { 0.4 }
+                };
+                (era_demand + 0.35 * scarcity).min(0.9)
+            }
+        }
     } else if ind == IndustryType::Brewery {
-        0.5
+        // Beer barrels are consumed by sells AND rail links; a brewery will
+        // likely flip. Level-1 disappears at era end but that's handled in
+        // score_build_candidate via the level bonus.
+        0.7
     } else {
-        let mut b = 0.6f64;
+        // Sellable tiles ONLY flip when sold: that requires a reachable
+        // merchant that accepts this industry AND beer to fuel the sale. A
+        // tile is still attractive if a merchant is nearby (network can reach
+        // it), so keep a decent base even before links are laid.
+        let mut b = 0.35f64;
         let connected = connected_locations(state, city_id);
         let has_reachable_merchant = state.merchants.iter().any(|mt| {
             connected.contains(&mt.loc) && mt.accepts(ind)
         });
         if has_reachable_merchant {
-            b += 0.2;
+            b += 0.3;
+            let beer_ok = find_beer_sources(state, city_id, pid, &[]).len() > 0
+                || beer_barrels_reachable(state, city_id);
+            if beer_ok {
+                b += 0.3;
+            }
+        }
+        // Adjacent unbuilt links mean a merchant can still be connected later.
+        let open_links = count_new_unbuilt_neighbor_connections(state, city_id);
+        if open_links > 0 {
+            b += 0.1;
         }
         if estimate_rounds_remaining(state) < 2.0 {
-            b -= 0.3;
+            b -= 0.2;
         }
         b
     };
-    base.clamp(0.1, 1.0)
+    base.clamp(0.05, 1.0)
+}
+
+/// True if the player holds a card that can build `ind` (industry or wild).
+fn player_has_buildable_card(state: &GameState<impl Rng>, pid: usize, ind: IndustryType) -> bool {
+    let player = &state.players[pid];
+    player.hand.iter().any(|c| {
+        matches!(c, Card::Industry { .. } if c.is_industry(ind))
+            || c.ctype() == crate::data::CardType::WildIndustry
+    })
 }
 
 fn player_owns_link_touching(state: &GameState<impl Rng>, pid: usize, city_id: Loc) -> bool {
@@ -198,6 +320,69 @@ fn count_new_unbuilt_neighbor_connections(state: &GameState<impl Rng>, city_id: 
         .count()
 }
 
+/// Can `pid` reach a merchant barrel (any accepted industry) from `loc`?
+fn beer_barrels_reachable(state: &GameState<impl Rng>, loc: Loc) -> bool {    let connected = connected_locations(state, loc);
+    state
+        .merchants
+        .iter()
+        .any(|mt| mt.has_beer && connected.contains(&mt.loc))
+}
+
+/// Number of beer barrels the player currently holds (unflipped breweries).
+fn owned_beer_barrels(state: &GameState<impl Rng>, pid: usize) -> usize {
+    state
+        .city_tiles
+        .iter()
+        .flatten()
+        .filter(|t| t.player == pid && t.ind == IndustryType::Brewery && !t.flipped)
+        .map(|t| t.resource_cubes as usize)
+        .sum()
+}
+
+/// Total beer barrels needed to sell ALL of the player's unflipped sellable
+/// tiles. Extra barrels beyond this (plus a rail-network buffer) are wasted.
+fn sellable_beer_demand(state: &GameState<impl Rng>, pid: usize) -> usize {
+    state
+        .city_tiles
+        .iter()
+        .flatten()
+        .filter(|t| t.player == pid && !t.flipped && t.ind.is_sellable())
+        .map(|t| t.def.beers_to_sell.unwrap_or(0) as usize)
+        .sum()
+}
+
+/// Fraction of the coal/iron needed by a build that can come from free board
+/// sources (own or opponent mines/works) rather than the paid market. Consuming
+/// opponent resources is "free riding": it costs nothing extra and flips their
+/// tile, keeping the shared resource pool cheap for everyone. A high ratio
+/// means the build is cheap to run; a low one forces paying market price.
+fn resource_source_ratio(state: &GameState<impl Rng>, cand: &BuildTarget) -> f64 {
+    let needed = cand.cost_coal as f64 + cand.cost_iron as f64;
+    if needed <= 0.0 {
+        return 1.0;
+    }
+    let free_coal = if cand.cost_coal > 0 {
+        find_coal_sources(state, cand.loc)
+            .iter()
+            .filter(|s| s.free)
+            .count() as f64
+    } else {
+        f64::MAX
+    };
+    let free_iron = if cand.cost_iron > 0 {
+        find_iron_sources(state)
+            .iter()
+            .filter(|s| s.free)
+            .count() as f64
+    } else {
+        f64::MAX
+    };
+    let mut free_available = 0.0;
+    free_available += free_coal.min(cand.cost_coal as f64);
+    free_available += free_iron.min(cand.cost_iron as f64);
+    (free_available / needed).clamp(0.0, 1.0)
+}
+
 fn score_build_candidate(
     state: &GameState<impl Rng>,
     pid: usize,
@@ -205,6 +390,19 @@ fn score_build_candidate(
 ) -> f64 {
     let tile = state.players[pid].next_tile(cand.ind);
     let Some(tile) = tile else { return f64::NEG_INFINITY };
+
+    let player = &state.players[pid];
+    let cash = player.money as f64;
+    let cost = cand.cost_total as f64;
+
+    // Cash is the hard constraint that drives the early economy. If we cannot
+    // afford the build, heavily discount it (still show a path via loan, but
+    // not a first choice). If it consumes nearly all cash, require that it pay
+    // off in income soon.
+    if cost > cash {
+        let unaffordable = -(cost - cash) * 0.3;
+        return unaffordable;
+    }
 
     let flip_prob = estimate_flip_probability(state, pid, cand.ind, cand.loc);
     let owns_adjacent_link = player_owns_link_touching(state, pid, cand.loc);
@@ -219,17 +417,161 @@ fn score_build_candidate(
     } else {
         0.0
     };
+    // Building a coal/iron works can immediately sell its production to the
+    // market for cash (iron always; coal if connected to a merchant). The
+    // value of such a build is dominated by MARKET HUNGER:
+    //   * a sparse market (few cubes, high prices) rewards the fill richly —
+    //     big cash-back, immediate flip for income, and service to the table;
+    //   * a full market means cubes can't fit: they sit unflipped, wastefully
+    //     waiting on opponents' consumption. Leftover cubes are a penalty.
+    // "If everything sells, it's a great move; the more that stays on the
+    // tile, the worse (unless spent on your very next action)."
+    let market_adjust = if is_resource {
+        let connected = connected_locations(state, cand.loc);
+        let market_ok = cand.ind == IndustryType::IronWorks
+            || connected.iter().any(|l| l.is_merchant());
+        let is_coal = cand.ind == IndustryType::CoalMine;
+        // Coal demand is far higher than iron (every rail build/link eats it);
+        // iron demand is steadier and the market fills faster. Discount iron
+        // scarcity so we don't over-produce iron that nobody will consume.
+        let scarcity = if is_coal {
+            (14 - state.coal_market) as f64 / 14.0
+        } else {
+            0.6 * (10 - state.iron_market) as f64 / 10.0
+        };        if market_ok {
+            let sale = simulate_market_sale(state, is_coal, tile.resource_cubes);
+            let sell_value = sale.cash * MONEY_WEIGHT;
+            let scarcity_value = scarcity * (1.0 + sale.sold as f64) * 0.6;
+            let leftover_penalty = if is_coal && state.era == Era::Rail {
+                // In the rail era, coal is consumed by nearly every build and
+                // rail link — a full market right now doesn't mean the cubes
+                // won't be eaten soon. Don't punish unsold coal hard.
+                0.0
+            } else {
+                (sale.total - sale.sold) as f64 * 0.5
+            };
+            sell_value + scarcity_value - leftover_penalty
+        } else {
+            // Not merchant-connected: cubes can't be sold today. For an
+            // ISLAND COAL MINE this is a strongly negative move in the canal
+            // era (tiles vanish at era end, nobody helps consume it) and merely
+            // speculative in the rail era (links will be built out). Iron needs
+            // no connection to be consumed, so it keeps a market-value floor.
+            if is_coal {
+                if state.era == Era::Canal {
+                    -0.5
+                } else {
+                    scarcity * 0.6
+                }
+            } else {
+                scarcity * 1.2
+            }
+        }
+    } else {
+        0.0
+    };
     let network_expansion =
         0.1 * count_new_unbuilt_neighbor_connections(state, cand.loc) as f64;
 
+    // Cost efficiency: the build must be worth its price tag. Cheap builds
+    // (coal £5, iron £7, brewery £5) get a relative edge early.
+    let cost_efficiency = if cost > 0.0 {
+        let eff = (tile.income as f64 + tile.vp as f64) / cost;
+        eff.min(2.0)
+    } else {
+        0.0
+    };
+
+    // Beer economy: sellable tiles are only worth their VP if we can actually
+    // sell them (merchant reachable + beer available). Breweries are worth a
+    // premium when we already have unflipped sellable tiles waiting on beer.
+    let sellable = cand.ind.is_sellable();
+    let mut beer_bonus = 0.0;
+    if sellable {
+        // A reachable merchant that accepts this industry raises flip odds.
+        let connected = connected_locations(state, cand.loc);
+        let has_merchant = state.merchants.iter().any(|mt| {
+            connected.contains(&mt.loc) && mt.accepts(cand.ind)
+        });
+        if has_merchant {
+            beer_bonus += 0.6;
+        }
+        // Beer scarcity: if we hold no beer source and can't reach one with a
+        // barrel, the sellable tile is near-worthless unflipped. (Don't punish
+        // too hard: a brewery can still be added later.)
+        let beer_ok = has_merchant
+            && (find_beer_sources(state, cand.loc, pid, &[]).len()
+                >= tile.beers_to_sell.unwrap_or(0) as usize
+                || beer_barrels_reachable(state, cand.loc));
+        if beer_ok {
+            // We have the beer AND the merchant: this is a guaranteed sellable.
+            beer_bonus += 0.8;
+        } else {
+            beer_bonus -= 0.3;
+        }
+    } else if cand.ind == IndustryType::Brewery {
+        // Breweries feed sells AND rail links. The winning line develops
+        // level-1 away and builds level-2/3/4 (they survive to rail). Match
+        // output to need: barrels should cover our unflipped sellable tiles'
+        // beer demand plus a small rail-network buffer. Building beyond that is
+        // wasted, and level-1 breweries vanish at era end so they're weak.
+        let barrels = owned_beer_barrels(state, pid) as f64
+            + tile.resource_cubes as f64; // this brewery's contribution
+        let demand = sellable_beer_demand(state, pid) as f64
+            + if state.era == Era::Rail { 1.0 } else { 0.5 };
+        let surplus = (barrels - demand).max(0.0);
+        let sat = -1.0 * surplus;
+        let sell_support = if demand > 0.0 { 0.4 } else { 0.1 };
+        let rail_beer_value = if state.era == Era::Rail {
+            0.4 * tile.resource_cubes as f64
+        } else {
+            0.0
+        };
+        let level_bonus = if tile.level >= 2 { 0.3 } else { 0.0 };
+        beer_bonus += sell_support + rail_beer_value + level_bonus + sat;
+    }
+
+    // Rail-era tiles score their flipped VP at BOTH era ends (canal survives
+    // into rail). In the rail era the double-count is fully earned (2x); in the
+    // canal era it's potential — only realized if the tile survives — so weight
+    // it lightly (1.2x) to avoid pushing expensive rail tiles into the cash-
+    // strapped canal economy.
+    let double_vp = if tile.rail_era {
+        if state.era == Era::Rail { 2.0 } else { 1.1 }
+    } else {
+        1.0
+    };
+
+    // Level-1 tiles vanish at canal-era end: their build should be slightly
+    // discounted (they're stepping stones toward level-2+ that double-score).
+    // Level-2+ tiles get a modest canal-era weight boost for the cross-era win.
+    let level_adjust = if tile.level == 1 {
+        -0.4
+    } else if tile.level >= 2 && state.era == Era::Canal {
+        0.5
+    } else {
+        0.0
+    };
+
+    // "Free-riding" efficiency: if the build's coal/iron can come from board
+    // mines/works (own or opponents) instead of the paid market, the action is
+    // cheaper and faster. Reward builds on an established resource pool.
+    let resource_ratio = resource_source_ratio(state, cand);
+    let interaction_bonus = (resource_ratio - 0.5).max(0.0) * 0.8;
+
     vp_equivalent(
         state,
-        tile.vp as f64 * flip_prob + link_self_value,
+        tile.vp as f64 * flip_prob * double_vp + link_self_value,
         tile.income as f64 * flip_prob,
         -(cand.cost_total as f64),
         0.0,
     ) + resource_self_sufficiency
         + network_expansion
+        + beer_bonus
+        + cost_efficiency
+        + market_adjust
+        + level_adjust
+        + interaction_bonus
 }
 
 fn pick_build_card(state: &GameState<impl Rng>, pid: usize, cand: &BuildTarget) -> Option<usize> {
@@ -300,6 +642,41 @@ fn connects_to_new_merchant(_state: &GameState<impl Rng>, cand_cities: &[Loc; 2]
     cand_cities.iter().any(|c| c.is_merchant())
 }
 
+/// Rail-era link VP potential: sum the top flipped VP a player could still
+/// land in the two cities this link connects (vacant slots + remaining tiles),
+/// weighted by whether they can actually place there. Dense industrial hubs
+/// are worth racing for in the rail era.
+fn link_vp_potential(state: &GameState<impl Rng>, pid: usize, cities: &[Loc; 2]) -> f64 {
+    let mut total = 0.0f64;
+    for loc in cities {
+        if !loc.is_city() {
+            continue;
+        }
+        let slots = city_slots(*loc);
+        for (slot_idx, slot_types) in slots.iter().enumerate() {
+            // Skip occupied slots (someone already built here).
+            if let Some(k) = state.city_slot_key(*loc, slot_idx) {
+                if state.city_tiles[k].is_some() {
+                    continue;
+                }
+            }
+            // Best remaining tile we could build in this slot.
+            let mut best = 0.0f64;
+            for t in *slot_types {
+                if let Some(tile) = state.players[pid].next_tile(*t) {
+                    let dvp = if tile.rail_era { 1.4 } else { 1.0 };
+                    let v = tile.vp as f64 * dvp;
+                    if v > best {
+                        best = v;
+                    }
+                }
+            }
+            total += best;
+        }
+    }
+    total
+}
+
 fn score_network_candidate(
     state: &GameState<impl Rng>,
     pid: usize,
@@ -313,6 +690,15 @@ fn score_network_candidate(
         1.5
     } else {
         0.0
+    };
+    // Rail-era "road multiplier": links into dense industrial hubs are the
+    // highest-value plays once the rail era starts. Weight by the VP potential
+    // of the cities they open up, scaled down to VP-equivalent units.
+    let vp_potential = link_vp_potential(state, pid, cities);
+    let hub_bonus = if state.era == Era::Rail {
+        vp_potential * 0.08
+    } else {
+        vp_potential * 0.03
     };
     let has_industry = state
         .city_tiles
@@ -340,6 +726,7 @@ fn score_network_candidate(
         0.0,
     ) + exploration_bonus
         - over_networking_penalty
+        + hub_bonus
 }
 
 fn pick_any_card(state: &GameState<impl Rng>, pid: usize) -> Option<usize> {
@@ -459,9 +846,31 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
     let mut scored: Vec<(IndustryType, f64, u8)> = types
         .into_iter()
         .map(|(ind, tile)| {
-            let urgency = if !tile.rail_era { 2.0 } else { 0.5 };
-            let unlock_value = 0.3 * tile.level as f64;
-            (ind, urgency + unlock_value, tile.level)
+            // Develop removes a level-1 tile and reveals the NEXT (level-2+)
+            // tile. Its payoff is the unlocked rail-era tile that double-scores
+            // flipped VP, but develop must stay well below an immediate build.
+            let unlocked = state.players[pid].tile_after(ind, 1);
+            let mut v = if tile.rail_era { 0.35 } else { 0.12 };
+            v += 0.18 * tile.level as f64;
+            if let Some(ut) = unlocked {
+                // Small premium for unlocking a double-scoring rail-era tile.
+                if ut.rail_era {
+                    v += 0.25;
+                }
+            }
+            // Breweries are the economic engine (develop 1 -> build 2/3/4).
+            if ind == IndustryType::Brewery {
+                v += 0.55;
+            }
+            // Canal-era develop wins the cross-era bonus; nudge it.
+            if state.era == Era::Canal {
+                v += 0.15;
+            }
+            // Only meaningful if we actually hold a card to build it next.
+            if player_has_buildable_card(state, pid, ind) {
+                v += 0.3;
+            }
+            (ind, v, tile.level)
         })
         .collect();
     scored.sort_by(|a, b| (b.1).partial_cmp(&a.1).unwrap());
@@ -491,14 +900,18 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
         .take(if second.is_some() { 2 } else { 1 })
         .map(|s| if s.free { 0 } else { s.price as i32 })
         .sum();
+    // Iron is scarce and the develop action burns a full turn; charge a real
+    // opportunity cost so develop isn't a free high-score default.
+    let iron_scarcity = if iron[0].free { 0.0 } else { 0.6 };
+    let second_value = if let Some(_) = second { scored[1].1 * 0.4 } else { 0.0 };
 
     let score = vp_equivalent(
         state,
-        first.1 + if let Some(_) = second { scored[1].1 } else { 0.0 },
+        first.1 + second_value,
         0.0,
         -(iron_cost as f64),
         0.0,
-    );
+    ) - iron_scarcity;
 
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
@@ -594,7 +1007,23 @@ fn score_sell_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> 
         .sum();
     let total_bonus: f64 = ranked.iter().map(|r| r.2).sum();
 
-    let score = vp_equivalent(state, total_vp, total_income, 0.0, 0.0) + total_bonus;
+    // End-of-era urgency: in the final round of the canal era, canal-only
+    // (level-1) sellables vanish if unflipped — selling them now is essential
+    // or the VP + income is permanently lost. Boost the sell action sharply.
+    let rounds_left = estimate_rounds_remaining(state);
+    let canal_end = state.era == Era::Canal && rounds_left <= 2.0;
+    let rail_end = state.era == Era::Rail && rounds_left <= 1.0;
+    let urgent = canal_end || rail_end;
+    let urgency_bonus = if urgent { 3.0 } else { 0.0 };
+
+    // Flipping a sellable advances income: that's a recurring cash stream,
+    // not just a one-time VP. Add the income value explicitly.
+    let income_stream = total_income * income_weight(state) * 0.5;
+
+    let score = vp_equivalent(state, total_vp, total_income, 0.0, 0.0)
+        + total_bonus
+        + urgency_bonus
+        + income_stream;
 
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
@@ -611,69 +1040,70 @@ fn score_sell_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> 
 // LOAN
 // ---------------------------------------------------------------------------
 
-fn cheapest_affordable_build_or_network_cost(state: &GameState<impl Rng>, pid: usize) -> f64 {
-    let mut cheapest = f64::INFINITY;
-    for t in get_valid_build_targets(state, pid) {
-        if (t.cost_total as f64) < cheapest {
-            cheapest = t.cost_total as f64;
-        }
-    }
-    let player = &state.players[pid];
-    if state.era == Era::Canal && player.canal_links > 0
-        || state.era == Era::Rail && player.rail_links > 0
-    {
-        for _conn in get_valid_network_targets(state, pid) {
-            let cost = if state.era == Era::Canal {
-                crate::map::CANAL_LINK_COST
-            } else {
-                crate::map::RAIL_LINK_COST
-            };
-            if (cost as f64) < cheapest {
-                cheapest = cost as f64;
-            }
-        }
-    }
-    cheapest
-}
-
 fn score_loan_result(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> {
     if !state.can_take_loan(pid) {
         return None;
     }
     let player = &state.players[pid];
     let income_level = player.income_level();
-    let cheapest = cheapest_affordable_build_or_network_cost(state, pid);
-    let cash_crunch_bonus = if (player.money as f64) < cheapest {
+
+    // A loan is the engine of the early economy: it buys the income-recovery
+    // build that keeps the turn engine running. It is worth taking when cash is
+    // so low that without it we'd idle-pass, provided income isn't already in
+    // a death spiral.
+    let rounds_left = estimate_rounds_remaining(state);
+    let income_cost = crate::map::LOAN_INCOME_PENALTY as f64 * income_weight(state);
+    let _ = rounds_left;
+
+    // The post-loan budget opens up builds that buy back income fast.
+    let cash = player.money as f64;
+    let after = best_affordable_build_score(state, pid, cash + crate::map::LOAN_AMOUNT as f64);
+    let now = best_affordable_build_score(state, pid, cash);
+    let gain = (after - now).max(0.0);
+
+    // Idle protection: if the current hand can't do anything positive, borrow.
+    let idle_bonus = if cash < 6.0 { 2.0 } else { 0.0 };
+
+    // Income floor: never borrow into deep debt.
+    let floor_penalty = if income_level <= -7 {
+        9.0
+    } else if income_level <= -4 {
         4.0
-    } else {
-        0.0
-    };
-    let already_flush_penalty = if (player.money as f64) > cheapest * 2.5 {
-        2.5
-    } else {
-        0.0
-    };
-    let income_floor_penalty = if income_level <= (crate::map::MIN_INCOME + 5) {
-        2.5
+    } else if income_level <= 0 {
+        0.6
     } else {
         0.0
     };
 
-    let score = vp_equivalent(
-        state,
-        0.0,
-        -(crate::map::LOAN_INCOME_PENALTY as f64),
-        crate::map::LOAN_AMOUNT as f64 * 0.25,
-        0.0,
-    ) + cash_crunch_bonus
-        - income_floor_penalty
-        - already_flush_penalty;
-
+    let score = gain + idle_bonus - income_cost - floor_penalty;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::Loan { card_index },
         score,
     })
+}
+
+/// Best build score the player could afford within a cash budget.
+fn best_affordable_build_score(
+    state: &GameState<impl Rng>,
+    pid: usize,
+    budget: f64,
+) -> f64 {
+    let mut best = f64::NEG_INFINITY;
+    for t in get_valid_build_targets(state, pid) {
+        if (t.cost_total as f64) > budget {
+            continue;
+        }
+        let s = score_build_candidate(state, pid, &t);
+        if s > best {
+            best = s;
+        }
+    }
+    if best == f64::NEG_INFINITY {
+        0.0
+    } else {
+        best
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -755,4 +1185,49 @@ fn score_pass_result(state: &GameState<impl Rng>, pid: usize) -> Option<Decision
         mv: Move::Pass { card_index },
         score: -0.5,
     })
+}
+
+// --- temporary debug helpers ------------------------------------------------
+pub fn debug_flip(
+    state: &GameState<impl rand::Rng>,
+    pid: usize,
+    ind: IndustryType,
+    loc: Loc,
+) -> f64 {
+    estimate_flip_probability(state, pid, ind, loc)
+}
+
+pub fn debug_market_adjust(
+    state: &GameState<impl rand::Rng>,
+    ind: IndustryType,
+    loc: Loc,
+    cubes: u8,
+) -> f64 {
+    let is_resource = matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks);
+    if !is_resource {
+        return 0.0;
+    }
+    let connected = connected_locations(state, loc);
+    let market_ok = ind == IndustryType::IronWorks || connected.iter().any(|l| l.is_merchant());
+    let is_coal = ind == IndustryType::CoalMine;
+    let scarcity = if is_coal {
+        (14 - state.coal_market) as f64 / 14.0
+    } else {
+        0.6 * (10 - state.iron_market) as f64 / 10.0
+    };
+    if market_ok {
+        let sale = simulate_market_sale(state, is_coal, cubes);
+        let sell_value = sale.cash * MONEY_WEIGHT;
+        let scarcity_value = scarcity * (1.0 + sale.sold as f64) * 0.6;
+        let leftover_penalty = (sale.total - sale.sold) as f64 * 0.5;
+        sell_value + scarcity_value - leftover_penalty
+    } else if is_coal {
+        if state.era == Era::Canal {
+            -0.5
+        } else {
+            scarcity * 0.6
+        }
+    } else {
+        scarcity * 1.2
+    }
 }

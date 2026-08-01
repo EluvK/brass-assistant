@@ -153,6 +153,11 @@ TTS 官方热门的《伯明翰》Mod 的 **Lua 脚本**，是 TTS 集成与数�
 - 非零和博弈：蹭对手煤/铁/运河会送分，状态向量化时要体现这些耦合
 - 手牌隐藏 → 必须用 Determinization 采样，不能做确定性搜索
 - TTS 读对手手牌会被引擎隔离返回 nil（恰好符合规则，AI 不应依赖对手手牌）
+- **消耗场上资源（对手煤/铁/酒）是免费的**：只翻面对手板块并推进其收入，不付钱给资源拥有者；只有从市场买资源才付市场价（`state.rs consume_from_city / find_coal_sources` 已正确实现，勿改成"给对手钱"）
+- **建铁/煤矿会立即回现金**：连通市场时建厂即 `auto_sell_to_market` 卖出资源桶（`state.rs:604`），AI 评分应计入此收益（`heuristic_ai.rs market_cash_back`）
+- **rail_era（2级+）板块翻面后 VP 在两个时代末各计一次**（`scoring.rs score_era` 在运河/铁路各调一次）；AI 建厂评分用 1.1x（运河）/2x（铁路）反映（`heuristic_ai.rs double_vp`）
+- **可卖板块（棉/陶/制造）只有卖出才翻面**：AI 的 `estimate_flip_probability` 必须要求"连通接受该产业的商家 + 有啤酒可用"才给高翻面概率，否则低分（这是贷款→建厂→翻面→回收入经济链的关键）
+- **啤酒按需供给**：酒桶数应匹配自己未翻面可卖板块的 `beers_to_sell` 需求 + 铁路建网缓冲，超出即浪费（`heuristic_ai.rs sellable_beer_demand`）
 
 ## 9. 已裁决的规则分歧（以用户规则书为准）
 

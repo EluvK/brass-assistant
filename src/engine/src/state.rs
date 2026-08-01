@@ -156,6 +156,13 @@ impl Player {
         stack.get(idx).copied()
     }
 
+    /// The tile `offset` positions after the current next one (0 = next).
+    pub fn tile_after(&self, ind: IndustryType, offset: usize) -> Option<TileDef> {
+        let stack = player_industry_stack(ind);
+        let idx = self.industry_next[ind as usize] as usize + offset;
+        stack.get(idx).copied()
+    }
+
     pub fn income_level(&self) -> i8 {
         crate::income::income_level_from_space(self.income_space)
     }
