@@ -1,0 +1,594 @@
+-- ================================================================================
+-- Brass: Birmingham
+-- ================================================================================
+
+-- Modules.
+local Const       = require("kintastic/lib/Const")
+local Iters       = require("kintastic/lib/Iters")
+local Promise     = require("kintastic/lib/Promise")
+local StrUtils    = require("kintastic/lib/StrUtils")
+local TableLock   = require("kintastic/lib/TableLock")
+local TtsMsgUtils = require("kintastic/lib/TtsMsgUtils")
+local TtsObject   = require("kintastic/lib/Promise/TtsObject")
+local TtsObjUtils = require("kintastic/lib/TtsObjUtils")
+local App         = require("mods/Brass/lib/App")
+
+-- Imports.
+local const                = Const.const
+local rconst               = Const.rconst
+local ivalues              = Iters.ivalues
+local starts_with          = StrUtils.starts_with
+local lock                 = TableLock.lock
+local rlock                = TableLock.rlock
+local broadcast_error      = TtsMsgUtils.broadcast_error
+local set_transform_smooth = TtsObject.setTransformSmooth
+local take_object          = TtsObject.takeObject
+local resolve_guids        = TtsObjUtils.resolve_guids
+
+-- The class.
+local BirminghamApp = {
+}
+
+-- Inherit functions from App.
+local SUPER = App
+
+setmetatable(BirminghamApp, {
+   __index = SUPER,
+})
+
+BirminghamApp.mt = {
+   __index = BirminghamApp,
+}
+
+
+-- ================================================================================
+-- Constructor
+
+function BirminghamApp.new(class, saved_state_json)
+   return SUPER.new(class, "Lancashire", saved_state_json)
+end
+
+
+-- ================================================================================
+-- Object initialization
+
+function BirminghamApp:init(saved_state_json)
+   self.initial_funds = 17
+   self.loan_amount = 30
+   self.has_immediate_vps = true
+   self.money_value = 0
+   SUPER.init(self, saved_state_json)
+end
+
+
+function BirminghamApp:init_industry_tile_data()
+   -- Don't lock since used as lookup.
+   self.industry_tile_data = rconst({
+      [ "Brewery I"         ] = lock({ type = "Brewery",      level = 1, count = 2, canal_era = true,  rail_era = false, cost_money =  5, cost_coal = 0, cost_iron = 1, beers_to_sell = nil, points =  4, income = 4, link_points = 2, can_develop = true  }),
+      [ "Brewery II"        ] = lock({ type = "Brewery",      level = 2, count = 2, canal_era = true,  rail_era = true,  cost_money =  7, cost_coal = 0, cost_iron = 1, beers_to_sell = nil, points =  5, income = 5, link_points = 2, can_develop = true  }),
+      [ "Brewery III"       ] = lock({ type = "Brewery",      level = 3, count = 2, canal_era = true,  rail_era = true,  cost_money =  9, cost_coal = 0, cost_iron = 1, beers_to_sell = nil, points =  7, income = 5, link_points = 2, can_develop = true  }),
+      [ "Brewery IV"        ] = lock({ type = "Brewery",      level = 4, count = 1, canal_era = false, rail_era = true,  cost_money =  9, cost_coal = 0, cost_iron = 1, beers_to_sell = nil, points = 10, income = 5, link_points = 2, can_develop = true  }),
+      [ "Coal Mine I"       ] = lock({ type = "Coal Mine",    level = 1, count = 1, canal_era = true,  rail_era = false, cost_money =  5, cost_coal = 0, cost_iron = 0, beers_to_sell = nil, points =  1, income = 4, link_points = 2, can_develop = true  }),
+      [ "Coal Mine II"      ] = lock({ type = "Coal Mine",    level = 2, count = 2, canal_era = true,  rail_era = true,  cost_money =  7, cost_coal = 0, cost_iron = 0, beers_to_sell = nil, points =  2, income = 7, link_points = 1, can_develop = true  }),
+      [ "Coal Mine III"     ] = lock({ type = "Coal Mine",    level = 3, count = 2, canal_era = true,  rail_era = true,  cost_money =  8, cost_coal = 0, cost_iron = 1, beers_to_sell = nil, points =  3, income = 6, link_points = 1, can_develop = true  }),
+      [ "Coal Mine IV"      ] = lock({ type = "Coal Mine",    level = 4, count = 2, canal_era = true,  rail_era = true,  cost_money = 10, cost_coal = 0, cost_iron = 1, beers_to_sell = nil, points =  4, income = 5, link_points = 1, can_develop = true  }),
+      [ "Cotton Mill I"     ] = lock({ type = "Cotton Mill",  level = 1, count = 3, canal_era = true,  rail_era = false, cost_money = 12, cost_coal = 0, cost_iron = 0, beers_to_sell =   1, points =  5, income = 5, link_points = 1, can_develop = true  }),
+      [ "Cotton Mill II"    ] = lock({ type = "Cotton Mill",  level = 2, count = 2, canal_era = true,  rail_era = true,  cost_money = 14, cost_coal = 1, cost_iron = 0, beers_to_sell =   1, points =  5, income = 4, link_points = 2, can_develop = true  }),
+      [ "Cotton Mill III"   ] = lock({ type = "Cotton Mill",  level = 3, count = 3, canal_era = true,  rail_era = true,  cost_money = 16, cost_coal = 1, cost_iron = 1, beers_to_sell =   1, points =  9, income = 3, link_points = 1, can_develop = true  }),
+      [ "Cotton Mill IV"    ] = lock({ type = "Cotton Mill",  level = 4, count = 3, canal_era = true,  rail_era = true,  cost_money = 18, cost_coal = 1, cost_iron = 1, beers_to_sell =   1, points = 12, income = 2, link_points = 1, can_develop = true  }),
+      [ "Iron Works I"      ] = lock({ type = "Iron Works",   level = 1, count = 1, canal_era = true,  rail_era = false, cost_money =  5, cost_coal = 1, cost_iron = 0, beers_to_sell = nil, points =  3, income = 3, link_points = 1, can_develop = true  }),
+      [ "Iron Works II"     ] = lock({ type = "Iron Works",   level = 2, count = 1, canal_era = true,  rail_era = true,  cost_money =  7, cost_coal = 1, cost_iron = 0, beers_to_sell = nil, points =  5, income = 3, link_points = 1, can_develop = true  }),
+      [ "Iron Works III"    ] = lock({ type = "Iron Works",   level = 3, count = 1, canal_era = true,  rail_era = true,  cost_money =  9, cost_coal = 1, cost_iron = 0, beers_to_sell = nil, points =  7, income = 2, link_points = 1, can_develop = true  }),
+      [ "Iron Works IV"     ] = lock({ type = "Iron Works",   level = 4, count = 1, canal_era = true,  rail_era = true,  cost_money = 12, cost_coal = 1, cost_iron = 0, beers_to_sell = nil, points =  9, income = 1, link_points = 1, can_develop = true  }),
+      [ "Manufacturer I"    ] = lock({ type = "Manufacturer", level = 1, count = 1, canal_era = true,  rail_era = false, cost_money =  8, cost_coal = 1, cost_iron = 0, beers_to_sell =   1, points =  3, income = 5, link_points = 2, can_develop = true  }),
+      [ "Manufacturer II"   ] = lock({ type = "Manufacturer", level = 2, count = 2, canal_era = true,  rail_era = true,  cost_money = 10, cost_coal = 0, cost_iron = 1, beers_to_sell =   1, points =  5, income = 1, link_points = 1, can_develop = true  }),
+      [ "Manufacturer III"  ] = lock({ type = "Manufacturer", level = 3, count = 1, canal_era = true,  rail_era = true,  cost_money = 12, cost_coal = 2, cost_iron = 0, beers_to_sell =   0, points =  4, income = 4, link_points = 0, can_develop = true  }),
+      [ "Manufacturer IV"   ] = lock({ type = "Manufacturer", level = 4, count = 1, canal_era = true,  rail_era = true,  cost_money =  8, cost_coal = 0, cost_iron = 1, beers_to_sell =   1, points =  3, income = 6, link_points = 1, can_develop = true  }),
+      [ "Manufacturer V"    ] = lock({ type = "Manufacturer", level = 5, count = 2, canal_era = true,  rail_era = true,  cost_money = 16, cost_coal = 1, cost_iron = 0, beers_to_sell =   2, points =  8, income = 2, link_points = 2, can_develop = true  }),
+      [ "Manufacturer VI"   ] = lock({ type = "Manufacturer", level = 6, count = 1, canal_era = true,  rail_era = true,  cost_money = 20, cost_coal = 0, cost_iron = 0, beers_to_sell =   1, points =  7, income = 6, link_points = 1, can_develop = true  }),
+      [ "Manufacturer VII"  ] = lock({ type = "Manufacturer", level = 7, count = 1, canal_era = true,  rail_era = true,  cost_money = 16, cost_coal = 1, cost_iron = 1, beers_to_sell =   0, points =  9, income = 4, link_points = 0, can_develop = true  }),
+      [ "Manufacturer VIII" ] = lock({ type = "Manufacturer", level = 8, count = 2, canal_era = true,  rail_era = true,  cost_money = 20, cost_coal = 0, cost_iron = 2, beers_to_sell =   1, points = 11, income = 1, link_points = 1, can_develop = true  }),
+      [ "Pottery I"         ] = lock({ type = "Pottery",      level = 1, count = 1, canal_era = true,  rail_era = true,  cost_money = 17, cost_coal = 0, cost_iron = 1, beers_to_sell =   1, points = 10, income = 5, link_points = 1, can_develop = false }),
+      [ "Pottery II"        ] = lock({ type = "Pottery",      level = 2, count = 1, canal_era = true,  rail_era = true,  cost_money =  0, cost_coal = 1, cost_iron = 0, beers_to_sell =   1, points =  1, income = 1, link_points = 1, can_develop = true  }),
+      [ "Pottery III"       ] = lock({ type = "Pottery",      level = 3, count = 1, canal_era = true,  rail_era = true,  cost_money = 22, cost_coal = 2, cost_iron = 0, beers_to_sell =   2, points = 11, income = 5, link_points = 1, can_develop = false }),
+      [ "Pottery IV"        ] = lock({ type = "Pottery",      level = 4, count = 1, canal_era = true,  rail_era = true,  cost_money =  0, cost_coal = 1, cost_iron = 0, beers_to_sell =   1, points =  1, income = 1, link_points = 1, can_develop = true  }),
+      [ "Pottery V"         ] = lock({ type = "Pottery",      level = 5, count = 1, canal_era = false, rail_era = true,  cost_money = 24, cost_coal = 2, cost_iron = 0, beers_to_sell =   2, points = 20, income = 5, link_points = 1, can_develop = true  }),
+   })
+end
+
+
+function BirminghamApp:init_locations_and_links()
+   -- Don't lock since used as lookup.
+   self.locations = rconst({
+      [ "Belper"           ] = { "Belper (West)",
+                                 "Belper (Central)",
+                                 "Belper (East)"        },
+      [ "Birmingham"       ] = { "Birmingham (NW)",
+                                 "Birmingham (NE)",
+                                 "Birmingham (SW)",
+                                 "Birmingham (SE)"      },
+      [ "Burton-on-Trent"  ] = { "Burton-on-Trent (W)",
+                                 "Burton-on-Trent (E)"  },
+      [ "Cannock"          ] = { "Cannock (West)",
+                                 "Cannock (East)"       },
+      [ "Coalbrookdale"    ] = { "Coalbrookdale (W)",
+                                 "Coalbrookdale (N)",
+                                 "Coalbrookdale (E)"    },
+      [ "Coventry"         ] = { "Coventry (West)",
+                                 "Coventry (North)",
+                                 "Coventry (East)"      },
+      [ "Derby"            ] = { "Derby (West)",
+                                 "Derby (North)",
+                                 "Derby (East)"         },
+      [ "Dudley"           ] = { "Dudley (West)",
+                                 "Dudley (East)"        },
+      [ "Kidderminster"    ] = { "Kidderminster (W)",
+                                 "Kidderminster (E)"    },
+      [ "Leek"             ] = { "Leek (West)",
+                                 "Leek (East)"          },
+      [ "Nuneaton"         ] = { "Nuneaton (West)",
+                                 "Nuneaton (East)"      },
+      [ "Redditch"         ] = { "Redditch (West)",
+                                 "Redditch (East)"      },
+      [ "Stafford"         ] = { "Stafford (West)",
+                                 "Stafford (East)"      },
+      [ "Stoke-on-Trent"   ] = { "Stoke-on-Trent (W)",
+                                 "Stoke-on-Trent (N)",
+                                 "Stoke-on-Trent (E)"   },
+      [ "Stone"            ] = { "Stone (West)",
+                                 "Stone (East)"         },
+      [ "Tamworth"         ] = { "Tamworth (West)",
+                                 "Tamworth (East)"      },
+      [ "Northern Unnamed" ] = { "Northern Unnamed"     },
+      [ "Southern Unnamed" ] = { "Southern Unnamed"     },
+      [ "Uttoxeter"        ] = { "Uttoxeter (West)",
+                                 "Uttoxeter (East)"     },
+      [ "Walsall"          ] = { "Walsall (West)",
+                                 "Walsall (East)"       },
+      [ "Wolverhampton"    ] = { "Wolverhampton (W)",
+                                 "Wolverhampton (E)"    },
+      [ "Worcester"        ] = { "Worcester (West)",
+                                 "Worcester (East)"     },
+   })
+
+   -- Don't lock since used as lookup.
+   self.links = rconst({
+      [ "Belper - Derby"                               ] = { canal = true,  rail = true  },
+      [ "Belper - Leek"                                ] = { canal = false, rail = true  },
+      [ "Birmingham - Coventry"                        ] = { canal = true,  rail = true  },
+      [ "Birmingham - Dudley"                          ] = { canal = true,  rail = true  },
+      [ "Birmingham - Nuneaton"                        ] = { canal = false, rail = true  },
+      [ "Birmingham - Oxford"                          ] = { canal = true,  rail = true  },
+      [ "Birmingham - Redditch"                        ] = { canal = false, rail = true  },
+      [ "Birmingham - Tamworth"                        ] = { canal = true,  rail = true  },
+      [ "Birmingham - Walsall"                         ] = { canal = true,  rail = true  },
+      [ "Birmingham - Worcester"                       ] = { canal = true,  rail = true  },
+      [ "Burton-on-Trent - Cannock"                    ] = { canal = false, rail = true  },
+      [ "Burton-on-Trent - Derby"                      ] = { canal = true,  rail = true  },
+      [ "Burton-on-Trent - Stone"                      ] = { canal = true,  rail = true  },
+      [ "Burton-on-Trent - Tamworth"                   ] = { canal = true,  rail = true  },
+      [ "Burton-on-Trent - Walsall"                    ] = { canal = true,  rail = false },
+      [ "Cannock - Stafford"                           ] = { canal = true,  rail = true  },
+      [ "Cannock - Northern Unnamed"                   ] = { canal = true,  rail = true  },
+      [ "Cannock - Walsall"                            ] = { canal = true,  rail = true  },
+      [ "Cannock - Wolverhampton"                      ] = { canal = true,  rail = true  },
+      [ "Coalbrookdale - Kidderminster"                ] = { canal = true,  rail = true  },
+      [ "Coalbrookdale - Shrewsbury"                   ] = { canal = true,  rail = true  },
+      [ "Coalbrookdale - Wolverhampton"                ] = { canal = true,  rail = true  },
+      [ "Coventry - Nuneaton"                          ] = { canal = false, rail = true  },
+      [ "Derby - Nottingham"                           ] = { canal = true,  rail = true  },
+      [ "Derby - Uttoxeter"                            ] = { canal = false, rail = true  },
+      [ "Dudley - Kidderminster"                       ] = { canal = true,  rail = true  },
+      [ "Dudley - Wolverhampton"                       ] = { canal = true,  rail = true  },
+      [ "Gloucester - Redditch"                        ] = { canal = true,  rail = true  },
+      [ "Gloucester - Worcester"                       ] = { canal = true,  rail = true  },
+      [ "Kidderminster - Southern Unnamed - Worcester" ] = { canal = true,  rail = true  },
+      [ "Leek - Stoke-on-Trent"                        ] = { canal = true,  rail = true  },
+      [ "Nuneaton - Tamworth"                          ] = { canal = true,  rail = true  },
+      [ "Redditch - Oxford"                            ] = { canal = true,  rail = true  },
+      [ "Stafford - Stone"                             ] = { canal = true,  rail = true  },
+      [ "Stoke-on-Trent - Stone"                       ] = { canal = true,  rail = true  },
+      [ "Stoke-on-Trent - Warrington"                  ] = { canal = true,  rail = true  },
+      [ "Stone - Uttoxeter"                            ] = { canal = false, rail = true  },
+      [ "Tamworth - Walsall"                           ] = { canal = false, rail = true  },
+      [ "Walsall - Wolverhampton"                      ] = { canal = true,  rail = true  },
+   })
+
+   -- Don't lock since used as lookup.
+   self.bonuses_by_external_location = const({
+      [ "Gloucester" ] = 2,
+      [ "Nottingham" ] = 2,
+      [ "Oxford"     ] = 2,
+      [ "Shrewsbury" ] = 2,
+      [ "Warrington" ] = 2,
+   })
+
+   SUPER.init_locations_and_links(self)
+end
+
+
+function BirminghamApp:init_objects()
+   SUPER.init_objects(self)
+
+   local guids = {
+      coal_bag = "e54c1a",
+      iron_bag = "ac9020",
+      beer_bag = "6ebfd8",
+
+      -- For 2, 3, and 4 players respectively.
+      merchant_tile_decks = { "856fbc", "02cf54", "ce01c4" },
+
+      wild_location_deck_zone = "54a3da",
+      wild_industry_deck_zone = "a3270a",
+
+      -- In the order they are emptied.
+      coal_market_zones = { "3c5ffd", "14aada", "ec2671", "39e20b", "56e563", "2e35ed", "6c1ee9", "bb3394", "d49b68", "14a883", "32a943", "165cc2", "1fb80c", "2ff284" },
+      iron_market_zones = { "550e2a", "581ae8", "6581f5", "6c2b6d", "3bcd07", "2734e8", "0a7292", "2beec8", "ffd4d0", "ed2fdc" },
+
+      merchants = {
+         -- Oxford                       2, 3 and 4 players
+         { merchant_zone = "698532", beer_zone = "3000f5" },
+         { merchant_zone = "ab9bbd", beer_zone = "34fecd" },
+
+         -- Gloucester                   2, 3 and 4 players
+         { merchant_zone = "4e20da", beer_zone = "d70f79" },
+         { merchant_zone = "db6a73", beer_zone = "876452" },
+
+         -- Shrewsbury                   2, 3 and 4 players
+         { merchant_zone = "dadd84", beer_zone = "8e91f0" },
+
+         -- Warrington                      3 and 4 players
+         { merchant_zone = "2b3380", beer_zone = "58bce3" },
+         { merchant_zone = "88aa38", beer_zone = "12290c" },
+
+         -- Nottingham                            4 players
+         { merchant_zone = "b44318", beer_zone = "1b3e88" },
+         { merchant_zone = "eefd28", beer_zone = "1f418b" },
+      },
+
+      -- We call each zone of a location a "location square".
+      -- Using .getGMNotes() on the location square gets the name of the location.
+      location_squares = {
+         [ "Belper (West)"       ] = "86d147",
+         [ "Belper (Central)"    ] = "30a911",
+         [ "Belper (East)"       ] = "8dc82d",
+         [ "Birmingham (NW)"     ] = "33f755",
+         [ "Birmingham (NE)"     ] = "12686f",
+         [ "Birmingham (SW)"     ] = "ff7d65",
+         [ "Birmingham (SE)"     ] = "efed8b",
+         [ "Burton-on-Trent (W)" ] = "38f370",
+         [ "Burton-on-Trent (E)" ] = "68b7fb",
+         [ "Cannock (West)"      ] = "00c4ea",
+         [ "Cannock (East)"      ] = "d60870",
+         [ "Coalbrookdale (W)"   ] = "e49be9",
+         [ "Coalbrookdale (N)"   ] = "4cf6c2",
+         [ "Coalbrookdale (E)"   ] = "12b206",
+         [ "Coventry (West)"     ] = "aa5cd9",
+         [ "Coventry (North)"    ] = "75a660",
+         [ "Coventry (East)"     ] = "af6d14",
+         [ "Derby (West)"        ] = "cb5740",
+         [ "Derby (North)"       ] = "789ff1",
+         [ "Derby (East)"        ] = "3322ec",
+         [ "Dudley (West)"       ] = "970b48",
+         [ "Dudley (East)"       ] = "16493f",
+         [ "Kidderminster (W)"   ] = "d5cc71",
+         [ "Kidderminster (E)"   ] = "11e3b5",
+         [ "Leek (West)"         ] = "d8985b",
+         [ "Leek (East)"         ] = "1dde98",
+         [ "Nuneaton (West)"     ] = "a21200",
+         [ "Nuneaton (East)"     ] = "cdfaf8",
+         [ "Redditch (West)"     ] = "e1d2e8",
+         [ "Redditch (East)"     ] = "6dd500",
+         [ "Stafford (West)"     ] = "c23c28",
+         [ "Stafford (East)"     ] = "cd4849",
+         [ "Stoke-on-Trent (W)"  ] = "1953cc",
+         [ "Stoke-on-Trent (N)"  ] = "b3ccc1",
+         [ "Stoke-on-Trent (E)"  ] = "a050bc",
+         [ "Stone (West)"        ] = "53cde4",
+         [ "Stone (East)"        ] = "8d81e6",
+         [ "Tamworth (West)"     ] = "40b8ca",
+         [ "Tamworth (East)"     ] = "1dcb50",
+         [ "Northern Unnamed"    ] = "1101de",
+         [ "Southern Unnamed"    ] = "210464",
+         [ "Uttoxeter (West)"    ] = "b4887f",
+         [ "Uttoxeter (East)"    ] = "f00e0b",
+         [ "Walsall (West)"      ] = "f2ac6b",
+         [ "Walsall (East)"      ] = "858ccc",
+         [ "Wolverhampton (W)"   ] = "d8b5f3",
+         [ "Wolverhampton (E)"   ] = "313ef0",
+         [ "Worcester (West)"    ] = "b5dd82",
+         [ "Worcester (East)"    ] = "74f12e",
+      },
+
+      -- Using .getGMNotes() on the link gets the name found here.
+      link_zones = {
+         [ "Belper - Derby"                               ] = "67508c",
+         [ "Belper - Leek"                                ] = "50cd15",
+         [ "Birmingham - Coventry"                        ] = "6e89f4",
+         [ "Birmingham - Dudley"                          ] = "8daa5f",
+         [ "Birmingham - Nuneaton"                        ] = "628059",
+         [ "Birmingham - Oxford"                          ] = "53fe28",
+         [ "Birmingham - Redditch"                        ] = "3a8e4b",
+         [ "Birmingham - Tamworth"                        ] = "cb87be",
+         [ "Birmingham - Walsall"                         ] = "5a86d2",
+         [ "Birmingham - Worcester"                       ] = "035fba",
+         [ "Burton-on-Trent - Cannock"                    ] = "914cde",
+         [ "Burton-on-Trent - Derby"                      ] = "e5ab74",
+         [ "Burton-on-Trent - Stone"                      ] = "68cc40",
+         [ "Burton-on-Trent - Tamworth"                   ] = "6dcbbf",
+         [ "Burton-on-Trent - Walsall"                    ] = "4529a2",
+         [ "Cannock - Stafford"                           ] = "fbe6a8",
+         [ "Cannock - Northern Unnamed"                   ] = "9f31dd",
+         [ "Cannock - Walsall"                            ] = "f8d409",
+         [ "Cannock - Wolverhampton"                      ] = "49639b",
+         [ "Coalbrookdale - Kidderminster"                ] = "08896c",
+         [ "Coalbrookdale - Shrewsbury"                   ] = "5f85d7",
+         [ "Coalbrookdale - Wolverhampton"                ] = "cffe8b",
+         [ "Coventry - Nuneaton"                          ] = "b9d591",
+         [ "Derby - Nottingham"                           ] = "b27ea5",
+         [ "Derby - Uttoxeter"                            ] = "5bb5b2",
+         [ "Dudley - Kidderminster"                       ] = "eafc5e",
+         [ "Dudley - Wolverhampton"                       ] = "b77b35",
+         [ "Gloucester - Redditch"                        ] = "b199d6",
+         [ "Gloucester - Worcester"                       ] = "6b2c2c",
+         [ "Kidderminster - Southern Unnamed - Worcester" ] = "4aa452",
+         [ "Leek - Stoke-on-Trent"                        ] = "703509",
+         [ "Nuneaton - Tamworth"                          ] = "908a01",
+         [ "Redditch - Oxford"                            ] = "1576b4",
+         [ "Stafford - Stone"                             ] = "e0ce81",
+         [ "Stoke-on-Trent - Stone"                       ] = "a57efe",
+         [ "Stoke-on-Trent - Warrington"                  ] = "a42ca0",
+         [ "Stone - Uttoxeter"                            ] = "1b9c26",
+         [ "Tamworth - Walsall"                           ] = "60ef3e",
+         [ "Walsall - Wolverhampton"                      ] = "874549",
+      },
+   }
+
+   if self.state:get_game_started() then
+      guids.merchant_tile_decks = nil
+   end
+
+   TableLock.merge(self.objects, resolve_guids(guids))
+end
+
+
+function BirminghamApp:init_resources()
+   local objects = self.objects
+
+   self.resources = rconst(rlock({
+      coal = { resource_name = "Coal", bag = objects.coal_bag, market_zones = objects.coal_market_zones },
+      iron = { resource_name = "Iron", bag = objects.iron_bag, market_zones = objects.iron_market_zones },
+      beer = { resource_name = "Beer", bag = objects.beer_bag, market_zones = nil                       },
+   }))
+
+   SUPER.init_resources(self)
+end
+
+
+-- ================================================================================
+-- UI initialization
+
+function BirminghamApp:create_buttons()
+   local game_board = self.objects.game_board
+
+   SUPER.create_buttons(self)
+
+   game_board.createButton({
+      label="+", click_function="on_click_add_coal_to_market",
+      position={ -7.745875, 13.7634, -1.006971 }, rotation={ 0, 180, 0 },
+      height=300, width=300, font_color={ 0, 0, 0, 1 }, font_size=250,
+   })
+   game_board.createButton({
+      label="-", click_function="on_click_sub_coal_from_market",
+      position={-7.745875, 13.7634, -1.566973}, rotation={ 0, 180, 0 },
+      height=300, width=300, font_color={ 0, 0, 0, 1 }, font_size=250,
+   })
+
+   game_board.createButton({
+      label="+", click_function="on_click_add_iron_to_market",
+      position={ -10.21544, 13.84522, -1.004541 }, rotation={ 0, 180, 0 },
+      height=300, width=300, font_color={ 0, 0, 0, 1 }, font_size=250,
+   })
+   game_board.createButton({
+      label="-", click_function="on_click_sub_iron_from_market",
+      position={ -10.21544, 13.84522, -1.564543 }, rotation={ 0, 180, 0 },
+      height=300, width=300, font_color={ 0, 0, 0, 1 }, font_size=250,
+   })
+end
+
+
+-- ================================================================================
+-- Game advancement
+
+function BirminghamApp:end_turn()
+   local state = self.state
+
+   local current_player = state:get_current_player()
+
+   -- Check if the player actually completed their turn.
+   if not state:get_opt_skip_discard_check() then
+      if not self:are_discards_full(current_player) then
+         local player = Player[current_player]
+         if player.seated then
+            broadcast_error(current_player .. ", you can’t end your turn because you don’t have exactly 1 or 3 cards in each of your discard piles!", current_player)
+         else
+            broadcast_error("The round can’t be ended because " .. current_player .. " doesn’t have exactly 1 or 3 cards in each of their discard piles!")
+         end
+
+         return Promise:resolve()
+      end
+   end
+
+   return SUPER.end_turn(self)
+end
+
+
+-- ================================================================================
+-- Setup
+
+function BirminghamApp:setup_canal_era()
+   local promises = { }
+   table.insert(promises, SUPER.setup_canal_era(self))
+   table.insert(promises, self:distribute_merchant_tiles())
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- Distribute the correct merchant tiles.
+-- Destroy the rest.
+function BirminghamApp:distribute_merchant_tiles()
+   local objects = self.objects
+
+   local num_players = self.state:get_num_players()
+
+   local promises = { }
+   for i, merchant_tile_deck in ipairs(objects.merchant_tile_decks) do
+      if i == num_players - 1 then
+         merchant_tile_deck.shuffle()
+
+         local n = #merchant_tile_deck.getObjects()
+         for i = 1, n do
+            local merchant_zone = objects.merchants[i].merchant_zone
+            local beer_zone     = objects.merchants[i].beer_zone
+
+            table.insert(promises,
+               take_object(merchant_tile_deck, {
+                  position = merchant_zone.getPosition(),
+                  flip = true,
+               })
+               :next(
+                  function(tile)
+                     if starts_with(tile.getGMNotes(), "Buys ") then
+                        return take_object(objects.beer_bag, {
+                           position = beer_zone.getPosition(),
+                        })
+                     end
+                  end
+               )
+            )
+         end
+      else
+         merchant_tile_deck.destruct()
+         objects.merchant_tile_decks[i] = nil
+      end
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+function BirminghamApp:setup_rail_era()
+   local promises = { }
+   table.insert(promises, SUPER.setup_rail_era(self))
+   table.insert(promises, self:restock_beer())
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+function BirminghamApp:restock_beer()
+   local promises = { }
+   for merchant in ivalues(self.objects.merchants) do
+      local merchant_zone = merchant.merchant_zone
+      local beer_zone     = merchant.beer_zone
+
+      for obj in ivalues(merchant_zone.getObjects()) do
+         if starts_with(obj.getGMNotes(), "Buys ") then
+            local needs_replenishing = true
+            for obj in ivalues(beer_zone.getObjects()) do
+               if obj.getGMNotes() == "Beer" then
+                  needs_replenishing = false
+                  break
+               end
+            end
+
+            if needs_replenishing then
+               table.insert(promises,
+                  take_object(self.objects.beer_bag, {
+                     position = beer_zone.getPosition(),
+                  })
+               )
+            end
+
+            break
+         end
+      end
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- ================================================================================
+-- Discard pile manipulations
+
+function BirminghamApp:are_discards_full(color_name)
+   for i = 1, 2 do
+      local count = self:get_discarded_count(color_name, i)
+      if count ~= 1 and count ~= 3 then
+         return false
+      end
+   end
+
+   return true
+end
+
+
+function BirminghamApp:clear_discarded_card(card)
+   local id = card.getGMNotes()
+   if id == "Wild Location Card" then
+      card.setLock(false)
+      return
+         set_transform_smooth(card, {
+            position = self.objects.wild_location_deck_zone.getPosition(),
+            rotation = self.objects.wild_location_deck_zone.getRotation(),
+         })
+         :catch(||error("Error moving wild location card"))
+   elseif id == "Wild Industry Card" then
+      card.setLock(false)
+      return
+         set_transform_smooth(card, {
+            position = self.objects.wild_industry_deck_zone.getPosition(),
+            rotation = self.objects.wild_industry_deck_zone.getRotation(),
+         })
+         :catch(||error("Error moving wild industry card"))
+   else
+      card.destruct()
+      return Promise:resolve()
+   end
+end
+
+
+function BirminghamApp:clear_discarded_deck(deck)
+   local promises = { }
+   local pos = deck.getPosition()
+   local inc = Vector({ 0, 0.2, 0 })
+   for i = 1, #deck.getObjects() do
+      pos = pos + inc
+      table.insert(promises,
+         take_object(deck, {
+            index = 1,
+            position = pos,
+         })
+         :next(|card|self:clear_discarded_card(card))
+      )
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- ================================================================================
+
+return BirminghamApp

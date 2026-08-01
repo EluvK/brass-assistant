@@ -1,0 +1,39 @@
+[2022-02-19 Kinithin]
+- Now uses my Steam Cloud for hosting exclusively (except for the rules).
+
+[2022-01-22 Kinithin]
+- Moved off of pastebin for hosting.
+- Fix misspelling of "paid". (Credit: Venemo)
+
+[2021-05-24 Kinithin]
+- Now displays a score board at the end of each era.
+- Now stores the game's result as CSV, TSV and JSON in the Notebook at end of game.
+- Added checks that canals and railways are only used during the appropriate era.
+- Made it so objects only snap to positions appropriate for the object.
+- Pulses of highlights now smoother.
+- Fixed small problems with minimizing and unminimizing the control panel.
+
+[2021-05-03 Kinithin]
+- New hosting for wooden cube resources.
+
+[2021-04-09 Kinithin]
+- Fixed a bug preventing the rail era from being entered with four players.
+- Silenced the harmless "Undeclared write to spawned_object" warning.
+
+[2021-01-12 Kinithin]
+- Restored the ability to save (and rewind) games. This was broken by the previous release.
+- Worked around a bug in TTS that could corrupt this module’s state.
+- Updated to the latest rule book.
+- Sir Henry Bessemer no longer leans so far back.
+
+[2021-01-03 Kinithin]
+- The game was disabling the loan button one round too soon.
+- The game now checks for updates and advises the players where to get the newest version.
+- The game-advancing button now shows as disabled when the game is busy and when in cool-down mode.
+- Sound is cut if the game-advancing button is pressed while sound is still playing.
+
+[2020-12-21 Kinithin]
+- Fixed a (basically harmless) error that would occur every 10s a player had a color other than those used by the mod.
+
+[2020-12-19 Kinithin]
+- Initial version. Based on the Brass: Lancashire assets by Draxous and the Brass: Birmingham code by Kinithin. Thanks for Eldin’s help with the model for the distant cotton market.

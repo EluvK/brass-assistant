@@ -1,0 +1,30 @@
+debug = not not debug
+devel = not not devel
+
+local TableLock = require("kintastic/lib/TableLock")
+TableLock.on_violation = ( debug or devel ) and TableLock.announce_violation or TableLock.ignore_violation
+TableLock.lock(_G)
+TableLock.declare_atom_symbols()
+
+local Const = require("kintastic/lib/Const")
+Const.on_violation = ( debug or devel ) and Const.announce_violation or Const.ignore_violation
+
+if debug then require("kintastic/lib/Debug").import_into_global()    end
+if devel then require("kintastic/lib/Devel").import_event_handlers() end
+
+TableLock.declare_and_set(_G, "onLoad",
+   function(saved_state_json)
+      local App
+      if game == "Lancashire" then
+         App = require("mods/Brass/lib/App/Lancashire")
+      elseif game == "Birmingham" then
+         App = require("mods/Brass/lib/App/Birmingham")
+      else
+         error("Invalid value for \"game\".")
+      end
+
+      local app = App:new(saved_state_json)
+      TableLock.declare_and_set(_G, "app", app)
+      app:run()
+   end
+)

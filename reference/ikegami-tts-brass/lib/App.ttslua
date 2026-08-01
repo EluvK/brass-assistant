@@ -1,0 +1,2868 @@
+-- ================================================================================
+-- Brass: Lancashire and Brass: Birmingham
+-- Quasi-stateless scripted version.
+
+-- ----------------------------------------
+-- Debugging commands.
+
+-- To start a game with insufficient players, use one of the following
+-- /execute start(2)
+-- /execute start(3)
+-- /execute start(4)
+
+-- To make simple to step through turns quickly when debuging, use the following:
+-- /execute start({ min_players = 2, skip_discard_check = true, cool_down = 0 })
+-- This also reduces the eras to one round each:
+-- /execute start({ min_players = 2, skip_discard_check = true, cool_down = 0, short = true })
+
+-- TODO:
+-- - Prevent scoring if the board fails to validate?
+-- - Prevent Rail Era start if players have cards in their hands?
+-- - Add debounce or cool-down to control panel buttons (but delay them rather than dropping them)?
+--
+-- - Hot seat support?
+-- - Replace start game buttons with buttons to start with virtual players?
+-- - Modify `remove_money_from_player` so that money is moved from wallet?
+--   -> Timing problems?
+-- - Support Income and Scores over 99?
+--   -> Technically, final scores over 99 are supported.
+--   -> Income over 99 is *extremely* unlikely.
+--   -> Score over 99 before final scoring is *very* unlikely.
+--
+-- - This module is monolithic! It needs to be split up.
+-- - Use GMNotes instead of guids.
+
+-- ================================================================================
+
+-- Modules.
+local ArrayUtils     = require("kintastic/lib/ArrayUtils")
+local Const          = require("kintastic/lib/Const")
+local Debouncer      = require("kintastic/lib/Debouncer")
+local DictUtils      = require("kintastic/lib/DictUtils")
+local Iters          = require("kintastic/lib/Iters")
+local Promise        = require("kintastic/lib/Promise")
+local StrUtils       = require("kintastic/lib/StrUtils")
+local TableLock      = require("kintastic/lib/TableLock")
+local TableUtils     = require("kintastic/lib/TableUtils")
+local TtsBase        = require("kintastic/lib/Promise/TtsBase")
+local TtsMsgUtils    = require("kintastic/lib/TtsMsgUtils")
+local TtsObject      = require("kintastic/lib/Promise/TtsObject")
+local TtsObjUtils    = require("kintastic/lib/TtsObjUtils")
+local TtsPlayerUtils = require("kintastic/lib/TtsPlayerUtils")
+local TtsSaveEvent   = require("kintastic/lib/TtsSaveEvent")
+local TtsWait        = require("kintastic/lib/Promise/TtsWait")
+local TtsZoneUtils   = require("kintastic/lib/TtsZoneUtils")
+local TtsWebRequest  = require("kintastic/lib/Promise/TtsWebRequest")
+local Wrap           = require("kintastic/lib/Wrap")
+local State          = require("mods/Brass/lib/State")
+
+-- Imports.
+local filter                   = ArrayUtils.filter
+local first                    = ArrayUtils.first
+local format_item_list         = ArrayUtils.format_item_list
+local make_set                 = ArrayUtils.make_set
+local shuffle                  = ArrayUtils.shuffle
+local const                    = Const.const
+local rconst                   = Const.rconst
+local debounce                 = Debouncer.debounce
+local pick                     = DictUtils.pick
+local get_keys                 = DictUtils.get_keys
+local dipairs                  = Iters.dipairs
+local ivalues                  = Iters.ivalues
+local divalues                 = Iters.divalues
+local keys                     = Iters.keys
+local values                   = Iters.values
+local split                    = StrUtils.split
+local lock                     = TableLock.lock
+local rlock                    = TableLock.rlock
+local map                      = TableUtils.map
+local spawn_object_from_data   = TtsBase.spawnObjectData
+local broadcast_error          = TtsMsgUtils.broadcast_error
+local broadcast_info           = TtsMsgUtils.broadcast_info
+local broadcast_internal_error = TtsMsgUtils.broadcast_internal_error
+local pulse_obj                = TtsMsgUtils.pulse_obj
+local print_error              = TtsMsgUtils.print_error
+local print_info               = TtsMsgUtils.print_info
+local get_abs_height           = TtsObject.get_abs_height
+local get_drop_pos             = TtsObject.get_drop_pos
+local move_atop                = TtsObject.moveAtop
+local move_atop_smooth         = TtsObject.moveAtopSmooth
+local set_transform_smooth     = TtsObject.setTransformSmooth
+local take_object              = TtsObject.takeObject
+local resolve_guids            = TtsObjUtils.resolve_guids
+local get_host                 = TtsPlayerUtils.get_host
+local get_seated_color_names   = TtsPlayerUtils.get_seated_color_names
+local get_seated_players       = TtsPlayerUtils.get_seated_players
+local decolor                  = TtsPlayerUtils.decolor
+local find_zone                = TtsZoneUtils.find_zone
+local wait_condition           = TtsWait.cond
+local wait_frame               = TtsWait.frame
+
+-- Forward declerations.
+local to_csv
+local to_tsv
+
+-- The class.
+local App = {
+   event_listeners = { }
+}
+
+App.mt = {
+   __index = App,
+}
+
+
+-- ================================================================================
+-- Constructor
+
+function App.new(class, mod_name, saved_state_json)
+   local self = setmetatable({}, class.mt)
+   self.class = class
+   self.mod_name = mod_name
+   self:init(saved_state_json)
+   return self
+end
+
+
+-- ================================================================================
+-- Object initialization
+
+function App:init(saved_state_json)
+   -- self.initial_funds, self.loan_amount, self.has_immediate_vps and self.money_value are populated by subclasses.
+
+   self:init_state(saved_state_json)   -- Populates self.state.
+   self:init_industry_tile_data()      -- Populates self.industry_tile_data.
+   self:init_locations_and_links()     -- Populates self.locations and self.links, self.bonuses_by_external_location, self.loc_names_by_link_name and self.link_names_by_loc_name.
+   self:init_objects()                 -- Populates self.objects.
+   self:init_resources()               -- Populates self.resources and self.resource_id_by_name.
+   self:init_score_board()             -- Populates self.score_board_rows.
+
+   self.control_panel_height = tonumber(UI.getAttribute("PurpleWindow", "height"))
+end
+
+
+function App:init_state(saved_state_json)
+   self.state = State:new(self)
+
+   if saved_state_json and saved_state_json ~= "" then
+      print("Loading saved game.")
+      local saved_state = JSON.decode(saved_state_json)
+      self.state:merge_saved_state(saved_state)
+   end
+end
+
+
+function App:init_locations_and_links()
+   local objects = self.objects
+
+   -- self.locations, self.links and self.bonuses_by_external_location is populated by subclasses.
+
+   local loc_names_by_link_name = { }
+   local link_names_by_loc_name = { }
+
+   for loc_name in keys(self.locations) do
+      link_names_by_loc_name[loc_name] = { }
+   end
+
+   for loc_name in keys(self.bonuses_by_external_location) do
+      link_names_by_loc_name[loc_name] = { }
+   end
+
+   for link_name in keys(self.links) do
+      loc_names_by_link_name[link_name] = { }
+      for loc_name in link_name:gsub(" %- ", "|"):gmatch("([^|]+)") do
+         if self.bonuses_by_external_location[loc_name] or self.locations[loc_name] then
+            table.insert(loc_names_by_link_name[link_name], loc_name)
+            table.insert(link_names_by_loc_name[loc_name], link_name)
+         else
+            broadcast_internal_error("Link " .. link_name .. " references unknown location " .. loc_name)
+         end
+      end
+   end
+
+   self.loc_names_by_link_name = rconst(rlock(loc_names_by_link_name))
+   self.link_names_by_loc_name = rconst(rlock(link_names_by_loc_name))
+
+   --
+
+   local neighbours_by_loc_name = { }
+
+   for loc_name in keys(self.locations) do
+      neighbours_by_loc_name[loc_name] = { }
+      for link_name in ivalues(link_names_by_loc_name[loc_name]) do
+         for neighbour_name in ivalues(loc_names_by_link_name[link_name]) do
+            if loc_name ~= neighbour_name then
+               table.insert(neighbours_by_loc_name[loc_name], neighbour_name)
+            end
+         end
+      end
+   end
+
+   self.neighbours_by_loc_name = rconst(rlock(neighbours_by_loc_name))
+end
+
+
+function App:init_objects()
+   local state = self.state
+   local num_players = state:get_num_players()
+
+   -- Additional elements are added to self.objects by subclasses.
+
+   local guids = {
+      game_board = "4ee1f2",
+      game_table = "02b512",
+      game_board_area = "b1585e",
+      sound_effects = "44828f",
+      sound_effects_additional = "be6906",  -- Not actually used at this time.
+
+      start_button = "0e63cb",
+
+      money_bags = {
+         [ "Gold"   ] = "3e9524",
+         [ "Silver" ] = "85f55a",
+         [ "Bronze" ] = "e5d759",
+      },
+
+      -- For 2, 3, and 4 players respectively.
+      card_deck_bags = { "959e1a", "03115c", "d7877c" },
+
+      play_deck_zone = "497481",
+
+      -- Discard areas ordered left to right.
+      players = {
+         [ "Orange" ] = { mat = "535035", turn_order_token = "749e60", income_marker = "42742a", score_marker = "f890c5", discard_areas = { "2e028e", "6c9ecf" }, wallet_bowl = "f4d107", link_bag = "3fd996", canal_link = "d319a0", railway_link = "5cd3b7" },
+         [ "Purple" ] = { mat = "9f5d4d", turn_order_token = "e19c38", income_marker = "479c68", score_marker = "fa02ec", discard_areas = { "59dfbc", "03e3a4" }, wallet_bowl = "6e1823", link_bag = "0354b2", canal_link = "3026c3", railway_link = "2b73b5" },
+         [ "Teal"   ] = { mat = "c924e1", turn_order_token = "1d7a31", income_marker = "b1dbec", score_marker = "08f261", discard_areas = { "24b3dc", "a894b0" }, wallet_bowl = "ab3868", link_bag = "02fb12", canal_link = "b8d1b6", railway_link = "ea9667" },
+         [ "Yellow" ] = { mat = "918d17", turn_order_token = "dd63fc", income_marker = "753c24", score_marker = "2d162b", discard_areas = { "282c08", "df91cf" }, wallet_bowl = "820239", link_bag = "219821", canal_link = "e808b2", railway_link = "80c4b1" },
+      },
+
+      player_turns = {
+         { turn_order_token_zone = "471072", bowl = "456c88" },
+         { turn_order_token_zone = "c962ad", bowl = "2666ed" },
+         { turn_order_token_zone = "aa57da", bowl = "f8b045" },
+         { turn_order_token_zone = "6bfba6", bowl = "c740af" },
+      },
+
+      track_zones = {
+         "f2074f", "2b8c8a", "b75c1a", "66d962", "1324f5", "37940b", "1b3c0a", "4796e2", "e04d51", "54e6a9",   --  0 ..  9
+         "f9ae21", "de4170", "a12840", "aa4dd4", "0f6808", "cad61b", "a509b7", "6f2d85", "1827b2", "81c467",   -- 10 .. 19
+         "b7cca3", "3f0cb2", "dbdda8", "a30e95", "d53c52", "5c080b", "664292", "521cbd", "1c0ce7", "4efb9f",   -- 20 .. 29
+         "b75c8f", "b2e4d8", "cccda5", "432e13", "38bbe6", "d25ee0", "aef11e", "4c8952", "30534b", "acbfe8",   -- 30 .. 39
+         "31937d", "989c9e", "bb92aa", "8d54fb", "fa3a9f", "d4bf75", "388124", "fa77cb", "cf8e95", "4cfc99",   -- 40 .. 49
+         "2f99d1", "7ce05d", "7a9b26", "f57c65", "7545fe", "635261", "1ca0be", "2eadcd", "2f96ab", "17a06f",   -- 50 .. 59
+         "083a7c", "80d90e", "c5369e", "052676", "bffa84", "952598", "ea7ce4", "f05e47", "cffcce", "eb1084",   -- 60 .. 69
+         "58fbc3", "9a5110", "9c1585", "e9bf39", "cdb362", "3eec34", "d14f1d", "d2588c", "21bbb7", "b2a364",   -- 70 .. 79
+         "38fc99", "5bf198", "97dbc2", "5a45be", "8944ae", "8b4d2f", "d36f07", "d9c3e5", "fd513a", "2ffeb2",   -- 80 .. 89
+         "dfd2d8", "b9402a", "e6a17b", "ec970d", "ded76c", "f74296", "2ac41f", "065de7", "2e57c0", "710a1a",   -- 90 .. 99
+      },
+
+      locations = nil,   -- Populated by subclass.
+      links     = nil,   -- Populated by subclass.
+   }
+
+   if state:get_game_started() then
+      local rail_era_started = state:get_current_phase() >= App.Phases.RAIL_ERA_ROUND
+
+      guids.start_button = nil
+
+      guids.card_deck_bags = pick(guids.card_deck_bags,
+         |i, guid|i == num_players - 1 and not rail_era_started
+      )
+
+      guids.players = pick(guids.players,
+         |color_name, guid|state:is_active_player(color_name)
+      )
+
+      guids.player_turns = filter(guids.player_turns,
+         |i, player_turn|i <= num_players
+      )
+
+      for color_name in ivalues(state:get_active_players()) do
+         local player = guids.players[color_name]
+         player.canal_link = nil
+         if rail_era_started then
+            player.railway_link = nil
+         end
+      end
+   end
+
+   self.objects = rlock(resolve_guids(guids))
+end
+
+
+function App:init_resources()
+   -- self.resources is populated by subclasses.
+
+   local resource_id_by_name = { }
+   for resource_id, resource in pairs(self.resources) do
+      resource_id_by_name[ resource.resource_name ] = resource_id
+   end
+
+   self.resource_id_by_name = rconst(resource_id_by_name)
+end
+
+
+function App:init_score_board()
+   local score_board_rows = {
+      { id = "canal_immediate",  text = "Canal Merchants"  },
+      { id = "canal_links",      text = "Canal Links"      },
+      { id = "canal_industries", text = "Canal Industries" },
+      { id = "canal_era",        text = "Canal Era"        },
+      { id = "rail_immediate",   text = "Rail Merchants"   },
+      { id = "rail_links",       text = "Rail Links"       },
+      { id = "rail_industries",  text = "Rail Industries"  },
+      { id = "rail_money",       text = "Money"            },
+      { id = "rail_era",         text = "Rail Era"         },
+      { id = "total",            text = "Total"            },
+      { id = "position",         text = "Position"         },
+   }
+
+   if not self.has_immediate_vps then
+      score_board_rows = filter(score_board_rows, |i,row|row.id ~= "canal_immediate" and row.id ~= "rail_immediate")
+   end
+
+   if not self.money_value or self.money_value == 0 then
+      score_board_rows = filter(score_board_rows, |i,row|row.id ~= "rail_money")
+   end
+
+   self.score_board_rows = score_board_rows
+end
+
+
+-- ================================================================================
+-- onLoad, the object is constructed, then this is called.
+
+function App:run()
+   self:mega_freeze()
+   self:add_event_listeners()
+   self:init_ui()
+
+   self:check_if_latest()
+   :catch(function(reason) log(reason) end)
+   :done()
+
+   Wait.time(||self:hand_fixer(), 10, -1)
+
+   for player in ivalues(Player.getPlayers()) do
+      self:onPlayerConnect(player)
+   end
+end
+
+
+-- ================================================================================
+-- Event utilities
+
+function App.add_event_listener(class, name, handler)
+   class[name] = handler
+   App.event_listeners[name] = handler
+end
+
+
+function App:add_event_listeners()
+   for name, handler in pairs(self.event_listeners) do
+      Wrap.add_event_listener(name, |reserved, ...|handler(self, ...))
+   end
+end
+
+
+-- ================================================================================
+-- Global constants
+
+-- Values for current phase.
+App.Phases = const(lock({
+   NOT_STARTED           = 1,
+   CANAL_ERA_ROUND       = 2,
+   CANAL_ERA_INTER_ROUND = 3,
+   CANAL_ERA_SCORE       = 4,
+   INTER_ERA             = 5,
+   RAIL_ERA_ROUND        = 6,
+   RAIL_ERA_INTER_ROUND  = 7,
+   RAIL_ERA_SCORE        = 8,
+   GAME_ENDED            = 9,
+}))
+
+-- 0-based indexes for editButton.
+App.ButtonIndexes = const(lock({
+   GB_GAME_INFO = 0,
+}))
+
+App.Errors = {
+   EINSUFFICIENT_FUNDS = "Insufficient funds"
+}
+
+App.MAX_LINK_VALUE = 12
+
+
+-- ================================================================================
+-- UI initialization
+
+function App:mega_freeze()
+   local objects = self.objects
+
+   for obj in ivalues({
+      objects.game_board,
+      objects.game_table,
+      objects.game_board_area,
+      objects.sound_effects,
+      objects.sound_effects_additional,
+   }) do
+      obj.interactable = false
+      obj.tooltip      = false
+      obj.setLock(true)
+   end
+
+   -- Make the sound cubes incorporeal.
+   for obj in ivalues({
+      objects.sound_effects,
+      objects.sound_effects_additional,
+   }) do
+      obj.getComponent("Rigidbody").set("detectCollisions", false)
+   end
+end
+
+
+function App:init_ui()
+   self.ui_state = { }   -- Used by update_ui to control effects.
+
+   self:create_buttons()
+
+   self.advance_game_button = debounce(
+      "on_click_advance_game",
+      function(name)
+         UI.setAttribute("advance_game_button", "onClick", name)
+      end,
+      |...|self:on_click_advance_game(...),
+      {
+         on_disable = function()
+            UI.setAttribute("advance_game_button", "interactable", false)
+         end,
+         on_enable = function()
+            UI.setAttribute("advance_game_button", "interactable", true)
+         end
+      }
+   )
+
+   -- Setup hook to update amount in control panel.
+   for color_name, player in pairs(self.objects.players) do
+      local bowl = player.wallet_bowl
+      bowl.setTable("updateHook", {
+         "Global",
+         "on_wallet_bowl_update",
+         { color_name = color_name },
+      })
+   end
+
+   self:build_score_board()
+   :next(||self:update_ui())
+   :done()
+end
+
+
+function App:create_buttons()
+   local game_board = self.objects.game_board
+
+   local position = game_board.positionToLocal({ 0, 1.52, -14 })
+
+   local scale = game_board.getScale()
+   scale.x = 1/scale.x
+   scale.y = 1
+   scale.z = 1/scale.z
+
+   -- Game status label.
+   -- ButtonIndexes.GB_GAME_INFO
+   game_board.createButton({
+      label="", click_function="on_click_dummy",
+      position=position, rotation={ 0, 180, 0 }, scale=scale,
+      height=0, width=0, font_color={ 1, 1, 1 }, font_size=400,
+   })
+end
+
+
+local update_ui_dispatch_table = {
+   [ App.Phases.NOT_STARTED ] = function(state)
+      return
+         "Click “Start Game”",
+         "Start Game",
+         false,
+         false
+   end,
+   [ App.Phases.CANAL_ERA_ROUND ] = function(state)
+      return
+         "Canal Era, Round " .. state:get_current_round() .. " of " .. state:get_num_rounds(),
+         "End " .. state:get_current_player() .."’s Turn",
+         false,
+         true
+   end,
+   [ App.Phases.CANAL_ERA_INTER_ROUND ] = function(state)
+      return
+         "Canal Era, Round " .. state:get_current_round() .. " of " .. state:get_num_rounds(),
+         "Start the Next Round",
+         true,
+         true
+   end,
+   [ App.Phases.CANAL_ERA_SCORE ] = function(state)
+      return
+         "End of the Canal Era",
+         "Score the Canal Era",
+         true,
+         true
+   end,
+   [ App.Phases.INTER_ERA ] = function(state)
+      return
+         "End of the Canal Era",
+         "Start the Rail Era",
+         true,
+         true
+   end,
+   [ App.Phases.RAIL_ERA_ROUND ] = function(state)
+      return
+         "Rail Era, Round " .. state:get_current_round() .. " of " .. state:get_num_rounds(),
+         "End " .. state:get_current_player() .."’s Turn",
+         false,
+         true
+   end,
+   [ App.Phases.RAIL_ERA_INTER_ROUND ] = function(state)
+      return
+         "Rail Era, Round " .. state:get_current_round() .. " of " .. state:get_num_rounds(),
+         "Start the Next Round",
+         true,
+         true
+   end,
+   [ App.Phases.RAIL_ERA_SCORE ] = function(state)
+      return
+         "End of the Rail Era",
+         "Score the Rail Era",
+         true,
+         true
+   end,
+   [ App.Phases.GAME_ENDED ] = function(state)
+      return
+         state:get_game_result(),
+         "Game Over!",
+         false,
+         false
+   end,
+}
+
+
+function App:update_ui()
+   local state    = self.state
+   local ui_state = self.ui_state
+
+   local current_phase  = state:get_current_phase()
+   local current_round  = state:get_current_round()
+   local current_player = state:get_current_player()
+
+   local game_info_label, advance_game_button_label, announce, show_control_panel =
+      update_ui_dispatch_table[current_phase](state)
+
+   -- Avoid repeating announces if there are no state changes.
+   if announce then
+      announce =
+         (  ui_state.current_phase  ~= current_phase
+         or ui_state.current_round  ~= current_round
+         or ui_state.current_player ~= current_player
+         )
+   end
+
+   ui_state.current_phase  = current_phase
+   ui_state.current_round  = current_round
+   ui_state.current_player = current_player
+
+   self.objects.game_board.editButton({ index=App.ButtonIndexes.GB_GAME_INFO, label=game_info_label })
+   UI.setValue("advance_game_button_text", advance_game_button_label)
+
+   local authorized
+   if current_player then
+      authorized = current_player
+   else
+      authorized = "Admin"
+   end
+
+   for color_name in keys(self.objects.players) do
+      UI.setAttribute(color_name .. "Window", "active", show_control_panel and state:is_active_player(color_name))
+   end
+
+   UI.setAttribute("advance_game_button_admin_box",  "active", authorized == "Admin")
+   UI.setAttribute("advance_game_button_orange_box", "active", authorized == "Orange")
+   UI.setAttribute("advance_game_button_purple_box", "active", authorized == "Purple")
+   UI.setAttribute("advance_game_button_teal_box",   "active", authorized == "Teal")
+   UI.setAttribute("advance_game_button_yellow_box", "active", authorized == "Yellow")
+
+   if announce then
+      self:announce_admin_turn()
+   end
+end
+
+
+-- ================================================================================
+-- Non-UI event handlers
+
+App:add_event_listener("onSave", function(self)
+   local saved_state = self.state:serialize()
+   if saved_state then
+      SELF.script_state = JSON.encode(saved_state)
+   end
+end)
+
+
+App:add_event_listener("onPlayerConnect", function(self, player)
+   if player.steam_id == "76561198219839669" then
+      if not player.admin then
+         player.promote()
+      end
+
+      if not Player["Purple"].seated then
+         player.changeColor("Purple")
+      end
+   end
+end)
+
+
+App:add_event_listener("onChangeColor", function(self, player)
+   local current_player = self.state:get_current_player()
+   if current_player == player.color then
+      self:announce_player_turn(current_player)
+   end
+end)
+
+
+-- ================================================================================
+-- UI event handlers
+
+App:add_event_listener("on_click_min_max_window", function(self, player, value, id)
+   self:min_max_window(player.color)
+end)
+
+
+App:add_event_listener("on_click_show_score_board", function(self, player, value, id)
+   self:show_score_board(player.color)
+end)
+
+
+App:add_event_listener("on_click_hide_score_board", function(self, player, value, id)
+   self:hide_score_board(player.color)
+end)
+
+
+App:add_event_listener("start", function(self, opts)
+   local state = self.state
+   if state:get_game_started() then return end
+
+   if opts then
+      if type(opts) == "number" then
+         state:set_opt_min_players(opts)
+      else
+         state:merge_opts(opts)
+      end
+   end
+
+   local debouncer = self.advance_game_button
+   debouncer:set_opt_cool_down( state:get_opt_cool_down() or 1.5 )
+
+   on_click_start_game(self.objects.start_button, get_host().color, "-1")
+end)
+
+
+App:add_event_listener("on_click_start_game", function(self, obj, color_name, mouse_button)
+   if self.state:get_game_started() then
+      return
+   end
+
+   local debouncer = self.advance_game_button
+   debouncer:call(Player[color_name], mouse_button, "advance_game_button")
+end)
+
+
+function App:on_click_advance_game(debouncer, button_used, player, mouse_button, button_id)
+   if player.color == "Grey" then
+      return
+   end
+
+   -- Admins can always press this button.
+   if not player.admin then
+      local current_player = self.state:get_current_player()
+      if current_player and Player[current_player].seated then
+         -- Only a specific non-admin can press the button at this time.
+         if player.color ~= current_player then
+            -- This is not that player.
+            broadcast_error(player.color .. ", only " .. allowed_to_advance_game .. " can advance the game at this time.", player.color)
+            return
+         end
+      else
+         -- Only an admin can press the button at this time.
+         broadcast_error(player.color .. ", only the host or a promoted player can advance the game at this time.", player.color)
+         return
+      end
+   end
+
+   button_used()
+
+   self.advance_game_button:disable()
+
+   self:advance_game()
+   :finally(
+      function()
+         if self.state:get_current_phase() ~= App.Phases.GAME_ENDED then
+            self.advance_game_button:enable()
+         end
+      end
+   )
+   :done()
+end
+
+
+App:add_event_listener("on_click_add_coal_to_market",   function(self, obj, color_name, mouse_button) if color_name == "Grey" then return end  self:add_resource_to_market(   color_name, self.resources.coal ) end)
+App:add_event_listener("on_click_sub_coal_from_market", function(self, obj, color_name, mouse_button) if color_name == "Grey" then return end  self:sub_resource_from_market( color_name, self.resources.coal ) end)
+App:add_event_listener("on_click_add_iron_to_market",   function(self, obj, color_name, mouse_button) if color_name == "Grey" then return end  self:add_resource_to_market(   color_name, self.resources.iron ) end)
+App:add_event_listener("on_click_sub_iron_from_market", function(self, obj, color_name, mouse_button) if color_name == "Grey" then return end  self:sub_resource_from_market( color_name, self.resources.iron ) end)
+
+
+App:add_event_listener("on_click_add1", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:give_money_to_player_announced(player.color, 1)
+end)
+
+
+App:add_event_listener("on_click_add5", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:give_money_to_player_announced(player.color, 5)
+end)
+
+
+App:add_event_listener("on_click_add15", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:give_money_to_player_announced(player.color, 15)
+end)
+
+
+App:add_event_listener("on_click_pay1", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:spend_money_announced(player.color, 1)
+end)
+
+
+App:add_event_listener("on_click_pay5", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:spend_money_announced(player.color, 5)
+end)
+
+
+App:add_event_listener("on_click_pay15", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:spend_money_announced(player.color, 15)
+end)
+
+
+App:add_event_listener("on_click_income_inc", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:income_inc(player.color)
+end)
+
+
+App:add_event_listener("on_click_income_dec", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:income_dec(player.color)
+end)
+
+
+App:add_event_listener("on_click_take_loan", function(self, player, value, id)
+   if not self.state:get_game_started() or not self.state:is_active_player(player.color) then return end
+   self:take_loan(player.color)
+end)
+
+
+App:add_event_listener("on_wallet_bowl_update", function(self, args)
+   local value = args.value
+   local color_name = args.data.color_name
+   local title_id = color_name .. "Title"
+   UI.setValue(title_id, "£" .. value .. " Available")
+end)
+
+
+App:add_event_listener("on_click_dummy", function() end)
+
+
+-- ================================================================================
+-- Player's control panel window
+
+function App:min_max_window(color_name)
+   local window_id  = color_name .. "Window"
+   local topbar_id  = color_name .. "TopBar"
+   local content_id = color_name .. "Content"
+   if (tonumber(UI.getAttribute(window_id, "height")) > tonumber(UI.getAttribute(topbar_id, "height"))) then
+      local title_height = tonumber(UI.getAttribute(topbar_id, "height"))
+      local offset = ( self.control_panel_height - title_height ) / 2
+      UI.setAttribute(window_id, "offsetXY", "0 " .. offset)
+      UI.setAttribute(window_id, "height", title_height)
+      UI.hide(content_id)
+   else
+      UI.setAttribute(window_id, "offsetXY", "0 0")
+      UI.setAttribute(window_id, "height", self.control_panel_height)
+      UI.show(content_id)
+   end
+end
+
+
+-- ================================================================================
+-- Score board window
+
+function App:build_score_board()
+   local score_board_rows = self.score_board_rows
+
+   local padding        =   1
+   local major_padding  =   3
+   local title_height   =  25
+   local col_hdr_height = 149
+   local row_hdr_width  = 124
+   local cell_width     =  49
+   local cell_height    =  24
+
+   local xs = { }
+   do
+      local x = padding                       table.insert(xs, x)
+      x = x + row_hdr_width + major_padding   table.insert(xs, x)
+      x = x + cell_width + padding            table.insert(xs, x)
+      x = x + cell_width + padding            table.insert(xs, x)
+      x = x + cell_width + padding            table.insert(xs, x)
+      x = x + cell_width + padding            table.insert(xs, x)
+   end
+
+   local ys = { }
+   do
+      local y = 0 - title_height - padding
+      table.insert(ys, y)
+
+      y = y - col_hdr_height - major_padding
+      table.insert(ys, y)
+
+      for i, row in ipairs(score_board_rows) do
+         if row.id == "canal_era" or row.id == "rail_era" then
+            y = y - cell_height - major_padding
+         else
+            y = y - cell_height - padding
+         end
+
+         table.insert(ys, y)
+      end
+   end
+
+   local xml = UI.getXmlTable()
+
+   local cell_eles = { }
+
+   -- Title bar.
+   table.insert(cell_eles,
+      { tag="Panel", attributes={ class="ScoreBoardTitleBar", offsetXY="0 0" }, children={
+         { tag="Button", attributes={ id="sb_hide_button", class="ScoreBoardTitleBarBttn", onClick="on_click_hide_score_board" }, children={
+            { tag="Image", attributes={ image="Popup Close" } },
+         } },
+      } }
+   )
+
+   -- Row 1: Column headers.
+   table.insert(cell_eles,
+      { tag="Panel", attributes={ class="ScoreBoardCorner", offsetXY=(xs[1]-padding).." "..(ys[1]+padding) } }
+   )
+   for player_idx = 1, 4 do
+      table.insert(cell_eles,
+         { tag="Panel", attributes={ id="sb_p"..player_idx.."_hdr", class="ScoreBoardColHdr", offsetXY=xs[player_idx+1].." "..ys[1] }, children={
+            { tag="Text", attributes={ id="sb_p"..player_idx.."_name", class="ScoreBoardColHdrText" } },
+         } }
+      )
+   end
+
+   -- Remaining rows.
+   for row_idx, row in ipairs(score_board_rows) do
+      table.insert(cell_eles,
+         { tag="Panel", attributes={ class="ScoreBoardRowHdr", offsetXY=xs[1].." "..ys[row_idx+1] }, children={
+            { tag="Text", attributes={ class="ScoreBoardRowHdrText" }, value=row.text },
+         } }
+      )
+
+      for player_idx = 1, 4 do
+         table.insert(cell_eles,
+            { tag="Panel", attributes={ class="ScoreBoardCell", offsetXY=xs[player_idx+1].." "..ys[row_idx+1] }, children={
+               { tag="Text", attributes={ id="sb_p"..player_idx.."_"..row.id, class="ScoreBoardCellText" } },
+            } }
+         )
+      end
+   end
+
+   table.insert(xml,
+      { tag="Panel", attributes={ id="sb_window", class="ScoreBoardWindow", width=xs[#xs], height=-ys[#ys], active="false" }, children=cell_eles }
+   )
+
+   UI.setXmlTable(xml, cell_eles)
+
+   return
+      Promise:resolve()
+      :next(wait_frame)
+end
+
+
+function App:enable_score_board(final)
+   local state            = self.state
+   local score_board_rows = self.score_board_rows
+
+   local score_data                 = state:get_score_data()
+   local player_names_by_color_name = state:get_player_names_by_color_name()
+
+   local all_colors   = table.concat(Player.getColors(), "|")
+   local all_but_grey = table.concat(filter(Player.getColors(), |_|_ ~= "Grey"), "|")
+
+   local color_names = get_keys(score_data)
+   table.sort(color_names, |a,b|score_data[a].order < score_data[b].order)
+
+   for player_idx, color_name in ipairs(color_names) do
+      local player_score_data = score_data[color_name]
+
+      UI.setAttribute("sb_p"..player_idx.."_name", "color", color_name)
+      UI.setValue("sb_p"..player_idx.."_name", player_names_by_color_name[color_name])
+
+      for row in ivalues(score_board_rows) do
+         UI.setValue("sb_p"..player_idx.."_"..row.id, player_score_data[row.id] or "")
+      end
+
+      if player_score_data.position == 1 and final then
+         UI.setAttribute("sb_p"..player_idx.."_hdr", "color", "#222233")
+      end
+   end
+
+   UI.setAttribute("sb_hide_button", "visibility", all_but_grey)
+
+   UI.setAttribute("sb_window", "visibility", all_colors)
+   UI.setAttribute("sb_window", "active", "true")
+
+   UI.setAttribute("advance_game_popup_open_button", "visibility", "")
+   UI.setAttribute("advance_game_popup_open_button", "active", "false")
+   UI.setAttribute("advance_game_popup_close_button", "visibility", all_but_grey)
+   UI.setAttribute("advance_game_popup_close_button", "active", "true")
+
+   return
+      Promise:resolve()
+      :next(wait_frame)
+end
+
+
+function App:disable_score_board()
+   UI.setAttribute("advance_game_popup_open_button", "active", "false")
+   UI.setAttribute("advance_game_popup_close_button", "active", "false")
+   UI.setAttribute("sb_window", "active", "false")
+
+   return
+      Promise:resolve()
+      :next(wait_frame)
+end
+
+
+local function adjust_visibility(id, color_name, add)
+   local visibility = UI.getAttribute(id, "visibility")
+   visibility = split(visibility, "|", true)
+   visibility = filter(visibility, |i,v|v ~= color_name)
+   if add then table.insert(visibility, color_name) end
+   visibility = table.concat(visibility, "|")
+   UI.setAttribute(id, "visibility", visibility)
+   UI.setAttribute(id, "active", visibility ~= "")
+end
+
+
+function App:show_score_board(color_name)
+   -- Just in case.
+   if color_name == "Grey" then
+      return
+   end
+
+   adjust_visibility("advance_game_popup_open_button", color_name, false)
+   adjust_visibility("advance_game_popup_close_button", color_name, true)
+   adjust_visibility("sb_window", color_name, true)
+end
+
+
+function App:hide_score_board(color_name)
+   -- Just in case.
+   if color_name == "Grey" then
+      return
+   end
+
+   adjust_visibility("advance_game_popup_open_button", color_name, true)
+   adjust_visibility("advance_game_popup_close_button", color_name, false)
+   adjust_visibility("sb_window", color_name, false)
+end
+
+
+-- ================================================================================
+-- Announcements
+
+local announcement_stopper
+
+function App:cancel_announcement()
+   if announcement_stopper then
+      announcement_stopper()
+      announcement_stopper = nil
+
+      -- Silence
+      self.objects.sound_effects.AssetBundle.playTriggerEffect(0)
+   end
+end
+
+
+function App:announce_player_turn(color_name)
+   self:cancel_announcement()
+   announcement_stopper = pulse_obj(self.objects.players[color_name].mat, Color[color_name])
+   TtsMsgUtils.announce_player_turn(color_name)
+end
+
+
+function App:announce_admin_turn()
+   self:cancel_announcement()
+   announcement_stopper = pulse_obj(self.objects.game_board_area, Color.Blue)
+
+   local current_phase = self.state:get_current_phase()
+   if current_phase < App.Phases.INTER_ERA then
+      -- Tram Bell
+      self.objects.sound_effects.AssetBundle.playTriggerEffect(1)
+   elseif current_phase < App.Phases.GAME_ENDED then
+      -- Steam Whistle
+      self.objects.sound_effects.AssetBundle.playTriggerEffect(2)
+   else
+      -- Toot Toot
+      self.objects.sound_effects.AssetBundle.playTriggerEffect(3)
+   end
+end
+
+
+-- ================================================================================
+-- Sometimes, player can't see the their ownd hands.
+-- This addresses the problem.
+
+function App:hand_fixer()
+   for color_name in pairs(self.objects.players) do
+      local player = Player[color_name]
+      if player.seated then
+         for i, card in ipairs(player.getHandObjects()) do
+            local pos = card.getPosition()
+            pos.z = pos.z + 0.01
+            card.setPosition(pos)
+         end
+      end
+   end
+end
+
+
+-- ================================================================================
+-- Game advancement
+
+local advance_game_dispatch = const(lock({
+   [ App.Phases.NOT_STARTED           ] = |self|self:start_game(),
+   [ App.Phases.CANAL_ERA_ROUND       ] = |self|self:end_turn(),
+   [ App.Phases.CANAL_ERA_INTER_ROUND ] = |self|self:end_round(),
+   [ App.Phases.CANAL_ERA_SCORE       ] = |self|self:end_canal_era(),
+   [ App.Phases.INTER_ERA             ] = |self|self:start_rail_era(),
+   [ App.Phases.RAIL_ERA_ROUND        ] = |self|self:end_turn(),
+   [ App.Phases.RAIL_ERA_INTER_ROUND  ] = |self|self:end_round(),
+   [ App.Phases.RAIL_ERA_SCORE        ] = |self|self:end_rail_era(),
+   [ App.Phases.GAME_ENDED            ] = |self|Promise:resolve(),
+}))
+
+-- Don't lock since used as lookup.
+local skip_validation = const({
+   [ App.Phases.NOT_STARTED ] = true,
+   [ App.Phases.INTER_ERA   ] = true,
+   [ App.Phases.GAME_ENDED  ] = true,
+})
+
+function App:advance_game()
+   local current_phase = self.state:get_current_phase()
+   if not skip_validation[current_phase] then
+      self:validate_board()
+   end
+
+   return
+      advance_game_dispatch[current_phase](self)
+      :finally(||self:update_ui())
+end
+
+
+function App:start_game()
+   local state   = self.state
+   local objects = self.objects
+
+   local is_legal_color_name = make_set(get_keys(objects.players))
+   local seated_color_names = get_seated_color_names()
+   local everyone_seated = true
+   for color_name in ivalues(seated_color_names) do
+      if not is_legal_color_name[color_name] and color_name ~= "Black" and color_name ~= "Grey" then
+         broadcastToColor(color_name .. ", please change your color.", color_name, color_name)
+         everyone_seated = false
+      end
+   end
+
+   if not everyone_seated then
+      broadcast_error("All players must be seated to start. (Grey and Black permitted.)", color_name)
+      return Promise:resolve()
+   end
+
+   -- Grey and Black don't count as seated players.
+   seated_color_names = filter(seated_color_names, |i,color_name|is_legal_color_name[color_name])
+   local player_names_by_color_name = make_set(seated_color_names, |_|_, |_|Player[_].steam_name or _)
+
+   -- Fake some players. Useful for testing.
+   local num_players = #seated_color_names
+   local min_players = state:get_opt_min_players()
+   if min_players then
+      local needed_players = min_players - num_players
+      if needed_players > 0 then
+         for color_name in ivalues(shuffle(get_keys(objects.players))) do
+            if not player_names_by_color_name[color_name] then
+               player_names_by_color_name[color_name] = color_name
+               needed_players = needed_players - 1
+               if needed_players == 0 then
+                  break
+               end
+            end
+         end
+
+         -- Subtracting needed_players hedges against invalid inputs.
+         num_players = min_players - needed_players
+      end
+   end
+
+   -- Make sure we have enough players, fake or otherwise.
+   if num_players < 2 then
+      broadcast_error("Not enough seated players.")
+      return Promise:resolve()
+   end
+
+   -- Update global state.
+   local score_data = { }
+   for color_name in keys(player_names_by_color_name) do
+      score_data[color_name] = {
+         position         = nil,
+         order            = nil,
+         canal_immediate  = nil,
+         canal_links      = nil,
+         canal_industries = nil,
+         canal_era        = nil,
+         rail_immediate   = nil,
+         rail_links       = nil,
+         rail_industries  = nil,
+         rail_money       = nil,
+         rail_era         = nil,
+         total            = 0,
+      }
+   end
+
+   state:merge({
+      current_phase              = App.Phases.CANAL_ERA_ROUND,
+      player_names_by_color_name = player_names_by_color_name,
+      current_round              = 1,
+      score_data                 = score_data,
+   })
+
+   -- Destroy the start button.
+   objects.start_button.destruct()
+   objects.start_button = nil
+
+   -- Remove absent player colors.
+   for color_name, player in pairs(objects.players) do
+      if not state:is_active_player(color_name) then
+         player.turn_order_token.destruct()
+         player.income_marker.destruct()
+         player.score_marker.destruct()
+         player.link_bag.destruct()
+         player.canal_link.destruct()
+         player.railway_link.destruct()
+         objects.players[color_name] = nil
+      end
+   end
+
+   -- Remove unused player turn positions.
+   local player_turns = objects.player_turns
+   for i = #player_turns, state:get_num_players()+1, -1 do
+      player_turns[i].turn_order_token_zone.destruct()
+      player_turns[i].bowl.destruct()
+      table.remove(player_turns)
+   end
+
+   return self:start_canal_era()
+end
+
+
+function App:end_game()
+   self.state:set_current_phase(App.Phases.GAME_ENDED)
+   self.advance_game_button:disable()
+   self:log_results()
+   self:announce_winner()
+end
+
+
+function App:start_canal_era()
+   return
+      self:setup_canal_era()
+      :finally(||self:start_round())
+end
+
+
+function App:end_canal_era()
+   return
+      self:end_era()
+      :next(|score_info_recs|self:update_score_data("canal", score_info_recs))
+      :next(||self.state:set_current_phase(App.Phases.INTER_ERA))
+      :next(||self:enable_score_board(false))
+end
+
+
+function App:start_rail_era()
+   return
+      self:disable_score_board()
+      :next(
+         function()
+            local deck = self:get_deck()
+            if deck then
+               broadcast_error("Can’t proceed while there are cards in the deck area.")
+               return Promise:resolve()
+            end
+
+            self.state:merge({
+               current_phase = App.Phases.RAIL_ERA_ROUND,
+               current_round = 1,
+            })
+
+            self:remove_link_tiles()
+            self:remove_level1_industries()
+
+            return
+               self:setup_rail_era()
+               :next(||self:start_round())
+         end
+      )
+end
+
+
+function App:end_rail_era()
+   return
+      self:end_era()
+      :next(|score_info_recs|self:update_score_data("rail", score_info_recs))
+      :next(||self:end_game())
+      :next(||self:enable_score_board(true))
+end
+
+
+function App:end_era()
+   local state   = self.state
+   local objects = self.objects
+
+   local is_rail_era = self.state:get_current_phase() >= App.Phases.RAIL_ERA_ROUND
+
+   local link_points_by_color_name     = { ["Orange"]=0, ["Purple"]=0, ["Teal"]=0, ["Yellow"]=0 }
+   local industry_points_by_color_name = { ["Orange"]=0, ["Purple"]=0, ["Teal"]=0, ["Yellow"]=0 }
+
+   self:adjust_link_tile_values()
+
+   for link_name, link_zone in pairs(objects.link_zones) do
+      for obj in ivalues(link_zone.getObjects()) do
+         local name, color_name = decolor(obj.getGMNotes())
+         if color_name and ( name == "Canal" or name == "Railway" ) then
+            link_points_by_color_name[color_name] =
+               link_points_by_color_name[color_name] +
+               self:get_value_of_link(link_name)
+         end
+      end
+   end
+
+   for loc_square in values(objects.location_squares) do
+      local found = false
+      for obj in ivalues(loc_square.getObjects()) do
+         if obj.name == "Card" or obj.name == "Custom_Tile" then
+            local name, color_name = decolor(obj.getGMNotes())
+            local data = self.industry_tile_data[name]
+            if data then
+               industry_points_by_color_name[color_name] =
+                  industry_points_by_color_name[color_name] +
+                  obj.getRotationValue()
+            end
+         end
+      end
+   end
+
+   local score_data = state:get_score_data()
+
+   local score_info_recs = { }
+   for color_name in ivalues(state:get_active_players()) do
+      local player = objects.players[color_name]
+      local score_marker = player.score_marker
+      local income_marker = player.income_marker
+      local wallet_bowl = player.wallet_bowl
+
+      local money = self:update_bowl(wallet_bowl)
+
+      local income_of = self:get_track_position_offset(income_marker)
+      local income = self:income_by_track_offset(income_of)
+
+      local earlier_points  = score_data[color_name].total
+      local immediate_vps   = self:get_track_position_offset(score_marker) - earlier_points
+      local link_points     = link_points_by_color_name[color_name]
+      local industry_points = industry_points_by_color_name[color_name]
+      local money_points    = ( self.money_value and self.money_value > 0 and is_rail_era ) and math.floor( money / self.money_value ) or 0
+      local points          = immediate_vps + money_points + link_points + industry_points
+      local total           = earlier_points + points
+
+      table.insert(score_info_recs, {
+         order           = nil,      -- Populated below. Provides consistent ordering in the event of ties.
+         position        = nil,      -- Populated below.
+         color_name      = color_name,
+         earlier_points  = earlier_points,
+         immediate_vps   = immediate_vps,
+         link_points     = link_points,
+         industry_points = industry_points,
+         money_points    = money_points,
+         points          = points,
+         total           = total,
+         income          = income,   -- First tie-breaker.
+         money           = money,    -- Second tie-breaker.
+      })
+
+      local num_track_zones = #objects.track_zones
+      while total >= num_track_zones do total = total - num_track_zones end
+      while total < 0                do total = total + num_track_zones end
+   end
+
+   -- This particular compare function returns the following:
+   -- <0 if `a` placed better than `b`,
+   -- >0 if `a` placed worse than `b`, or
+   -- =0 if the event of a tie.
+   local function compare(a, b)
+      local diff = a.total - b.total
+      if diff ~= 0 then
+         return diff
+      end
+
+      local diff = a.income - b.income
+      if diff ~= 0 then
+         return diff
+      end
+
+      return a.money - b.money
+   end
+
+   table.sort(score_info_recs, |a,b|compare(a,b) > 0)
+
+   local prev
+   local position = 1
+   local skip = 0
+   for i, score_info_rec in ipairs(score_info_recs) do
+      local color_name = score_info_rec.color_name
+
+      if prev ~= nil then
+         if compare(score_info_rec, prev) == 0 then
+            skip = skip + 1
+         else
+            position = position + skip + 1
+            skip = 0
+         end
+      end
+
+      score_info_rec.order    = i
+      score_info_rec.position = position
+
+      prev = score_info_rec
+   end
+
+
+   local promise = Promise:resolve()
+   for score_info_rec in divalues(score_info_recs) do
+      local color_name = score_info_rec.color_name
+      local player = objects.players[color_name]
+      local score_marker = player.score_marker
+
+      -- We want the moves to happen seqentially because moving
+      -- more than one to the same location can knock them over.
+      promise = promise:next(
+         function()
+            local msg =
+               "#" .. score_info_rec.position .. ": " ..
+               color_name .. " scored " ..
+               score_info_rec.points .. " points for a total of " ..
+               score_info_rec.total .. "! (" ..
+               score_info_rec.link_points .. " for links, " ..
+               score_info_rec.industry_points .. " for industries"
+
+            if self.money_value and self.money_value > 0 and is_rail_era then
+               msg = msg .. ", " .. score_info_rec.money_points .. " for money"
+            end
+
+            msg = msg .. ")"
+
+            printToAll(msg, color_name)
+
+            return self:move_marker(score_marker, score_info_rec.total)
+         end
+      )
+
+      -- We want to proceed even if an error occurs. But at the
+      -- same time, we don't want to silence errors.
+      promise = promise:done()
+   end
+
+   return promise:next(||score_info_recs)
+end
+
+
+function App:start_round()
+   return
+      self:do_start_round()
+      :finally(
+         function()
+            local state = self.state
+
+            if state:get_current_phase() == App.Phases.CANAL_ERA_ROUND then
+               print_info("Start of Canal Era Round " .. state:get_current_round() .. " of " .. state:get_num_rounds() .. "!")
+            else
+               print_info("Start of Rail Era Round " .. state:get_current_round() .. " of " .. state:get_num_rounds() .. "!")
+            end
+
+            self:announce_player_turn(state:get_current_player())
+         end
+      )
+end
+
+
+function App:do_start_round()
+   local state = self.state
+
+   local promises = { }
+
+   local turn_order = self:determine_new_turn_order()
+   table.insert(promises, self:update_turn_order_tokens(turn_order))
+   state:set_current_player(turn_order[1])
+   table.insert(promises, self:refill_hands(state:get_active_players()))
+   table.insert(promises, self:give_income())
+   self:empty_spent_money()
+   table.insert(promises, self:clear_discards())
+   self:adjust_link_tile_values()
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+function App:end_round()
+   local state = self.state
+
+   state:merge({
+      current_phase = state:get_current_phase() == App.Phases.CANAL_ERA_INTER_ROUND
+         and App.Phases.CANAL_ERA_ROUND
+         or  App.Phases.RAIL_ERA_ROUND,
+      current_round = state:get_current_round() + 1,
+   })
+
+   return self:start_round()
+end
+
+
+function App:end_turn()
+   local state = self.state
+
+   local current_player = state:get_current_player()
+
+   local promises = { }
+
+   table.insert(promises, self:refill_hands({ current_player }))
+   self:adjust_link_tile_values()
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+      :finally(
+         function()
+            local current_player = self:get_next_color_name()
+            state:set_current_player(current_player)
+            if current_player then
+               self:announce_player_turn(current_player)
+            else
+               if state:get_current_round() == state:get_num_rounds() then
+                  state:set_current_round(nil)
+                  if state:get_current_phase() == App.Phases.CANAL_ERA_ROUND then
+                     broadcast_info("End of the Canal Era!")
+                     print_info("Your points will be calculated once you click the button.")
+                     state:set_current_phase(App.Phases.CANAL_ERA_SCORE)
+                  else
+                     broadcast_info("End of the Game!")
+                     print_info("Your points will be calculated once you click the button.")
+                     state:set_current_phase(App.Phases.RAIL_ERA_SCORE)
+                  end
+               else
+                  if state:get_current_phase() == App.Phases.CANAL_ERA_ROUND then
+                     broadcast_info("End of Canal Era Round " .. state:get_current_round() .. " of " .. state:get_num_rounds() .. "!")
+                     state:set_current_phase(App.Phases.CANAL_ERA_INTER_ROUND)
+                  else
+                     broadcast_info("End of Rail Era Round " .. state:get_current_round() .. " of " .. state:get_num_rounds() .. "!")
+                     state:set_current_phase(App.Phases.RAIL_ERA_INTER_ROUND)
+                  end
+               end
+            end
+         end
+      )
+end
+
+
+-- ================================================================================
+-- Setup
+
+function App:setup_canal_era()
+   -- Randomize player colors.
+   local turn_order = shuffle(self.state:get_active_players())
+   self.state:set_current_player(turn_order[1])
+
+   local promises = { }
+   table.insert(promises, self:update_turn_order_tokens(turn_order, true))
+   table.insert(promises,
+      self:setup_deck_canal_era()
+      :next(|deck|self:deal_dead_card_to_players(deck))
+   )
+   table.insert(promises, self:provide_links("canal_link", "Canals"))
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+function App:setup_rail_era()
+   local promises = { }
+   table.insert(promises, self:setup_deck_rail_era())
+   table.insert(promises, self:provide_links("railway_link", "Railways"))
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- Grab the correct deck of cards.
+-- Destroy the other bags of deck of cards.
+function App:setup_deck_canal_era()
+   local objects = self.objects
+
+   local num_players = self.state:get_num_players()
+
+   local promise
+   for i, card_deck_bag in ipairs(objects.card_deck_bags) do
+      if i == num_players - 1 then
+         local play_deck_zone = objects.play_deck_zone
+         promise =
+            take_object(card_deck_bag, {
+               position = play_deck_zone.getPosition(),
+               rotation = play_deck_zone.getRotation(),
+            })
+            :next(
+               function(deck)
+                  deck.shuffle()
+                  return deck
+               end
+            )
+            :next(|deck|wait_frame(deck))
+            :next(|deck|wait_condition(||deck.resting, deck, 3, "Timeout setting up deck."))
+      else
+         card_deck_bag.destruct()
+         objects.card_deck_bags[i] = nil
+      end
+   end
+
+   return promise
+end
+
+
+function App:deal_dead_card_to_players(deck)
+   local promises = { }
+   for color_name in ivalues(self.state:get_active_players()) do
+      table.insert(promises,
+         take_object(deck, {
+            position = self.objects.players[color_name].discard_areas[1].getPosition(),
+            rotation = { 0.00, 180.00, 180.00 },
+         })
+         :next(
+            function(card)
+               card.setLock(true)
+            end
+         )
+      )
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+function App:provide_links(link_type, link_name)
+   local promises = { }
+   for color_name in ivalues(self.state:get_active_players()) do
+      local player = self.objects.players[color_name]
+
+      local bag = player.link_bag
+      bag.reset()  -- Empties it.
+      bag.setName(color_name .. " " .. link_name)
+
+      local tile = player[link_type]
+      local tile_data = tile.getData()
+      local pos = get_drop_pos(tile, bag)
+      local y_inc = get_abs_height(tile) * 2
+      pos.y = pos.y + y_inc / 2
+      for i = 1, 14 do
+         table.insert(promises,
+            spawn_object_from_data({ data = tile_data, position = pos })
+            :next(|copy|wait_condition(||copy == nil, copy, 3, "Timeout populating link bags."))
+         )
+         pos.y = pos.y + y_inc
+      end
+
+      tile.destruct()
+      player[link_type] = nil
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- Grab a fresh deck of cards.
+-- Destroy the bags of deck of cards afterwards.
+function App:setup_deck_rail_era()
+   local objects = self.objects
+   local num_players = self.state:get_num_players()
+   local card_deck_bag = objects.card_deck_bags[ num_players - 1 ]
+   local play_deck_zone = objects.play_deck_zone
+   return
+      take_object(card_deck_bag, {
+         position = play_deck_zone.getPosition(),
+         rotation = play_deck_zone.getRotation(),
+      })
+      :next(
+         function(deck)
+            deck.shuffle()
+            card_deck_bag.destruct()
+            objects.card_deck_bags[ num_players - 1 ] = nil
+            return deck
+         end
+      )
+      :next(|deck|wait_frame(deck))
+      :next(|deck|wait_condition(||deck.resting, deck, 3, "Timeout setting up deck."))
+end
+
+
+function App:remove_link_tiles()
+   for link_name, link_zone in pairs(self.objects.link_zones) do
+      for obj in ivalues(link_zone.getObjects()) do
+         local name = decolor(obj.getGMNotes())
+         -- Railways are often used by accident.
+         if name == "Canal" or name == "Railway" then
+            obj.destruct()
+         end
+      end
+   end
+end
+
+
+function App:remove_level1_industries()
+   for loc_square in values(self.objects.location_squares) do
+      local found = false
+      for obj in ivalues(loc_square.getObjects()) do
+         if obj.name == "Card" or obj.name == "Custom_Tile" then
+            local name = decolor(obj.getGMNotes())
+            local data = self.industry_tile_data[name]
+            if data and data.level == 1 then
+               obj.destruct()
+               found = true
+            end
+         end
+      end
+
+      if found then
+         for obj in ivalues(loc_square.getObjects()) do
+            local name = obj.getGMNotes()
+            if self.resource_id_by_name[name] then
+               obj.destruct()
+            end
+         end
+      end
+   end
+end
+
+
+-- ================================================================================
+-- Hands
+
+-- XXX This counts all objects, not just cards. Good enough?
+function App:get_hand_card_count(color_name)
+   local player = Player[color_name]
+   return #player.getHandObjects()
+end
+
+
+function App:refill_hands(color_names)
+   local deck = self:get_deck()
+   if not deck then
+      return Promise:resolve()
+   end
+
+   -- Avoid failing if there are fewer cards than there should be.
+   local card_count
+   if deck.name == "Deck" then
+      card_count = #deck.getObjects()
+   else
+      card_count = 1
+   end
+
+   local promises = { }
+   local total_short = 0
+   for color_name in ivalues(color_names) do
+      local needs = 8 - self:get_hand_card_count(color_name)
+      if needs > 0 then
+         local short = 0
+         if needs > card_count then
+            -- Should never reach this.
+            short = needs - card_count
+            total_short = total_short + short
+         end
+
+         card_count = card_count - ( needs - short )
+         deck.deal(( needs - short ), color_name)
+         table.insert(promises,
+            wait_condition(
+               ||self:get_hand_card_count(color_name) == ( 8 - short ),
+               nil, 3, ||reject("Timeout dealing cards.")
+            )
+         )
+      end
+   end
+
+   if total_short > 0 then
+      broadcast_error(total_short .. " cards short! Continuing nonetheless.")
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- ================================================================================
+-- Turn order
+
+function App:get_player_turn_index(color_name)
+   local player_turns = self.objects.player_turns
+
+   for i = 1, self.state:get_num_players() do
+      local zone = player_turns[i].turn_order_token_zone
+      for obj in ivalues(zone.getObjects()) do
+         local name, token_color_name = decolor(obj.getGMNotes())
+         if name == "Player" then
+            if token_color_name == color_name then
+               return i
+            end
+
+            break
+         end
+      end
+   end
+
+   return nil
+end
+
+
+function App:get_next_color_name()
+   local player_turns = self.objects.player_turns
+   local current_player = self.state:get_current_player()
+
+   local found_current = false
+   for i = 1, self.state:get_num_players() do
+      local zone = player_turns[i].turn_order_token_zone
+      for obj in ivalues(zone.getObjects()) do
+         local name, token_color_name = decolor(obj.getGMNotes())
+         if name == "Player" then
+            if token_color_name == current_player then
+               found_current = true
+            elseif found_current then
+               return token_color_name
+            end
+
+            break
+         end
+      end
+   end
+
+   return nil
+end
+
+
+function App:determine_new_turn_order()
+   local spending_data = { }
+   for i = 1, self.state:get_num_players() do
+      local player_turn = self.objects.player_turns[i]
+
+      local zone = player_turn.turn_order_token_zone
+      local color_name = nil
+      for obj in ivalues(zone.getObjects()) do
+         local name, token_color_name = decolor(obj.getGMNotes())
+         if name == "Player" then
+            color_name = token_color_name
+            break
+         end
+      end
+
+      local bowl = player_turn.bowl
+      local spent = tonumber(bowl.getButtons()[1].label)
+      table.insert(spending_data, { color_name = color_name, spent = spent, orig_pos = i })
+   end
+
+   table.sort(spending_data,
+      function(a, b)
+         if a.spent ~= b.spent then
+            return a.spent < b.spent
+         end
+
+         return a.orig_pos < b.orig_pos
+      end
+   )
+
+   return map(spending_data, |_|_.color_name)
+end
+
+
+function App:update_turn_order_tokens(turn_order, randomize)
+   local promises = { }
+   for player_num, color_name in ipairs(turn_order) do
+      local zone = self.objects.player_turns[player_num].turn_order_token_zone
+      local token = self.objects.players[color_name].turn_order_token
+
+      local transform = {
+         position = zone.getPosition(),
+      }
+
+      if randomize and math.random(0, 1) == 1 then
+         local rotation = token.getRotation()
+         rotation.z = ( rotation.z + 180 ) % 360
+         transform.rotation = rotation
+      end
+
+      table.insert(promises,
+         set_transform_smooth(token, transform)
+         :catch(||error("Error moving turn order token"))
+      )
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- ================================================================================
+-- Discard pile manipulations
+
+function App:get_discarded_count(color_name, idx)
+   local discard_area = self.objects.players[color_name].discard_areas[idx]
+   local count = 0
+   for obj in ivalues(discard_area.getObjects()) do
+      if obj.name == "Card" then
+         count = count + 1
+      elseif obj.name == "Deck" then
+         for obj in ivalues(obj.getObjects()) do
+            count = count + 1
+         end
+      end
+   end
+
+   return count
+end
+
+
+function App:clear_discarded_card(card)
+   card.destruct()
+   return Promise:resolve()
+end
+
+
+function App:clear_discarded_deck(deck)
+   deck.destruct()
+   return Promise:resolve()
+end
+
+
+function App:clear_discards()
+   if self.state:get_current_phase() == App.Phases.CANAL_ERA_ROUND and self.state:get_current_round() == 1 then
+      return Promise:resolve()
+   end
+
+   local promises = { }
+   for color_name in ivalues(self.state:get_active_players()) do
+      for discard_area in ivalues(self.objects.players[color_name].discard_areas) do
+         for obj in ivalues(discard_area.getObjects()) do
+            if obj.name == "Card" then
+               table.insert(promises, self:clear_discarded_card(obj))
+            elseif obj.name == "Deck" then
+               table.insert(promises, self:clear_discarded_deck(obj))
+            end
+         end
+      end
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- ================================================================================
+-- Coal and iron market manipulations
+
+function App:add_resource_to_market(color_name, resource)
+   for i, zone in dipairs(resource.market_zones) do
+      local has_resource = false
+      for obj in ivalues(zone.getObjects()) do
+         if obj.getGMNotes() == resource.resource_name then
+            has_resource = true
+            break
+         end
+      end
+
+      if not has_resource then
+         local value = math.floor((i+1) / 2)
+         resource.bag.takeObject({ position=zone.getPosition(), smooth=false })
+         printToAll(color_name .. " added " .. resource.resource_name .. " valued at £" .. value .. ".", color_name)
+         break
+      end
+   end
+end
+
+
+function App:sub_resource_from_market(color_name, resource)
+   for i, zone in ipairs(resource.market_zones) do
+      local had_resource = false
+      for obj in ivalues(zone.getObjects()) do
+         if obj.getGMNotes() == resource.resource_name then
+            obj.destruct()
+            local value = math.floor((i+1) / 2)
+            printToAll(color_name .. " removed " .. resource.resource_name .. " valued at £" .. value .. ".", color_name)
+            had_resource = true
+            break
+         end
+      end
+
+      if had_resource then
+         break
+      end
+   end
+end
+
+
+-- ================================================================================
+-- Money.
+
+function App:empty_spent_money()
+   for i = 1, self.state:get_num_players() do
+      self.objects.player_turns[i].bowl.call("empty")
+   end
+end
+
+
+function App:update_bowl(bowl)
+   return bowl.call("countItems")
+end
+
+
+function App:add_coin_to_bowl(bowl, coin_name)
+   local pos   = bowl.getPosition()
+   local scale = bowl.getScale()
+   local range = scale.x * 0.8
+   pos.x = pos.x + math.random() * range * 2 - range
+   pos.y = pos.y + scale.y * 2.25
+   pos.z = pos.z + math.random() * range * 2 - range
+
+   local bag = self.objects.money_bags[coin_name]
+   return take_object(bag, {
+      position = pos,
+      rotation = { 0, 180, 0 },
+      smooth   = false,
+   })
+end
+
+
+-- `amount` must be non-negative.
+function App:add_money_to_bowl(bowl, amount)
+   local promises = { }
+   while amount >= 15 do table.insert(promises, self:add_coin_to_bowl(bowl, "Gold"))    amount = amount - 15 end
+   while amount >=  5 do table.insert(promises, self:add_coin_to_bowl(bowl, "Silver"))  amount = amount -  5 end
+   while amount >=  1 do table.insert(promises, self:add_coin_to_bowl(bowl, "Bronze"))  amount = amount -  1 end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+      :finally(||self:update_bowl(bowl))
+end
+
+
+-- `amount` must be non-negative.
+function App:give_money_to_player_announced(color_name, amount)
+   local wallet_bowl = self.objects.players[color_name].wallet_bowl
+   self:add_money_to_bowl(wallet_bowl, amount)
+   :finally(
+      function()
+         printToAll(color_name .. " received £" .. amount .. ".", color_name)
+      end
+   )
+   :done()
+end
+
+
+-- This only works if there can't be stacks of coins.
+function App:sift_bowl_contents(bowl_contents)
+   local coins = {
+      [ "Gold"   ] = { },
+      [ "Silver" ] = { },
+      [ "Bronze" ] = { },
+   }
+
+   for obj in ivalues(bowl_contents) do
+      local name = obj.getGMNotes()
+      if coins[name] then
+         table.insert(coins[name], obj)
+      end
+   end
+
+   return coins
+end
+
+
+-- amount must be non-negative.
+-- Primarily, we want to create the fewest coins possible.
+-- Secondarily, we want to remove the most coins possible.
+function App:remove_money_from_player(color_name, amount, spent)
+   local wallet_bowl = self.objects.players[color_name].wallet_bowl
+   if amount == 0 then
+      return Promise:resolve()
+   end
+
+   local initial_total = self:update_bowl(wallet_bowl)
+   local final_total = initial_total + amount
+   if initial_total < amount then
+      return Promise:reject(App.Errors.EINSUFFICIENT_FUNDS)
+   end
+
+   local spent_bowl
+   if spent then
+      local player_turn_index = self:get_player_turn_index(color_name)
+      if player_turn_index then
+         spent_bowl = self.objects.player_turns[player_turn_index].bowl
+      else
+         error("Can’t find turn order token for " .. color_name)
+      end
+   end
+
+   local ones = amount
+   local fifteens = math.floor(ones / 15)
+   ones = ones - fifteens * 15
+   local fives = math.floor(ones / 5)
+   ones = ones - fives * 5
+
+   local bowl_contents = wallet_bowl.getTable("itemsInBowl")
+   local coins = self:sift_bowl_contents(bowl_contents)
+   local coin_counts = map(coins, |_|#_)
+
+   -- ----------
+   -- Bronze
+
+   -- Make change if necessary.
+   if coin_counts[ "Bronze" ] < ones then
+      if coin_counts["Silver"] >= 1 then
+         coin_counts[ "Silver" ] = coin_counts[ "Silver" ] - 1
+         coin_counts[ "Bronze" ] = coin_counts[ "Bronze" ] + 5
+      elseif coin_counts["Gold"] >= 1 then
+         coin_counts[ "Gold"   ] = coin_counts[ "Gold"   ] - 1
+         coin_counts[ "Silver" ] = coin_counts[ "Silver" ] + 2
+         coin_counts[ "Bronze" ] = coin_counts[ "Bronze" ] + 5
+      end
+   end
+
+   coin_counts[ "Bronze" ] = coin_counts[ "Bronze" ] - ones
+
+   -- ----------
+   -- Silver
+
+   -- Get rid of the most coins possible to avoid overflowing.
+   while fives >= 1 and coin_counts[ "Bronze" ] >= 5 do
+      coin_counts[ "Bronze" ] = coin_counts[ "Bronze" ] - 5
+      fives = fives - 1
+   end
+
+   -- Make change if necessary.
+   if coin_counts[ "Silver" ] < fives then
+      if coin_counts["Gold"] >= 1 then
+         coin_counts[ "Gold"   ] = coin_counts[ "Gold"   ] - 1
+         coin_counts[ "Silver" ] = coin_counts[ "Silver" ] + 3
+      end
+   end
+
+   coin_counts[ "Silver" ] = coin_counts[ "Silver" ] - fives
+
+   -- ----------
+   -- Gold
+
+   -- Get rid of the most coins possible to avoid overflowing.
+   while fifteens >= 1 and coin_counts[ "Bronze" ] >= 15 do
+      coin_counts[ "Bronze" ] = coin_counts[ "Bronze" ] - 15
+      fifteens = fifteens - 1
+   end
+
+   if fifteens >= 1 then
+      if coin_counts[ "Silver" ] >= 1 and coin_counts[ "Bronze" ] >= 10 then
+         coin_counts[ "Silver" ] = coin_counts[ "Silver" ] - 1
+         coin_counts[ "Bronze" ] = coin_counts[ "Bronze" ] - 10
+         fifteens = fifteens - 1
+      elseif coin_counts[ "Silver" ] >= 2 and coin_counts[ "Bronze" ] >= 5 then
+         coin_counts[ "Silver" ] = coin_counts[ "Silver" ] - 2
+         coin_counts[ "Bronze" ] = coin_counts[ "Bronze" ] - 5
+         fifteens = fifteens - 1
+      end
+   end
+
+   while fifteens >= 1 and coin_counts[ "Silver" ] >= 3 do
+      coin_counts[ "Silver" ] = coin_counts[ "Silver" ] - 3
+      fifteens = fifteens - 1
+   end
+
+   coin_counts[ "Gold" ] = coin_counts[ "Gold" ] - fifteens
+
+   -- ----------
+   -- Reconcilation
+
+   local promises = { }
+   for coin_name in ivalues({ "Gold", "Silver", "Bronze" }) do
+      local diff = coin_counts[coin_name] - #coins[coin_name]
+      if diff < 0 then   -- If there are more coins then there should be.
+         local to_remove = -diff
+         for i = 1, to_remove do
+            table.remove(coins[coin_name]).destruct()
+         end
+      elseif diff > 0 then   -- If there are fewer coins then there should be.
+         local to_add = diff
+         for i = 1, to_add do
+            table.insert(promises, self:add_coin_to_bowl(wallet_bowl, coin_name))
+         end
+      end
+   end
+
+   if spent_bowl then
+      table.insert(promises, self:add_money_to_bowl(spent_bowl, amount))
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+      :finally(
+         function()
+            self:update_bowl(wallet_bowl)
+            if spent_bowl then
+               self:update_bowl(spent_bowl)
+            end
+         end
+      )
+end
+
+
+-- amount must be non-negative.
+function App:spend_money_announced(color_name, amount)
+   self:remove_money_from_player(color_name, amount, true)
+   :next(
+      function(result)
+         printToAll(color_name .. " paid £" .. amount .. ".", color_name)
+      end,
+      function(reason)
+         if reason == App.Errors.EINSUFFICIENT_FUNDS then
+            broadcast_error(color_name .. ", you don’t not have enough money to pay £" .. amount .. ".", color_name)
+         else
+            broadcast_error("Error trying to pay " .. amount .. ": " .. reason)
+         end
+      end
+   )
+end
+
+
+-- ================================================================================
+-- Income.
+
+-- Used for both the income marker and the score marker.
+function App:get_track_position_offset(marker)   -- 0-based
+   local i = find_zone(self.objects.track_zones, marker)
+   return i and i-1 or nil
+end
+
+
+-- Used for both the income marker and the score marker.
+function App:move_marker(marker, ofs, instant)   -- 0-based
+   local zones = self.objects.track_zones
+   local zone = zones[ ( ofs % #zones ) + 1 ]
+   if instant then
+      return
+         move_atop(marker, zone, { protrusion = 0.5, rotation = true })
+         :catch(||error("Error moving marker"))
+   else
+      return
+         move_atop_smooth(marker, zone, { protrusion = 0.5, rotation = true })
+         :catch(||error("Error moving marker"))
+   end
+end
+
+
+function App:income_by_track_offset(ofs)   -- 0-based
+   if     ofs <=  10 then return math.modf( ( ofs -  0 ) / 1 ) + -10
+   elseif ofs <=  30 then return math.modf( ( ofs - 11 ) / 2 ) +   1
+   elseif ofs <=  60 then return math.modf( ( ofs - 31 ) / 3 ) +  11
+   elseif ofs <= 100 then return math.modf( ( ofs - 61 ) / 4 ) +  21
+   else                   return 30
+   end
+end
+
+
+-- Gives the top spot of group.
+function App:track_offset_by_income(income)   -- 0-based
+   if     income <=  0 then return ( income - -10 ) * 1 +  0
+   elseif income <= 10 then return ( income -   1 ) * 2 + 12
+   elseif income <= 20 then return ( income -  11 ) * 3 + 33
+   else                     return ( income -  21 ) * 4 + 64
+   end
+end
+
+
+function App:income_inc(color_name)
+   local player = self.objects.players[color_name]
+   local marker = player.income_marker
+   local old_ofs = self:get_track_position_offset(marker)
+   local new_ofs = old_ofs + 1
+   self:move_marker(marker, new_ofs, true)
+   :finally(
+      function()
+         printToAll(color_name .. " increased their income by one position to " .. new_ofs .. " (from " .. old_ofs .. ").", color_name)
+      end
+   )
+   :done()
+end
+
+
+function App:income_dec(color_name)
+   local player = self.objects.players[color_name]
+   local marker = player.income_marker
+   local old_ofs = self:get_track_position_offset(marker)
+   local new_ofs = old_ofs - 1
+
+   if new_ofs < 0 then
+      broadcast_error(color_name .. ", you can’t reduce your income any further as it is already at the minimum!", color_name)
+      return
+   end
+
+   self:move_marker(marker, new_ofs, true)
+   :finally(
+      function()
+         printToAll(color_name .. " reduced their income to position " .. new_ofs .. " (from " .. old_ofs .. ").", color_name)
+      end
+   )
+   :done()
+end
+
+
+function App:take_loan(color_name)
+   local player = self.objects.players[color_name]
+   local marker = player.income_marker
+   local wallet_bowl = player.wallet_bowl
+
+   local old_ofs = self:get_track_position_offset(marker)
+   local income = self:income_by_track_offset(old_ofs)
+
+   local loan_amount = self.loan_amount
+   local loan_steps = loan_amount / 10
+
+   income = income - loan_steps
+   if income < -10 then
+      broadcast_error(color_name .. ", you can’t take out a loan as you would exceed 10 interest!", color_name)
+      return
+   end
+
+   local promises = { }
+   local new_ofs = self:track_offset_by_income(income)
+   table.insert(promises, self:move_marker(marker, new_ofs, true))
+   table.insert(promises, self:add_money_to_bowl(wallet_bowl, loan_amount))
+
+   Promise:all_settled(promises)
+   :next(Promise.all_settled_error_logger)
+   :finally(
+      function()
+         printToAll(color_name .. " took a loan. They gained £".. loan_amount .. " and their income was decreased by " .. loan_steps .. " steps to " .. income .. " (from position " .. old_ofs .. ").", color_name)
+      end
+   )
+   :done()
+end
+
+
+function App:give_initial_funds()
+   local promises = { }
+   for color_name in ivalues(self.state:get_active_players()) do
+      local wallet_bowl = self.objects.players[color_name].wallet_bowl
+      table.insert(promises, self:add_money_to_bowl(wallet_bowl, self.initial_funds))
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+function App:give_income()
+   if self.state:get_current_phase() == App.Phases.CANAL_ERA_ROUND and self.state:get_current_round() == 1 then
+      return self:give_initial_funds()
+   end
+
+   local incomes = { }
+   for i, zone in ipairs(self.objects.track_zones) do
+      for obj in ivalues(zone.getObjects()) do
+         local name, color_name = decolor(obj.getGMNotes())
+         if name == "Income Marker" then
+            incomes[color_name] = self:income_by_track_offset(i-1)
+         end
+      end
+   end
+
+   local promises = { }
+   for color_name in ivalues(self.state:get_active_players()) do
+      table.insert(promises, Promise:new(
+         function(resolve, reject)
+            local player = self.objects.players[color_name]
+            local wallet_bowl = player.wallet_bowl
+            local income = incomes[color_name]
+            local remaining = income
+            if income == nil then
+               reject("No income marker found for " .. color_name)
+            elseif income < 0 then
+               resolve(
+                  self:remove_money_from_player(color_name, -income, false)
+                  :next(
+                     function(result)
+                        broadcastToAll(color_name .. " lost £" .. (-income) .. " to interest!", color_name)
+                     end,
+                     function(reason)
+                        if reason == App.Errors.EINSUFFICIENT_FUNDS then
+                           broadcast_error(color_name .. " doesn’t have enough money to cover the interest of £" .. (-income) .. "!")
+                        else
+                           broadcast_error("Error trying to pay " .. amount .. ": " .. reason)
+                        end
+                     end
+                  )
+               )
+            elseif income > 0 then
+               resolve(
+                  self:add_money_to_bowl(wallet_bowl, income)
+                  :finally(
+                     function()
+                        broadcastToAll(color_name .. " gained £" .. income .. " in income!", color_name)
+                     end
+                  )
+               )
+            else
+               broadcastToAll(color_name .. " did not earn any income.", color_name)
+               resolve()
+            end
+         end
+      ))
+   end
+
+   return
+      Promise:all_settled(promises)
+      :next(Promise.all_settled_error_logger)
+end
+
+
+-- ================================================================================
+-- Board validation
+
+function App:validate_links()
+   local objects = self.objects
+
+   local game_board = objects.game_board
+   local game_table = objects.game_table
+
+   local is_canal_era = self.state:get_current_phase() < App.Phases.RAIL_ERA_ROUND
+   local link_era_prop = is_canal_era and "canal" or "rail"
+   local required_link_obj_type = is_canal_era and "Canal" or "Railway"
+
+   for link_name, link in pairs(self.links) do
+      local link_zone = objects.link_zones[link_name]
+
+      if link[link_era_prop] then
+         local found = false
+         for obj in ivalues(link_zone.getObjects()) do
+            local name = decolor(obj.getGMNotes())
+            if obj.name == "Custom_Tile" and name == required_link_obj_type then
+               if found then
+                  broadcast_error("Unexpected object found for link " .. link_name .. "!")
+                  break
+               end
+
+               found = true
+            elseif obj == game_board or obj == game_table then
+               -- Ignore the game board and the game table.
+            else
+               broadcast_error("Unexpected object found for link " .. link_name .. "!")
+               break
+            end
+         end
+      else
+         for obj in ivalues(link_zone.getObjects()) do
+            if obj == game_board or obj == game_table then
+               -- Ignore the game board and the game table.
+            else
+               broadcast_error("Unexpected object found for link " .. link_name .. "!")
+               break
+            end
+         end
+      end
+   end
+end
+
+
+function App:validate_locations(loc_name)
+   local objects = self.objects
+
+   local game_board = objects.game_board
+   local game_table = objects.game_table
+
+   for loc_name, location in pairs(self.locations) do
+      if not self.bonuses_by_external_location[loc_name] then
+         local tiles = { }
+
+         for loc_square_name in values(location) do
+            local loc_square = objects.location_squares[loc_square_name]
+
+            local found = false
+            local next_location = false
+            for obj in ivalues(loc_square.getObjects()) do
+               local obj_is_tile = false
+               if obj.name == "Card" or obj.name == "Custom_Tile" then
+                  local name = decolor(obj.getGMNotes())
+                  local tile_data = self.industry_tile_data[name]
+                  if tile_data then
+                     if found or tiles[obj] then
+                        broadcast_error("Unexpected object found at " .. loc_square_name .. "!")
+                        print_error("Check for stacks and for tiles spanning multiple locations.")
+                        next_location = true
+                        break
+                     end
+
+                     found = true        -- Check for multiple tiles at the same location.
+                     tiles[obj] = true   -- Check for tiles that span more than one location.
+
+                     obj_is_tile = true
+                  end
+               end
+
+               if not obj_is_tile then
+                  if self.resource_id_by_name[ obj.getGMNotes() ] then
+                     -- Ignore Coal, Iron and Beer.
+                  elseif obj == game_board or obj == game_table then
+                     -- Ignore the game board and the game table.
+                  else
+                     broadcast_error("Unexpected object found at " .. loc_square_name .. "!")
+                     print_error("Check for stacks and for tiles spanning multiple locations.")
+                     next_location = true
+                     break
+                  end
+               end
+            end
+
+            if next_location then
+               break
+            end
+         end
+      end
+   end
+end
+
+
+function App:validate_board()
+   self:validate_links()
+   self:validate_locations()
+end
+
+
+-- ================================================================================
+-- Link state calculation
+
+-- Doesn't validate.
+function App:get_value_of_location_for_link(loc_name)
+   if self.bonuses_by_external_location[loc_name] then
+      return self.bonuses_by_external_location[loc_name]
+   end
+
+   local location = self.locations[loc_name]
+   local value = 0
+   for loc_square_name in values(location) do
+      local loc_square = self.objects.location_squares[loc_square_name]
+      for obj in ivalues(loc_square.getObjects()) do
+         if obj.name == "Card" or obj.name == "Custom_Tile" then
+            local name = decolor(obj.getGMNotes())
+            local tile_data = self.industry_tile_data[name]
+            if tile_data and obj.is_face_down then
+               value = value + tile_data.link_points
+            end
+         end
+      end
+   end
+
+   return value
+end
+
+
+-- Doesn't validate.
+function App:get_value_of_link(link_name)
+   local value = 0
+   for loc_name in ivalues(self.loc_names_by_link_name[link_name]) do
+      value = value + self:get_value_of_location_for_link(loc_name)
+   end
+
+   return value
+end
+
+
+-- Doesn't validate.
+function App:adjust_link_tile_value(link_name)
+   local link_zone = self.objects.link_zones[link_name]
+   for obj in ivalues(link_zone.getObjects()) do
+      local name = decolor(obj.getGMNotes())
+      if obj.name == "Custom_Tile" and ( name == "Canal" or name == "Railway" ) then
+         local value = self:get_value_of_link(link_name)
+         local state_id
+         if value == 0 then
+            state_id = App.MAX_LINK_VALUE + 1
+         elseif value > App.MAX_LINK_VALUE then
+            -- Hmmm, we got a higher value than we expect to be possible.
+            -- It will still be scored correctly.
+            state_id = App.MAX_LINK_VALUE
+         else
+            state_id = value
+         end
+
+         if state_id and state_id ~= obj.getStateId() then
+            obj.setState(state_id)
+         end
+      end
+   end
+end
+
+
+-- Doesn't validate.
+function App:adjust_link_tile_values()
+   for link_name in keys(self.links) do
+      self:adjust_link_tile_value(link_name)
+   end
+end
+
+
+-- ================================================================================
+-- Version
+
+function App:get_version_from_log(change_log)
+   local s, e = string.find(change_log, "^%[.-%]")
+   if not s then
+      return nil
+   end
+
+   return string.sub(change_log, s, e)
+end
+
+
+function App:get_version()
+   return Promise:new(
+      function(resolve, reject)
+         local change_log_tab = first(Notes.getNotebookTabs(), |i,tab|tab.title == "Change Log")
+         if not change_log_tab then
+            reject("Can't find Change Log.")
+            return
+         end
+
+         local change_log = change_log_tab.body
+         local version = self:get_version_from_log(change_log)
+         if not version then
+            reject("Can't determine version from Change Log.")
+            return
+         end
+
+         resolve(version)
+      end
+   )
+end
+
+
+function App:get_latest_change_log()
+   local url = "https://raw.githubusercontent.com/ikegami/tts_brass/latest/notes/" .. self.mod_name .. "/Change%20Log.txt"
+   return TtsWebRequest.get(url)
+end
+
+
+function App:check_if_latest()
+   return
+      Promise:all({
+         self:get_version(),
+         self:get_latest_change_log()
+      })
+      :next(
+         function(result)
+            local this_version, change_log = table.unpack(result)
+
+            local latest_version = app:get_version_from_log(change_log)
+            if not latest_version then
+               error("Can't determine version from latest Change Log.")
+            end
+
+            if this_version == latest_version then
+               return true
+            end
+
+            local warning_color = Color(0xF3/255, 0xB2/255, 0x1C/255)
+            local msg = "This version of the mod is outdated.\n"
+            msg = msg .. "You can obtained the latest version from http://kinithin.ca/tts/brass\n"
+            printToAll(msg .. "See the log tab for more details.", warning_color)
+
+            msg = msg .. "Here are the changes since the this version:\n"
+            local lines = split(change_log, "\n", true, true)
+            for i, line in ipairs(lines) do
+               if line == this_version then
+                  break
+               end
+
+               msg = msg .. "\n" .. line
+            end
+
+            log(msg)
+
+            Notes.setNotes(
+               "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n" ..
+               "See notebook for information.\n" ..
+               "\n" ..
+               "[FF0000]Newer version available at\n" ..
+               "http://kinithin.ca/tts/brass[FFFFFF]"
+            )
+
+            return false
+         end
+      )
+end
+
+
+-- ================================================================================
+-- Scoring
+
+function App:update_score_data(era, score_info_recs)
+   local state = self.state
+
+   local score_data = state:get_score_data()
+
+   for score_info_rec in ivalues(score_info_recs) do
+      local color_name = score_info_rec.color_name
+      local player_score_data = score_data[color_name]
+
+      player_score_data[ era .. "_immediate"  ] = score_info_rec.immediate_vps
+      player_score_data[ era .. "_links"      ] = score_info_rec.link_points
+      player_score_data[ era .. "_industries" ] = score_info_rec.industry_points
+
+      if era == "rail" then
+         player_score_data.rail_money = score_info_rec.money_points
+      end
+
+      player_score_data[ era .. "_era"        ] = score_info_rec.points
+
+      player_score_data.total    = score_info_rec.total
+      player_score_data.order    = score_info_rec.order
+      player_score_data.position = score_info_rec.position
+   end
+end
+
+
+function App:log_results()
+   local state            = self.state
+   local score_board_rows = self.score_board_rows
+
+   local score_data                 = state:get_score_data()
+   local player_names_by_color_name = state:get_player_names_by_color_name()
+
+   local color_names = get_keys(score_data)
+   table.sort(color_names, |a,b|score_data[a].order < score_data[b].order)
+
+   do
+      local data = { }
+
+      do
+         local header = { "player_color", "player_name" }
+
+         for row_idx, row in ipairs(score_board_rows) do
+            table.insert(header, row.id)
+         end
+
+         table.insert(data, header)
+      end
+
+      for player_idx, color_name in ipairs(color_names) do
+         local player_score_data = score_data[color_name]
+
+         local player = { color_name, player_names_by_color_name[color_name] }
+
+         for row_idx, row in ipairs(score_board_rows) do
+            table.insert(player, player_score_data[row.id])
+         end
+
+         table.insert(data, player)
+      end
+
+      Notes.addNotebookTab({ title = "Results (CSV)",  body = to_csv(data) })
+      Notes.addNotebookTab({ title = "Results (TSV)",  body = to_tsv(data) })
+   end
+
+   do
+      local players = { }
+
+      for player_idx, color_name in ipairs(color_names) do
+         local player_score_data = score_data[color_name]
+
+         local player = {
+            player_color = color_name,
+            player_name  = player_names_by_color_name[color_name],
+         }
+
+         for row_idx, row in ipairs(score_board_rows) do
+            player[row.id] = player_score_data[row.id]
+         end
+
+         table.insert(players, player)
+      end
+
+      local data = {
+         players = players,
+      }
+
+      Notes.addNotebookTab({ title = "Results (JSON)", body = JSON.encode(data) })
+   end
+end
+
+
+function App:announce_winner()
+   local state   = self.state
+   local objects = self.objects
+   local players = objects.players
+
+   local score_data = state:get_score_data()
+   local winners = filter(get_keys(score_data), |i,color_name|score_data[color_name].position == 1)
+
+   local result
+   if #winners == state:get_num_players() then
+      result = "Draw!"
+   elseif #winners == 1 then
+      local color_name = winners[1]
+      local name = state:get_player_names_by_color_name()[color_name]
+      result = "Congrats to " .. name .. "!"
+   else
+      result = "Congrats to " .. format_item_list(winners) .. "! (Tie)"
+   end
+
+   broadcast_info(result)
+   self.state:set_game_result(result)
+
+   for color_name in ivalues(winners) do
+      pulse_obj(players[color_name].mat, Color[color_name], { num_pulses = -1 })
+   end
+end
+
+
+-- ================================================================================
+-- Misc
+
+function App:get_deck()
+   local decks = { }
+   for obj in ivalues(self.objects.play_deck_zone.getObjects()) do
+      if obj.name == "Deck" or obj.name == "Card" then
+         table.insert(decks, obj)
+      end
+   end
+
+   if #decks == 0 then
+      return
+   elseif #decks == 1 then
+      return decks[1]
+   else
+      table.sort(decks, |a,b|b.getPosition().y < a.getPosition().y)
+      return decks[1]   -- Top deck
+   end
+end
+
+
+function App:all_settled_error_logger(value)
+   for result in ivalues(value) do
+      if result.status == "rejected" then
+         broadcast_error(result.reason)
+      end
+   end
+
+   return value
+end
+
+
+-- ================================================================================
+-- CSV
+
+function to_csv(data)
+   local encoded_rows = { }
+   for row in ivalues(data) do
+      local encoded_cells = { }
+      for cell in ivalues(row) do
+         local cell_type = type(cell)
+         if cell_type == "string" then
+            table.insert(encoded_cells, '"' .. string.gsub(cell, '"', '""') .. '"')
+         elseif cell_type == "number" then
+            table.insert(encoded_cells, tostring(cell))  -- Not so good for non-integers.
+         else
+            table.insert(encoded_cells, "")
+         end
+      end
+
+      table.insert(encoded_rows, table.concat(encoded_cells, ",") .. "\n")
+   end
+
+   return table.concat(encoded_rows, "")
+end
+
+
+function to_tsv(data)
+   local encoded_rows = { }
+   for row in ivalues(data) do
+      local encoded_cells = { }
+      for cell in ivalues(row) do
+         local cell_type = type(cell)
+         if cell_type == "string" then
+            table.insert(encoded_cells, cell)  -- Not so good for strings with tabs, line feeds, etc.
+         elseif cell_type == "number" then
+            table.insert(encoded_cells, tostring(cell))  -- Not so good for non-integers.
+         else
+            table.insert(encoded_cells, "")
+         end
+      end
+
+      table.insert(encoded_rows, table.concat(encoded_cells, "\t") .. "\n")
+   end
+
+   return table.concat(encoded_rows, "")
+end
+
+
+-- ================================================================================
+
+return App

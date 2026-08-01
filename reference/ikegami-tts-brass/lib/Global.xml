@@ -1,0 +1,122 @@
+<Defaults>
+   <Button class="AdvanceGamePopupButton"
+      width="40" height="40" rectAlignment="MiddleRight"
+      colors="#A9B1D3|#6877B3|#6877B3|#666666"
+   />
+
+   <Panel  class="Window"       width="200" height="220" rectAlignment="MiddleRight" allowDragging="true" returnToOriginalPositionWhenReleased="false" color="black" outline="black"/>
+   <Panel  class="TopBar"       width="200" height="30"  rectAlignment="UpperCenter"/>
+   <Text   class="WindowTitle"  width="200" height="20"  rectAlignment="UpperCenter" offsetXY="0 -5" resizeTextForBestFit="true" color="#FFFFFF" text="Buy Menu" fontSize="18" fontStyle="Bold"/>
+   <Button class="topButtons"   width="20"  height="20"  rectAlignment="UpperRight"  offsetXY="-5 -5" fontSize="18" color="#eeeeee"  textColor="#000000" text="-"/>
+   <Panel  class="mainPanel"    width="200" height="190" rectAlignment="UpperCenter" offsetXY="0 -30"/>
+   <Text   class="buttonText"   fontSize="22" fontStyle="Bold"/>
+
+   <Panel  class="ScoreBoardWindow"                                                           color="#2A2A66" outline="#6877B3" allowDragging="true" returnToOriginalPositionWhenReleased="false"/>
+   <Panel  class="ScoreBoardTitleBar"     width="328" height="25"  rectAlignment="UpperLeft"  color="#A9B1D3"/>
+   <Button class="ScoreBoardTitleBarBttn" width="25"  height="25"  rectAlignment="UpperRight" colors="#A9B1D3|#6877B3|#6877B3|#666666"/>
+   <Panel  class="ScoreBoardCorner"       width="125" height="150" rectAlignment="UpperLeft"  color="#222222"/>
+   <Panel  class="ScoreBoardColHdr"       width="49"  height="149" rectAlignment="UpperLeft"  color="#222222"/>
+   <Text   class="ScoreBoardColHdrText"   width="149" height="49"                             color="#C8C8C8" rotation="0 0 -90"/>   <!-- H and W are pre-rotation -->
+   <Panel  class="ScoreBoardRowHdr"       width="124" height="24"  rectAlignment="UpperLeft"  color="#222222"/>
+   <Text   class="ScoreBoardRowHdrText"   width="124" height="24"                             color="#C8C8C8"/>
+   <Panel  class="ScoreBoardCell"         width="49"  height="24"  rectAlignment="UpperLeft"  color="#222222"/>
+   <Text   class="ScoreBoardCellText"     width="49"  height="24"                             color="#C8C8C8"/>
+</Defaults>
+
+<Panel allowDragging="true" returnToOriginalPositionWhenReleased="false" width="340" height="40" rectAlignment="UpperLeft" offsetXY="100 -5">
+   <Button
+      id="advance_game_button"
+      width="300" height="40" rectAlignment="MiddleLeft"
+      colors="#A9B1D3|#6877B3|#6877B3|#666666"
+      onClick="on_click_advance_game"
+   >
+         <Panel width="255" height="30" rectAlignment="MiddleLeft" offsetXY="5 0">
+            <Text id="advance_game_button_text" fontStyle="Bold" fontSize="16" color="Black">Start Game</Text>
+         </Panel>
+         <Panel width="30" height="30" rectAlignment="MiddleRight" offsetXY="-5 0">
+            <Image id="advance_game_button_admin_box"  image="Box Admin"  active="true"></Image>
+            <Image id="advance_game_button_orange_box" image="Box Orange" active="false"></Image>
+            <Image id="advance_game_button_purple_box" image="Box Purple" active="false"></Image>
+            <Image id="advance_game_button_teal_box"   image="Box Teal"   active="false"></Image>
+            <Image id="advance_game_button_yellow_box" image="Box Yellow" active="false"></Image>
+         </Panel>
+   </Button>
+   <Button id="advance_game_popup_open_button" class="AdvanceGamePopupButton" onClick="on_click_show_score_board" active="false"><Image image="Popup Open"/></Button>
+   <Button id="advance_game_popup_close_button" class="AdvanceGamePopupButton" onClick="on_click_hide_score_board" active="false"><Image image="Popup Close"/></Button>
+</Panel>
+
+<Panel class="Window" id="OrangeWindow" visibility="Orange" active="false">
+   <Panel class="TopBar" id="OrangeTopBar" color="Orange"/>
+   <Text class="WindowTitle" id="OrangeTitle"/>
+   <Button class="topButtons" id="minimizeButton" onClick="on_click_min_max_window"/>
+   <Panel class="mainPanel" id="OrangeContent">
+      <GridLayout cellSize="50,50" spacing="10" childAlignment="MiddleCenter">
+         <Button                     onClick="on_click_add1"       colors="white|#E06726|grey|#646464"><Text class="buttonText">+1</Text></Button>
+         <Button                     onClick="on_click_add5"       colors="white|#E06726|grey|#646464"><Text class="buttonText">+5</Text></Button>
+         <Button                     onClick="on_click_add15"      colors="white|#E06726|grey|#646464"><Text class="buttonText">+15</Text></Button>
+         <Button                     onClick="on_click_pay1"       colors="white|#E06726|grey|#646464"><Text class="buttonText">-1</Text></Button>
+         <Button                     onClick="on_click_pay5"       colors="white|#E06726|grey|#646464"><Text class="buttonText">-5</Text></Button>
+         <Button                     onClick="on_click_pay15"      colors="white|#E06726|grey|#646464"><Text class="buttonText">-15</Text></Button>
+         <Button                     onClick="on_click_income_inc" colors="white|#E06726|grey|#646464"><Image image="Income Orange Inc"></Image></Button>
+         <Button id="OrangeLoanBttn" onClick="on_click_take_loan"  colors="white|#E06726|grey|#646464"><Image id="OrangeLoanImg" image="Loan Orange"></Image></Button>
+         <Button                     onClick="on_click_income_dec" colors="white|#E06726|grey|#646464"><Image image="Income Orange Dec"></Image></Button>
+      </GridLayout>
+   </Panel>
+</Panel>
+
+<Panel class="Window" id="PurpleWindow" visibility="Purple" active="false">
+   <Panel class="TopBar" id="PurpleTopBar" color="Purple"/>
+   <Text class="WindowTitle" id="PurpleTitle"/>
+   <Button class="topButtons" id="minimizeButton" onClick="on_click_min_max_window"/>
+   <Panel class="mainPanel" id="PurpleContent">
+      <GridLayout cellSize="50,50" spacing="10" childAlignment="MiddleCenter">
+         <Button                     onClick="on_click_add1"       colors="white|#77347f|grey|#646464"><Text class="buttonText">+1</Text></Button>
+         <Button                     onClick="on_click_add5"       colors="white|#77347f|grey|#646464"><Text class="buttonText">+5</Text></Button>
+         <Button                     onClick="on_click_add15"      colors="white|#77347f|grey|#646464"><Text class="buttonText">+15</Text></Button>
+         <Button                     onClick="on_click_pay1"       colors="white|#77347f|grey|#646464"><Text class="buttonText">-1</Text></Button>
+         <Button                     onClick="on_click_pay5"       colors="white|#77347f|grey|#646464"><Text class="buttonText">-5</Text></Button>
+         <Button                     onClick="on_click_pay15"      colors="white|#77347f|grey|#646464"><Text class="buttonText">-15</Text></Button>
+         <Button                     onClick="on_click_income_inc" colors="white|#77347f|grey|#646464"><Image image="Income Purple Inc"></Image></Button>
+         <Button id="PurpleLoanBttn" onClick="on_click_take_loan"  colors="white|#77347f|grey|#646464"><Image id="PurpleLoanImg" image="Loan Purple"></Image></Button>
+         <Button                     onClick="on_click_income_dec" colors="white|#77347f|grey|#646464"><Image image="Income Purple Dec"></Image></Button>
+      </GridLayout>
+   </Panel>
+</Panel>
+
+<Panel class="Window" id="TealWindow" visibility="Teal" active="false">
+   <Panel class="TopBar" id="TealTopBar" color="Teal"/>
+   <Text class="WindowTitle" id="TealTitle"/>
+   <Button class="topButtons" id="minimizeButton" onClick="on_click_min_max_window"/>
+   <Panel class="mainPanel" id="TealContent">
+      <GridLayout cellSize="50,50" spacing="10" childAlignment="MiddleCenter">
+         <Button                   onClick="on_click_add1"       colors="white|#8DD1C6|grey|#646464"><Text class="buttonText">+1</Text></Button>
+         <Button                   onClick="on_click_add5"       colors="white|#8DD1C6|grey|#646464"><Text class="buttonText">+5</Text></Button>
+         <Button                   onClick="on_click_add15"      colors="white|#8DD1C6|grey|#646464"><Text class="buttonText">+15</Text></Button>
+         <Button                   onClick="on_click_pay1"       colors="white|#8DD1C6|grey|#646464"><Text class="buttonText">-1</Text></Button>
+         <Button                   onClick="on_click_pay5"       colors="white|#8DD1C6|grey|#646464"><Text class="buttonText">-5</Text></Button>
+         <Button                   onClick="on_click_pay15"      colors="white|#8DD1C6|grey|#646464"><Text class="buttonText">-15</Text></Button>
+         <Button                   onClick="on_click_income_inc" colors="white|#8DD1C6|grey|#646464"><Image image="Income Teal Inc"></Image></Button>
+         <Button id="TealLoanBttn" onClick="on_click_take_loan"  colors="white|#8DD1C6|grey|#646464"><Image id="TealLoanImg" image="Loan Teal"></Image></Button>
+         <Button                   onClick="on_click_income_dec" colors="white|#8DD1C6|grey|#646464"><Image image="Income Teal Dec"></Image></Button>
+      </GridLayout>
+   </Panel>
+</Panel>
+
+<Panel class="Window" id="YellowWindow" visibility="Yellow" active="false">
+   <Panel class="TopBar" id="YellowTopBar" color="Yellow"/>
+   <Text class="WindowTitle" id="YellowTitle" color="#000000"/>
+   <Button class="topButtons" id="minimizeButton" onClick="on_click_min_max_window"/>
+   <Panel class="mainPanel" id="YellowContent">
+      <GridLayout cellSize="50,50" spacing="10" childAlignment="MiddleCenter">
+         <Button                     onClick="on_click_add1"       colors="white|#DCDA3D|grey|#646464"><Text class="buttonText">+1</Text></Button>
+         <Button                     onClick="on_click_add5"       colors="white|#DCDA3D|grey|#646464"><Text class="buttonText">+5</Text></Button>
+         <Button                     onClick="on_click_add15"      colors="white|#DCDA3D|grey|#646464"><Text class="buttonText">+15</Text></Button>
+         <Button                     onClick="on_click_pay1"       colors="white|#DCDA3D|grey|#646464"><Text class="buttonText">-1</Text></Button>
+         <Button                     onClick="on_click_pay5"       colors="white|#DCDA3D|grey|#646464"><Text class="buttonText">-5</Text></Button>
+         <Button                     onClick="on_click_pay15"      colors="white|#DCDA3D|grey|#646464"><Text class="buttonText">-15</Text></Button>
+         <Button                     onClick="on_click_income_inc" colors="white|#DCDA3D|grey|#646464"><Image image="Income Yellow Inc"></Image></Button>
+         <Button id="YellowLoanBttn" onClick="on_click_take_loan"  colors="white|#DCDA3D|grey|#646464"><Image id="YellowLoanImg" image="Loan Yellow"></Image></Button>
+         <Button                     onClick="on_click_income_dec" colors="white|#DCDA3D|grey|#646464"><Image image="Income Yellow Dec"></Image></Button>
+      </GridLayout>
+   </Panel>
+</Panel>
