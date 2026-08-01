@@ -35,33 +35,40 @@ pub fn choose_action(state: &mut GameState<impl Rng>) -> Decision {
 /// Best move per action type (the 1-ply candidate set). Used both by
 /// `choose_action` and by the 2-ply lookahead in search_ai.
 pub fn candidate_actions(state: &mut GameState<impl Rng>) -> Vec<Decision> {
+    candidate_actions_k(state, 1)
+}
+
+/// Top-K candidates per action type, for MCTS to get a wider prior.
+/// Build and Network get up to `k` candidates each; other action types keep
+/// their single best (develop/sell/loan/scout/pass).
+pub fn candidate_actions_k(state: &mut GameState<impl Rng>, k: usize) -> Vec<Decision> {
     let pid = state.current_player_id();
     let mut out = Vec::new();
 
-    let consider = |candidate: Option<Decision>, out: &mut Vec<Decision>| {
-        if let Some(d) = candidate {
-            if d.score != f64::NEG_INFINITY {
-                out.push(d);
-            }
+    for d in score_top_builds(state, pid, k) {
+        if d.score != f64::NEG_INFINITY {
+            out.push(d);
         }
-    };
-
-    // Build
-    consider(score_best_build(state, pid), &mut out);
-    // Network (single)
-    consider(score_best_network(state, pid), &mut out);
-    // Network double
-    consider(score_best_network_double(state, pid), &mut out);
-    // Develop
-    consider(score_develop_plan(state, pid), &mut out);
-    // Sell
-    consider(score_sell_plan(state, pid), &mut out);
-    // Loan
-    consider(score_loan_result(state, pid), &mut out);
-    // Scout
-    consider(score_scout_plan(state, pid), &mut out);
-    // Pass (always available as a fallback)
-    consider(score_pass_result(state, pid), &mut out);
+    }
+    out.extend(score_top_networks(state, pid, k));
+    if let Some(d) = score_best_network_double(state, pid) {
+        out.push(d);
+    }
+    if let Some(d) = score_develop_plan(state, pid) {
+        out.push(d);
+    }
+    if let Some(d) = score_sell_plan(state, pid) {
+        out.push(d);
+    }
+    if let Some(d) = score_loan_result(state, pid) {
+        out.push(d);
+    }
+    if let Some(d) = score_scout_plan(state, pid) {
+        out.push(d);
+    }
+    if let Some(d) = score_pass_result(state, pid) {
+        out.push(d);
+    }
 
     out
 }
@@ -73,6 +80,50 @@ pub fn pass_decision(state: &GameState<impl Rng>) -> Decision {
         mv: Move::Pass { card_index },
         score: -0.5,
     }
+}
+
+/// Position-value estimator for player `pid`, used as the MCTS leaf evaluator.
+/// Combines accumulated VP + income stream + cash with the player's best
+/// available move score (1-ply), which reflects actionable potential better
+/// than a pure board snapshot.
+pub(crate) fn evaluate_position(state: &GameState<impl Rng>, pid: usize) -> f64 {
+    let p = &state.players[pid];
+    let mut value = 0.0;
+
+    value += p.vp as f64 * VP_WEIGHT;
+    value += p.money as f64 * MONEY_WEIGHT;
+    value += p.income_level() as f64 * income_weight(state) * 3.0;
+
+    // Own tiles: flipped score full VP; unflipped a small fraction.
+    for tile in state.city_tiles.iter().flatten() {
+        if tile.player != pid {
+            continue;
+        }
+        let vp = tile.def.vp as f64;
+        value += if tile.flipped { vp } else { vp * 0.25 };
+    }
+    for tile in state.farm_tiles.iter().flatten() {
+        if tile.player != pid {
+            continue;
+        }
+        let vp = tile.def.vp as f64;
+        value += if tile.flipped { vp } else { vp * 0.25 };
+    }
+
+    // Links: each owned link scores icons in adjacent locations at era end.
+    let links = state
+        .links
+        .iter()
+        .flatten()
+        .filter(|l| l.player == pid)
+        .count();
+    value += links as f64 * 2.0;
+
+    // Hand flexibility.
+    let flex: f64 = p.hand.iter().map(|c| card_usefulness(state, pid, c)).sum();
+    value += flex * FLEX_WEIGHT;
+
+    value
 }
 
 // ---------------------------------------------------------------------------
@@ -193,30 +244,33 @@ fn pick_build_card(state: &GameState<impl Rng>, pid: usize, cand: &BuildTarget) 
     })
 }
 
-fn score_best_build(state: &mut GameState<impl Rng>, pid: usize) -> Option<Decision> {
+/// Top-K build candidates by 1-ply score. Used by MCTS to get a wider prior.
+pub(crate) fn score_top_builds(state: &mut GameState<impl Rng>, pid: usize, k: usize) -> Vec<Decision> {
     let targets = get_valid_build_targets(state, pid);
-    let mut best: Option<(BuildTarget, f64)> = None;
-    for t in targets {
-        let s = score_build_candidate(state, pid, &t);
-        let better = match &best {
-            Some((_, bs)) => s > *bs,
-            None => true,
-        };
-        if better {
-            best = Some((t, s));
+    let mut scored: Vec<(BuildTarget, f64)> = targets
+        .into_iter()
+        .map(|t| {
+            let s = score_build_candidate(state, pid, &t);
+            (t, s)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(k);
+    let mut out = Vec::new();
+    for (cand, score) in scored {
+        if let Some(card_index) = pick_build_card(state, pid, &cand) {
+            out.push(Decision {
+                mv: Move::Build {
+                    loc: cand.loc,
+                    slot_index: cand.slot_index,
+                    ind: cand.ind,
+                    card_index,
+                },
+                score,
+            });
         }
     }
-    let (cand, score) = best?;
-    let card_index = pick_build_card(state, pid, &cand)?;
-    Some(Decision {
-        mv: Move::Build {
-            loc: cand.loc,
-            slot_index: cand.slot_index,
-            ind: cand.ind,
-            card_index,
-        },
-        score,
-    })
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -293,16 +347,17 @@ fn pick_any_card(state: &GameState<impl Rng>, pid: usize) -> Option<usize> {
     (0..hand.len()).find(|_| true)
 }
 
-fn score_best_network(state: &mut GameState<impl Rng>, pid: usize) -> Option<Decision> {
+/// Top-K single network candidates by 1-ply score.
+pub(crate) fn score_top_networks(state: &mut GameState<impl Rng>, pid: usize, k: usize) -> Vec<Decision> {
     let player = &state.players[pid];
     if state.era == Era::Canal && player.canal_links == 0 {
-        return None;
+        return Vec::new();
     }
     if state.era == Era::Rail && player.rail_links == 0 {
-        return None;
+        return Vec::new();
     }
     let targets = get_valid_network_targets(state, pid);
-    let mut best: Option<(usize, f64, i32)> = None;
+    let mut scored: Vec<(usize, f64)> = Vec::new();
     for conn_id in targets {
         let conn = &connections()[conn_id];
         let cost = if state.era == Era::Canal {
@@ -318,23 +373,23 @@ fn score_best_network(state: &mut GameState<impl Rng>, pid: usize) -> Option<Dec
             &[conn.a, conn.b],
             state.era == Era::Canal,
         );
-        let better = match &best {
-            Some((_, bs, _)) => s > *bs,
-            None => true,
-        };
-        if better {
-            best = Some((conn_id, s, cost));
-        }
+        scored.push((conn_id, s));
     }
-    let (conn_id, score, _) = best?;
-    let card_index = pick_any_card(state, pid)?;
-    Some(Decision {
-        mv: Move::Network {
-            conn_id,
-            card_index,
-        },
-        score,
-    })
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(k);
+    scored
+        .into_iter()
+        .filter_map(|(conn_id, score)| {
+            let card_index = pick_any_card(state, pid)?;
+            Some(Decision {
+                mv: Move::Network {
+                    conn_id,
+                    card_index,
+                },
+                score,
+            })
+        })
+        .collect()
 }
 
 fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Option<Decision> {

@@ -1,5 +1,6 @@
 use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
 use brass_engine::heuristic_ai;
+use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::random_ai::choose_random_move;
 use brass_engine::scoring;
 use brass_engine::search_ai;
@@ -17,13 +18,28 @@ struct GameStats {
     links: u64,
     canal_events: u64,
     stuck: bool,
+    /// Mixed mode: MCTS-seat outcome.
+    mcts_games: u64,
+    mcts_wins: u64,
+    mcts_vp: i64,
+    other_vp: i64,
 }
 
-fn play_one_game(players: usize, policy: &str, seed: u64) -> GameStats {
+fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameStats {
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     let mut canal_events = 0u64;
     let mut stuck = false;
+
+    // "mcts-vs-2ply" / "mcts-vs-heur": exactly one seat plays MCTS, the rest
+    // 2-ply or 1-ply heuristic. The MCTS seat rotates per game to cancel seat
+    // bias.
+    let mcts_vs_2ply = policy == "mcts-vs-2ply";
+    let mcts_vs_heur = policy == "mcts-vs-heur";
+    let mcts_vs_random = policy == "mcts-vs-random";
+    let mcts_mixed = mcts_vs_2ply || mcts_vs_heur || mcts_vs_random;
+    let policy = if mcts_mixed { "mixed" } else { policy };
+    let mcts_seat = if mcts_mixed { (seed as usize) % players } else { usize::MAX };
 
     let mut guard = 0;
     loop {
@@ -36,10 +52,34 @@ fn play_one_game(players: usize, policy: &str, seed: u64) -> GameStats {
             break;
         }
 
-        let m = match policy {
-            "random" => choose_random_move(&mut state),
-            "2ply" => Some(search_ai::choose_action_2ply(&mut state).mv),
-            _ => Some(heuristic_ai::choose_action(&mut state).mv),
+        let pid = state.current_player_id();
+        let m = if mcts_mixed {
+            if pid == mcts_seat {
+                let cfg = MctsConfig {
+                    simulations: sims,
+                    ..Default::default()
+                };
+                Some(mcts_ai::choose_action_mcts(&mut state, &cfg).mv)
+            } else if mcts_vs_2ply {
+                Some(search_ai::choose_action_2ply(&mut state).mv)
+            } else if mcts_vs_heur {
+                Some(heuristic_ai::choose_action(&mut state).mv)
+            } else {
+                choose_random_move(&mut state)
+            }
+        } else {
+            match policy {
+                "random" => choose_random_move(&mut state),
+                "2ply" => Some(search_ai::choose_action_2ply(&mut state).mv),
+                "mcts" => {
+                    let cfg = MctsConfig {
+                        simulations: sims,
+                        ..Default::default()
+                    };
+                    Some(mcts_ai::choose_action_mcts(&mut state, &cfg).mv)
+                }
+                _ => Some(heuristic_ai::choose_action(&mut state).mv),
+            }
         };
         if let Some(mv) = m {
             let _ = brass_engine::rules::apply_move(&mut state, &mv);
@@ -71,7 +111,8 @@ fn play_one_game(players: usize, policy: &str, seed: u64) -> GameStats {
     let links = state.links.iter().flatten().count() as u64;
 
     let mut wins = [0u64; 4];
-    if let Some(&w) = scoring::final_ranking(&state).first() {
+    let winner = scoring::final_ranking(&state).first().copied();
+    if let Some(w) = winner {
         if w < 4 {
             wins[w] = 1;
         }
@@ -83,6 +124,23 @@ fn play_one_game(players: usize, policy: &str, seed: u64) -> GameStats {
         }
     }
 
+    let mut mcts_games = 0;
+    let mut mcts_wins = 0;
+    let mut mcts_vp = 0;
+    let mut other_vp = 0;
+    if mcts_mixed {
+        mcts_games = 1;
+        if winner == Some(mcts_seat) {
+            mcts_wins = 1;
+        }
+        mcts_vp = vp[mcts_seat];
+        other_vp = (0..players)
+            .filter(|&i| i != mcts_seat)
+            .map(|i| vp[i])
+            .sum::<i64>()
+            / (players.saturating_sub(1) as i64);
+    }
+
     GameStats {
         wins,
         vp,
@@ -91,6 +149,10 @@ fn play_one_game(players: usize, policy: &str, seed: u64) -> GameStats {
         links,
         canal_events,
         stuck,
+        mcts_games,
+        mcts_wins,
+        mcts_vp,
+        other_vp,
     }
 }
 
@@ -98,10 +160,14 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let games: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
-    // policy: "random" | "heuristic" | "2ply" (default heuristic)
+    // policy: "random" | "heuristic" | "2ply" | "mcts" | "mcts-vs-2ply" | "mcts-vs-heur"
     let policy = args.get(3).cloned().unwrap_or_else(|| "heuristic".to_string());
+    let mcts_vs_2ply = policy == "mcts-vs-2ply";
+    let mcts_vs_heur = policy == "mcts-vs-heur";
     // threads: optional 4th arg to override rayon default pool size
     let threads: Option<usize> = args.get(4).and_then(|s| s.parse().ok());
+    // mcts sims: optional 5th arg
+    let sims: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
 
     let pool = match threads {
         Some(t) => rayon::ThreadPoolBuilder::new().num_threads(t).build().unwrap(),
@@ -112,7 +178,7 @@ fn main() {
     let total: GameStats = pool.install(|| {
         (0..games)
             .into_par_iter()
-            .map(|g| play_one_game(players, &policy, g as u64))
+            .map(|g| play_one_game(players, &policy, g as u64, sims))
             .reduce(GameStats::default, |a, b| GameStats {
                 wins: [
                     a.wins[0] + b.wins[0],
@@ -131,6 +197,10 @@ fn main() {
                 links: a.links + b.links,
                 canal_events: a.canal_events + b.canal_events,
                 stuck: a.stuck || b.stuck,
+                mcts_games: a.mcts_games + b.mcts_games,
+                mcts_wins: a.mcts_wins + b.mcts_wins,
+                mcts_vp: a.mcts_vp + b.mcts_vp,
+                other_vp: a.other_vp + b.other_vp,
             })
     });
     let elapsed = start.elapsed();
@@ -145,6 +215,19 @@ fn main() {
         println!("[!] at least one game hit the guard");
     }
     println!("Canal-era transitions: {}", total.canal_events);
+
+    if mcts_vs_2ply || mcts_vs_heur {
+        let g = total.mcts_games.max(1);
+        let opp = if mcts_vs_2ply { "2-ply" } else { "1-ply" };
+        println!(
+            "  [MCTS vs {opp}, seat rotated] MCTS seat: {:.1}% wins ({}/{}), avg VP {:.1} vs {opp} avg {:.1}",
+            total.mcts_wins as f64 * 100.0 / g as f64,
+            total.mcts_wins,
+            g,
+            total.mcts_vp as f64 / g as f64,
+            total.other_vp as f64 / g as f64
+        );
+    }
     println!(
         "Avg final VP per player: {:?}",
         total

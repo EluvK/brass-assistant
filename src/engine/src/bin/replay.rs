@@ -263,6 +263,14 @@ fn main() {
         let pid = state.current_player_id();
         let mv = match policy.as_str() {
             "2ply" => search_ai::choose_action_2ply(&mut state).mv,
+            "mcts" => {
+                use brass_engine::mcts_ai::{self, MctsConfig};
+                let cfg = MctsConfig {
+                    simulations: 300,
+                    ..Default::default()
+                };
+                mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+            }
             _ => heuristic_ai::choose_action(&mut state).mv,
         };
         let detail = move_detail(&state, &mv);

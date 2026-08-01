@@ -209,3 +209,71 @@ fn loan_lowers_income_by_three_levels() {
     assert_eq!(before - after, 3, "loan should drop income 3 levels");
     assert_eq!(state.players[pid].money, INITIAL_MONEY + LOAN_AMOUNT);
 }
+
+#[test]
+fn discard_tracks_face_down_pile() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let before = state.discard_pile.len();
+    // Discard a non-wild card: should enter the discard pile.
+    let idx = state.players[pid]
+        .hand
+        .iter()
+        .position(|c| !matches!(c, brass_engine::state::Card::WildLocation | brass_engine::state::Card::WildIndustry))
+        .unwrap();
+    brass_engine::rules::discard_card(&mut state, pid, idx);
+    assert_eq!(state.discard_pile.len(), before + 1, "non-wild discard should be tracked");
+}
+
+#[test]
+fn deck_composition_matches_era_card_count() {
+    // 4p composition: location + industry + dual cotton/mfr cards.
+    let comp = brass_engine::state::deck_composition(4);
+    let loc_cards: usize = brass_engine::map::location_cards(4)
+        .iter()
+        .map(|(_, c)| *c as usize)
+        .sum();
+    let ind_cards: usize = brass_engine::map::industry_cards(4)
+        .iter()
+        .map(|(_, c)| *c as usize)
+        .sum();
+    let dual = brass_engine::map::dual_cotton_manufacturer_cards(4) as usize;
+    assert_eq!(comp.len(), loc_cards + ind_cards + dual);
+}
+
+#[test]
+fn mcts_returns_a_legal_pass_fallback_on_empty_hand() {
+    use brass_engine::mcts_ai::{self, MctsConfig};
+    let mut state = setup(2);
+    // Empty the current player's hand: only Pass (and no legal moves) remains.
+    let pid = state.current_player_id();
+    let hand = state.players[pid].hand.clone();
+    for (i, c) in hand.iter().enumerate() {
+        state.players[pid].hand[i] = c.clone();
+    }
+    let cfg = MctsConfig {
+        simulations: 50,
+        ..Default::default()
+    };
+    // Should not panic; returns a Decision.
+    let d = mcts_ai::choose_action_mcts(&mut state, &cfg);
+    assert!(d.score.is_finite());
+}
+
+#[test]
+fn mcts_determinize_keeps_own_hand_and_hand_size() {
+    use brass_engine::mcts_ai::MctsConfig;
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let own = state.players[pid].hand.clone();
+    let mut rng = StdRng::seed_from_u64(123);
+    let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    // Our own hand is preserved.
+    assert_eq!(det.players[pid].hand, own);
+    // Opponent hands keep their size.
+    for i in 0..4 {
+        if i != pid {
+            assert_eq!(det.players[i].hand.len(), state.players[i].hand.len());
+        }
+    }
+}

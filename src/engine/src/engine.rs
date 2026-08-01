@@ -228,7 +228,7 @@ pub fn end_canal_era(state: &mut GameState<impl Rng>) {
         mt.has_beer = mt.buys != crate::state::BuyType::Blank;
     }
 
-    // Return wild cards, clear hands.
+    // Return wild cards, clear hands (non-wilds go to the discard pile).
     for p in state.players.iter_mut() {
         for card in p.hand.drain(..) {
             match card.ctype() {
@@ -240,7 +240,7 @@ pub fn end_canal_era(state: &mut GameState<impl Rng>) {
                     state.wild_industry_pile += 1;
                     p.has_wild_industry = false;
                 }
-                _ => {}
+                _ => state.discard_pile.push(card),
             }
         }
     }

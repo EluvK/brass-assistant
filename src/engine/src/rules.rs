@@ -116,7 +116,8 @@ pub fn discard_card(state: &mut GameState<impl Rng>, player_id: usize, card_inde
     if card_index >= p.hand.len() {
         return;
     }
-    match p.hand[card_index].ctype() {
+    let removed = p.hand[card_index].clone();
+    match removed.ctype() {
         crate::data::CardType::WildLocation => {
             state.wild_location_pile += 1;
             p.has_wild_location = false;
@@ -125,7 +126,10 @@ pub fn discard_card(state: &mut GameState<impl Rng>, player_id: usize, card_inde
             state.wild_industry_pile += 1;
             p.has_wild_industry = false;
         }
-        _ => {}
+        _ => {
+            // Non-wild discarded cards join the face-down discard pile.
+            state.discard_pile.push(removed);
+        }
     }
     p.hand.remove(card_index);
 }
@@ -1159,6 +1163,11 @@ pub fn execute_scout(
     sorted.sort_by(|a, b| b.cmp(a));
     for idx in sorted {
         if idx < p.hand.len() {
+            let removed = p.hand[idx].clone();
+            match removed.ctype() {
+                crate::data::CardType::WildLocation | crate::data::CardType::WildIndustry => {}
+                _ => state.discard_pile.push(removed),
+            }
             p.hand.remove(idx);
         }
     }

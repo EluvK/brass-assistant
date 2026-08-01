@@ -4,6 +4,7 @@ pub mod graph;
 pub mod heuristic_ai;
 pub mod income;
 pub mod map;
+pub mod mcts_ai;
 pub mod random_ai;
 pub mod rules;
 pub mod scoring;

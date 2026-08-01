@@ -7,7 +7,7 @@ use rand::Rng;
 // Cards
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Card {
     Location(Loc),
     /// An industry card may permit up to 2 industry types (dual card).
@@ -217,6 +217,9 @@ pub struct GameState<R: Rng> {
     pub merchants: Vec<MerchantTile>,
 
     pub deck: Vec<Card>,
+    /// Face-down discard pile (non-wild cards only; wilds return to piles).
+    /// Used to build the hidden-card pool for MCTS determinization.
+    pub discard_pile: Vec<Card>,
     pub wild_location_pile: u8,
     pub wild_industry_pile: u8,
 }
@@ -239,10 +242,35 @@ pub fn total_city_slots() -> usize {
         .sum()
 }
 
+// ---------------------------------------------------------------------------
+// Card pool reconstruction (for MCTS determinization)
+// ---------------------------------------------------------------------------
+
+/// Full multiset of cards dealt this era for `player_count` (before shuffling).
+pub fn deck_composition(player_count: usize) -> Vec<Card> {
+    let mut cards = Vec::new();
+    for (loc, count) in location_cards(player_count) {
+        for _ in 0..*count {
+            cards.push(Card::Location(*loc));
+        }
+    }
+    for (ind, count) in industry_cards(player_count) {
+        for _ in 0..*count {
+            cards.push(Card::Industry { industries: [*ind; 2], n: 1 });
+        }
+    }
+    for _ in 0..dual_cotton_manufacturer_cards(player_count) {
+        cards.push(Card::Industry {
+            industries: [IndustryType::CottonMill, IndustryType::Manufacturer],
+            n: 2,
+        });
+    }
+    cards
+}
+
 impl<R: Rng> GameState<R> {
     pub fn new(rng: R, num_players: usize) -> Self {
         assert!(num_players >= 2 && num_players <= 4, "2-4 players");
-
         let mut state = GameState {
             rng,
             era: Era::Canal,
@@ -262,6 +290,7 @@ impl<R: Rng> GameState<R> {
             iron_market: IRON_MARKET_INITIAL,
             merchants: Vec::new(),
             deck: Vec::new(),
+            discard_pile: Vec::new(),
             wild_location_pile: WILD_LOCATION_PILE,
             wild_industry_pile: WILD_INDUSTRY_PILE,
         };
@@ -306,23 +335,7 @@ impl<R: Rng> GameState<R> {
 
     pub fn init_deck(&mut self) {
         self.deck.clear();
-        for (loc, count) in location_cards(self.player_count()) {
-            for _ in 0..*count {
-                self.deck.push(Card::Location(*loc));
-            }
-        }
-        for (ind, count) in industry_cards(self.player_count()) {
-            for _ in 0..*count {
-                self.deck
-                    .push(Card::Industry { industries: [*ind; 2], n: 1 });
-            }
-        }
-        for _ in 0..dual_cotton_manufacturer_cards(self.player_count()) {
-            self.deck.push(Card::Industry {
-                industries: [IndustryType::CottonMill, IndustryType::Manufacturer],
-                n: 2,
-            });
-        }
+        self.deck.extend(deck_composition(self.player_count()));
         self.deck.shuffle(&mut self.rng);
     }
 
@@ -337,8 +350,8 @@ impl<R: Rng> GameState<R> {
     /// Each player burns one card face-down from the deck as their discard.
     pub fn seed_discard_piles(&mut self) {
         for _ in 0..self.player_count() {
-            if !self.deck.is_empty() {
-                self.deck.pop();
+            if let Some(c) = self.deck.pop() {
+                self.discard_pile.push(c);
             }
         }
     }
