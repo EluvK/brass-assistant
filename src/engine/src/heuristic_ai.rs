@@ -1276,10 +1276,11 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
         .into_iter()
         .next()
         .and_then(|o| o.into_iter().next())?;
-    let coal2 = crate::rules::coal_options_for_connection(state, &connections()[conn2], 1)
-        .into_iter()
-        .next()
-        .and_then(|o| o.into_iter().next())?;
+    let coal2 = opt
+        .coal2_opts
+        .first()
+        .and_then(|o| o.first())
+        .copied()?;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::NetworkDouble {

@@ -1,10 +1,14 @@
 pub mod data;
+pub mod encode;
 pub mod engine;
 pub mod graph;
 pub mod heuristic_ai;
 pub mod income;
 pub mod map;
 pub mod mcts_ai;
+pub mod move_codec;
+pub mod policy;
+pub mod pymod;
 pub mod random_ai;
 pub mod rules;
 pub mod scoring;

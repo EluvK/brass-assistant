@@ -900,6 +900,9 @@ pub fn execute_network(
 pub struct SecondRailOption {
     pub conn: usize,
     pub beers: Vec<BeerSource>,
+    /// Coal source selections for the second link, computed with the FIRST
+    /// link in place (matching execution order). Empty outer = illegal.
+    pub coal2_opts: Vec<Vec<CoalSource>>,
 }
 
 /// All beer sources legal for powering a double-rail second link: own breweries
@@ -979,12 +982,21 @@ pub fn get_second_rail_options(
         if !is_in_network(state, pid, conn.a) && !is_in_network(state, pid, conn.b) {
             continue;
         }
-        let coal2 = match cheapest_coal_for_connection(state, conn) {
-            Some(c) => c,
-            None => continue,
-        };
-        let total_cost = if coal2.free { 0 } else { coal2.price as i32 };
-        if total_cost > budget_left {
+        // Enumerate the coal choices for the second link with the first link
+        // still in place (this is the state the player will execute from).
+        // Keep only affordable selections; empty means no legal coal source.
+        let coal2_opts: Vec<Vec<CoalSource>> =
+            coal_options_for_connection(state, conn, 1)
+                .into_iter()
+                .filter(|sel| !sel.is_empty())
+                .filter(|sel| {
+                    sel.iter().all(|s| {
+                        let cost = if s.free { 0 } else { s.price as i32 };
+                        cost <= budget_left
+                    })
+                })
+                .collect();
+        if coal2_opts.is_empty() {
             continue;
         }
         // Place the second link so beer connectivity matches execution time.
@@ -994,7 +1006,11 @@ pub fn get_second_rail_options(
         if beers.is_empty() {
             continue;
         }
-        out.push(SecondRailOption { conn: conn.id, beers });
+        out.push(SecondRailOption {
+            conn: conn.id,
+            beers,
+            coal2_opts,
+        });
     }
 
     rollback_double_rail_coal(state, coal1_undo);
@@ -1884,10 +1900,11 @@ pub fn legal_moves(state: &mut GameState<impl Rng>) -> Vec<Move> {
             let c1 = &connections()[conn1];
             let coal1_opts = coal_options_for_connection(state, c1, 1);
             for coal1 in &coal1_opts {
+                if coal1.is_empty() {
+                    continue;
+                }
                 for opt in get_second_rail_options(state, pid, conn1) {
-                    let c2 = &connections()[opt.conn];
-                    let coal2_opts = coal_options_for_connection(state, c2, 1);
-                    for coal2 in &coal2_opts {
+                    for coal2 in &opt.coal2_opts {
                         for beer in &opt.beers {
                             for ci in any_card_indices(&state.players[pid]) {
                                 moves.push(Move::NetworkDouble {

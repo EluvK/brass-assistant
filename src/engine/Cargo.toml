@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Brass: Birmingham game engine (Rust) - phase 1"
 
+[lib]
+name = "brass_engine"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 rand = "0.8"
 rayon = "1.10"
+pyo3 = { version = "0.29", features = ["extension-module"] }
+numpy = "0.29"

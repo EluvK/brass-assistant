@@ -193,7 +193,7 @@ fn is_wild(c: &Card) -> bool {
 
 /// Sample opponent hands from the hidden pool, leaving our own hand intact.
 /// The pool is the full era deck minus our known (non-wild) hand cards.
-fn determinize<R: Rng + Clone>(state: &GameState<R>, rng: &mut R) -> GameState<R> {    let mut det = state.clone();
+pub(crate) fn determinize<R: Rng + Clone>(state: &GameState<R>, rng: &mut R) -> GameState<R> {    let mut det = state.clone();
     let me = det.current_player_id();
 
     let mut pool = deck_composition(det.player_count());
