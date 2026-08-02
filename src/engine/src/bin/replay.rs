@@ -417,6 +417,81 @@ fn canal_cleanup_detail(state: &GameState<impl rand::Rng>) -> String {
     )
 }
 
+#[derive(Default, Clone)]
+struct PStats {
+    build: [u32; 6],
+    network: u32,
+    dbl_rail: u32,
+    develop: u32,
+    sell: u32,
+    loan: u32,
+    pass: u32,
+    scout: u32,
+}
+
+fn fmt_stats_line(stats: &PStats) -> String {
+    let ind_names = ["棉", "煤", "铁", "制造", "陶", "酒"];
+    let builds: Vec<String> = (0..6)
+        .map(|i| format!("{}x{}", ind_names[i], stats.build[i]))
+        .filter(|x| !x.ends_with('0'))
+        .collect();
+    format!(
+        "建[{}] 网{} 双铁{} 研发{} 卖{} 贷{} 过{} 斥{}",
+        builds.join(" "),
+        stats.network,
+        stats.dbl_rail,
+        stats.develop,
+        stats.sell,
+        stats.loan,
+        stats.pass,
+        stats.scout
+    )
+}
+
+fn player_tiles_detail(state: &GameState<impl rand::Rng>, pid: usize, flipped_only: bool) -> String {
+    let mut entries: Vec<String> = Vec::new();
+    for (i, loc) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
+        for slot_index in 0..city_slots(*loc).len() {
+            let key = city_slot_offsets()[i] + slot_index;
+            if let Some(tile) = state.city_tiles[key].as_ref() {
+                if tile.player == pid && (!flipped_only || tile.flipped) {
+                    entries.push(tile_label(*loc, slot_index, tile));
+                }
+            }
+        }
+    }
+    for farm_loc in [Loc::BreweryNorth, Loc::BrewerySouth] {
+        if let Some(tile) = state.farm_tile(farm_loc) {
+            if tile.player == pid && (!flipped_only || tile.flipped) {
+                entries.push(format!(
+                    "{} Lv{} @ {}",
+                    industry_label(tile.ind),
+                    tile.def.level,
+                    loc_label(farm_loc)
+                ));
+            }
+        }
+    }
+    if entries.is_empty() {
+        "无".to_string()
+    } else {
+        entries.join(" ; ")
+    }
+}
+
+fn print_era_snapshot(
+    state: &GameState<impl rand::Rng>,
+    era_name: &str,
+    action_stats: &[PStats],
+) {
+    println!("\n--- {era_name}时代玩家汇总（动作/在场板块/翻面板块） ---");
+    for (pid, stats) in action_stats.iter().enumerate() {
+        println!("玩家{pid} 动作: {}", fmt_stats_line(stats));
+        println!("玩家{pid} 在场板块: {}", player_tiles_detail(state, pid, false));
+        println!("玩家{pid} 翻面板块: {}", player_tiles_detail(state, pid, true));
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(7);
@@ -434,6 +509,8 @@ fn main() {
 
     let mut prev_round = state.round;
     let mut prev_era = state.era;
+    let mut canal_stats: Vec<PStats> = vec![PStats::default(); players];
+    let mut rail_stats: Vec<PStats> = vec![PStats::default(); players];
 
     println!(
         "======================================================================"
@@ -543,6 +620,21 @@ fn main() {
         let detail = move_detail(&state, &mv);
         let before = player_state(&state, pid);
         let hand_before = hand_display(&state, pid);
+        let stat_target = if state.era == Era::Canal {
+            &mut canal_stats[pid]
+        } else {
+            &mut rail_stats[pid]
+        };
+        match &mv {
+            Move::Build { ind, .. } => stat_target.build[*ind as usize] += 1,
+            Move::Network { .. } => stat_target.network += 1,
+            Move::NetworkDouble { .. } => stat_target.dbl_rail += 1,
+            Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => stat_target.develop += 1,
+            Move::Sell { .. } => stat_target.sell += 1,
+            Move::Loan { .. } => stat_target.loan += 1,
+            Move::Pass { .. } => stat_target.pass += 1,
+            Move::Scout { .. } => stat_target.scout += 1,
+        }
         let res = brass_engine::rules::apply_move(&mut state, &mv);
         let after = player_state(&state, pid);
         let hand_after = hand_display(&state, pid);
@@ -568,6 +660,7 @@ fn main() {
                     for pid in 0..players {
                         println!("玩家{pid}: {}", era_score_detail(&state, pid));
                     }
+                    print_era_snapshot(&state, "运河", &canal_stats);
                     println!("{}", canal_cleanup_detail(&state));
                     end_canal_era(&mut state);
                     println!(
@@ -591,6 +684,7 @@ fn main() {
     println!("\n======================================================================");
     println!("终局结算");
     println!("======================================================================");
+    print_era_snapshot(&state, "铁路", &rail_stats);
     for pid in 0..players {
         println!("玩家{pid}: {}", player_state(&state, pid));
     }

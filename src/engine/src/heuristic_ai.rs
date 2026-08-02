@@ -9,12 +9,12 @@ use crate::engine::{advance_turn, TurnResult};
 use crate::graph::{
     connected_locations, find_beer_sources, find_coal_sources, find_iron_sources, is_in_network,
 };
-use crate::map::{city_slots, connections, Loc};
+use crate::map::{city_slots, connections, Loc, ALL_LOCATIONS, CITY_COUNT};
 use crate::rules::{
     can_develop, can_scout, execute_sell, get_valid_build_targets, get_valid_network_targets,
     get_valid_second_rail_links, get_valid_sell_targets, valid_build_cards, BuildTarget, Move,
 };
-use crate::state::{Card, GameState, PendingBonus};
+use crate::state::{city_slot_offsets, Card, GameState, PendingBonus};
 use rand::Rng;
 
 // Scoring weights (from aiPlayer.js).
@@ -236,7 +236,7 @@ pub(crate) fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
     (total / actions_per_round).clamp(1.0, 8.0)
 }
 
-fn is_late_rail_half(state: &GameState<impl Rng>) -> bool {
+pub(crate) fn is_late_rail_half(state: &GameState<impl Rng>) -> bool {
     state.era == Era::Rail && estimate_rounds_remaining(state) <= 4.0
 }
 
@@ -315,6 +315,41 @@ fn simulate_market_sale(state: &GameState<impl Rng>, is_coal: bool, cubes: u8) -
     }
 }
 
+/// How saturated is the player's sell capacity in `loc`'s beer pool? Ratio of
+/// beer reachable to fuel a sale at `loc` vs. the beer demanded by the
+/// player's unflipped sellable tiles (including the one about to be built)
+/// that share that pool. 1.0 = plenty of beer; <1.0 = the marginal tile
+/// competes for scarce beer and may never sell (merchant barrels are one-shot
+/// per era, own/opponent breweries are per-cube). This stops the AI from
+/// stacking sellable tile after tile while only the first few can ever flip.
+fn sell_saturation(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> f64 {
+    let connected = connected_locations(state, loc);
+    let supply = find_beer_sources(state, loc, pid, &[]).len() as f64
+        + state
+            .merchants
+            .iter()
+            .filter(|mt| mt.has_beer && connected.contains(&mt.loc))
+            .count() as f64;
+    let mut demand = 1.0; // the tile being evaluated
+    for (i, l) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
+        for slot in 0..city_slots(*l).len() {
+            let key = city_slot_offsets()[i] + slot;
+            if let Some(t) = state.city_tiles[key].as_ref() {
+                if t.player == pid && !t.flipped && t.ind.is_sellable() {
+                    if *l == loc || connected.contains(l) {
+                        demand += t.def.beers_to_sell.unwrap_or(1) as f64;
+                    }
+                }
+            }
+        }
+    }
+    if supply >= demand {
+        1.0
+    } else {
+        supply / demand
+    }
+}
+
 fn estimate_flip_probability(
     state: &GameState<impl Rng>,
     pid: usize,
@@ -388,19 +423,23 @@ fn estimate_flip_probability(
     } else {
         // Sellable tiles ONLY flip when sold: that requires a reachable
         // merchant that accepts this industry AND beer to fuel the sale. A
-        // tile is still attractive if a merchant is nearby (network can reach
-        // it), so keep a decent base even before links are laid.
-        let mut b = 0.35f64;
+        // tile with neither path is nearly worthless unflipped — keep the
+        // base honestly low so expensive builds don't get credit for a
+        // "double-score" they can never realize.
+        let mut b = 0.12f64;
         let connected = connected_locations(state, city_id);
         let has_reachable_merchant = state.merchants.iter().any(|mt| {
             connected.contains(&mt.loc) && mt.accepts(ind)
         });
         if has_reachable_merchant {
-            b += 0.3;
+            // A merchant is only worth real flip credit if there is beer to
+            // fuel the sale; without beer it's a dead end this era.
             let beer_ok = find_beer_sources(state, city_id, pid, &[]).len() > 0
                 || beer_barrels_reachable(state, city_id);
             if beer_ok {
-                b += 0.3;
+                b += 0.6;
+            } else {
+                b += 0.1;
             }
         }
         // Adjacent unbuilt links mean a merchant can still be connected later.
@@ -411,6 +450,10 @@ fn estimate_flip_probability(
         if estimate_rounds_remaining(state) < 2.0 {
             b -= 0.2;
         }
+        // Beer-capacity gate: if the player already has more unflipped
+        // sellable tiles in this beer pool than beer can fuel, this marginal
+        // tile likely never sells. Scale the flip odds down accordingly.
+        b *= sell_saturation(state, pid, city_id);
         b
     };
     base.clamp(0.05, 1.0)
@@ -525,6 +568,23 @@ fn resource_source_ratio(state: &GameState<impl Rng>, cand: &BuildTarget) -> f64
     free_available += free_coal.min(cand.cost_coal as f64);
     free_available += free_iron.min(cand.cost_iron as f64);
     (free_available / needed).clamp(0.0, 1.0)
+}
+
+/// Can `pid` sell a tile of this industry at `loc` right now (reachable
+/// merchant accepting it + beer available to fuel the sale)?
+fn immediate_sellable(state: &GameState<impl Rng>, pid: usize, ind: IndustryType, loc: Loc) -> bool {
+    if !ind.is_sellable() {
+        return false;
+    }
+    let connected = connected_locations(state, loc);
+    let merchant_ok = state
+        .merchants
+        .iter()
+        .any(|mt| connected.contains(&mt.loc) && mt.accepts(ind));
+    if !merchant_ok {
+        return false;
+    }
+    find_beer_sources(state, loc, pid, &[]).len() > 0 || beer_barrels_reachable(state, loc)
 }
 
 fn score_build_candidate(
@@ -769,11 +829,40 @@ fn score_build_candidate(
 
     if state.era == Era::Canal {
         if tile.level >= 2 {
-            score *= 2.0;
+            // The canal cross-era boost (rail tiles double-score at both era
+            // ends) is only real if the tile will actually flip. A sellable
+            // tile with no merchant+beer path can't be sold, so its double-
+            // score promise is hollow — scale the boost down (or off) when
+            // flip odds are low. `flip_prob` already encodes merchant/beer
+            // reachability for sellable tiles, market hunger for coal/iron,
+            // and consumption pressure for breweries.
+            let boost = if flip_prob >= 0.6 {
+                2.0
+            } else if flip_prob >= 0.35 {
+                1.3
+            } else {
+                1.0
+            };
+            score *= boost;
         } else {
             // Canal level-1 board presence is often disposable tempo only; keep
             // it legal but clearly behind develop->level-2 lines.
             score -= 1.8;
+        }
+    }
+
+    // Doomed-build guardrail: a canal-only (level-1) tile built so late in the
+    // canal era that it cannot flip before era end is removed at the
+    // transition without ever scoring — a pure cash sink (e.g. a £21 pottery
+    // built in round 7-8 that nobody can sell in time). Heavily penalize
+    // unless it can be sold immediately this turn. This also propagates into
+    // the loan scorer's `best_affordable_build_score`, so it stops loaning
+    // just to fund such a build.
+    if state.era == Era::Canal && !tile.rail_era {
+        let rounds_left = estimate_rounds_remaining(state);
+        if rounds_left <= 2.0 && !immediate_sellable(state, pid, cand.ind, cand.loc) {
+            let urgency = (2.0 - rounds_left).max(0.0);
+            score -= 5.0 + urgency * 4.0;
         }
     }
 

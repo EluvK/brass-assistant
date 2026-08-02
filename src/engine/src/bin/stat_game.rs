@@ -4,7 +4,10 @@ use brass_engine::data::Era;
 use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
 use brass_engine::heuristic_ai;
 use brass_engine::map::{city_slots, Loc};
+use brass_engine::mcts_ai::{self, MctsConfig};
+use brass_engine::random_ai;
 use brass_engine::rules::Move;
+use brass_engine::search_ai;
 use brass_engine::state::{city_slot_offsets, GameState};
 use rand::SeedableRng;
 
@@ -58,6 +61,10 @@ fn flipped_desc(state: &GameState<impl rand::Rng>) -> Vec<String> {
 fn main() {
     let seed: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(7);
     let players: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(4);
+    let policy = std::env::args()
+        .nth(3)
+        .unwrap_or_else(|| "heuristic".to_string());
+    let sims: usize = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(300);
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
 
@@ -80,7 +87,19 @@ fn main() {
         guard += 1;
         let pid = state.current_player_id();
         let target = if state.era == Era::Canal { &mut canal[pid] } else { &mut rail[pid] };
-        let mv = heuristic_ai::choose_action(&mut state).mv;
+        let mv = match policy.as_str() {
+            "random" => random_ai::choose_random_move(&mut state)
+                .unwrap_or_else(|| heuristic_ai::pass_decision(&state).mv),
+            "2ply" => search_ai::choose_action_2ply(&mut state).mv,
+            "mcts" => {
+                let cfg = MctsConfig {
+                    simulations: sims,
+                    ..Default::default()
+                };
+                mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+            }
+            _ => heuristic_ai::choose_action(&mut state).mv,
+        };
         match &mv {
             Move::Build { ind, .. } => target.build[*ind as usize] += 1,
             Move::Network { .. } => target.network += 1,
