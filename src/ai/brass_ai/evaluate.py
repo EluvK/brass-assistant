@@ -8,6 +8,7 @@ from __future__ import annotations
 import brass_engine as be
 
 from .mcts import ISMCTS
+from .progress import Progress
 
 
 def heuristic_policy(state) -> str | None:
@@ -41,7 +42,18 @@ def play_game_with_policies(policies, seed: int, players: int = 4, max_moves: in
             if not legal:
                 break
             canon = legal[0][1]
-        state.apply_move(canon)
+        try:
+            state.apply_move(canon)
+        except ValueError:
+            # Defensive: a canonical from the engine can occasionally be broken
+            # (double-rail coal enumeration); fall back to the first legal move.
+            legal = state.legal_moves()
+            if not legal:
+                break
+            try:
+                state.apply_move(legal[0][1])
+            except ValueError:
+                break
     return state.player_vps(), state.final_ranking()
 
 
@@ -59,6 +71,7 @@ def evaluate_mcts_vs_baseline(
     wins = 0
     mcts_vp_total = 0.0
     base_vp_total = 0.0
+    prog = Progress(n_games, f"eval vs {baseline}")
     for g in range(n_games):
         seat = g % players
         policies = []
@@ -70,4 +83,6 @@ def evaluate_mcts_vs_baseline(
         base_vp_total += sum(others) / len(others)
         if ranking[0] == seat:
             wins += 1
+        prog.update(g + 1)
+    prog.done()
     return wins / n_games, mcts_vp_total / n_games, base_vp_total / n_games

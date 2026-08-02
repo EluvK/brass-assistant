@@ -27,6 +27,14 @@ class Sample:
     opp_hands: np.ndarray  # (105,)
     policy: np.ndarray  # (1316,) dense over policy slots
     value: float
+    legal: np.ndarray  # (1316,) bool mask of legal policy slots
+
+
+def _legal_mask_bool(state, table_size: int) -> np.ndarray:
+    mask = np.zeros(table_size, dtype=bool)
+    for s in state.legal_mask():
+        mask[s] = True
+    return mask
 
 
 @dataclass
@@ -85,10 +93,22 @@ def play_game(
         policy = _dense_policy(result.visits, table_size)
         samples.append(
             Sample(pid=pid, board=board, links=links, global_vec=g,
-                   own_hand=oh, opp_hands=op, policy=policy, value=0.0)
+                   own_hand=oh, opp_hands=op, policy=policy, value=0.0,
+                   legal=_legal_mask_bool(state, table_size))
         )
         chosen = _sample_move(result, cfg.temperature)
-        state.apply_move(chosen)
+        try:
+            state.apply_move(chosen)
+        except ValueError:
+            # Defensive: fall back to the search's best (executable) move, then
+            # to the first legal move if needed.
+            try:
+                state.apply_move(result.best)
+            except ValueError:
+                legal = state.legal_moves()
+                if not legal:
+                    break
+                state.apply_move(legal[0][1])
 
     vps = state.player_vps()
     z = _normalize(np.asarray(vps, dtype=np.float64))
@@ -102,6 +122,43 @@ def _normalize(vps: np.ndarray) -> np.ndarray:
     if std < 1e-6:
         return np.zeros_like(vps)
     return (vps - vps.mean()) / std
+
+
+def generate_imitation_samples(n_games: int, players: int = 4, max_moves: int = 600):
+    """Heuristic-vs-heuristic games: one-hot imitation samples (cheap, no MCTS).
+
+    Each move records the state + the heuristic's chosen policy slot (one-hot)
+    with the game's normalized VP as the value target. ~0.5s/game."""
+    samples: list[Sample] = []
+    table = be.policy_table_size
+    for gi in range(n_games):
+        state = be.GameState(seed=gi, players=players)
+        local = []
+        moves = 0
+        while not state.game_over and moves < max_moves:
+            moves += 1
+            canon, _, _ = state.choose_heuristic()
+            if canon is None:
+                break
+            pid = state.current_player_id
+            slot = be.moves_to_slots(canon)[0]
+            policy = np.zeros(table, dtype=np.float32)
+            policy[slot] = 1.0
+            board, links, g, oh, op = state.state_to_tensor()
+            local.append(
+                Sample(pid=pid, board=board, links=links, global_vec=g,
+                       own_hand=oh, opp_hands=op, policy=policy, value=0.0,
+                       legal=_legal_mask_bool(state, table))
+            )
+            try:
+                state.apply_move(canon)
+            except ValueError:
+                break
+        z = _normalize(np.asarray(state.player_vps(), dtype=np.float64))
+        for s in local:
+            s.value = z[s.pid]
+        samples.extend(local)
+    return samples
 
 
 def play_batch(

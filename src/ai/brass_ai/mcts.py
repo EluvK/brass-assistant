@@ -45,13 +45,18 @@ class SearchResult:
 
 @dataclass
 class Node:
-    state: object
+    state: object  # None until lazily materialized for children
     legal: list = field(default_factory=list)  # [(slot, canonical, describe)]
     prior: np.ndarray = None  # aligned with children
     visits: int = 0
     value_sum: np.ndarray = None  # per player (MaxN)
     children: list = field(default_factory=list)
     n_players: int = 4
+    # Lazy child materialization: children hold a reference to the (immutable)
+    # parent state + their canonicals, and only clone+apply on first descent.
+    _parent_state: object = None
+    _canonicals: list = None  # type: ignore[assignment]
+    _canonical_used: str = None  # the canonical that actually applied
 
     @property
     def is_expanded(self) -> bool:
@@ -104,11 +109,29 @@ class ISMCTS:
         if not root.children:
             return SearchResult(None)
 
-        best = max(root.children, key=lambda c: c.visits)
         canon_by_slot = {slot: canon for (slot, canon, _) in root.legal}
-        best_canonical = canon_by_slot[
-            next(slot for (slot, _, _), c in zip(root.legal, root.children) if c is best)
-        ]
+        # Pick the most-visited child whose canonical is actually executable
+        # (materialize lazily; skip children that can't be played).
+        best_canonical = None
+        for c in sorted(root.children, key=lambda x: -x.visits):
+            if c.state is None:
+                state, canon = self._make_child(c._parent_state, c._canonicals)
+                c.state = state
+                c._parent_state = None
+                c._canonicals = None
+                c._canonical_used = canon
+            else:
+                # Already materialized during simulation: use the canonical that
+                # actually applied (NOT canonicals[0], which may be broken).
+                if c._canonical_used is not None:
+                    canon = c._canonical_used
+                else:
+                    slot = next(s for (s, _, _), cc in zip(root.legal, root.children) if cc is c)
+                    canon = canon_by_slot[slot]
+            if canon is not None:
+                best_canonical = canon
+                break
+
         visits = {slot: c.visits for (slot, _, _), c in zip(root.legal, root.children)}
         return SearchResult(best=best_canonical, visits=visits, canon_by_slot=canon_by_slot)
 
@@ -124,11 +147,23 @@ class ISMCTS:
                 value = self._eval_value(node)
                 break
             if not node.is_expanded:
-                # Expands (populating node.legal) and returns a value; if no
-                # legal moves it falls back to a leaf evaluation.
+                # Expands (populating node.legal + lazy children) and returns a
+                # value; if no legal moves it falls back to a leaf evaluation.
                 value = self._expand(node)
                 break
             node = self._select(node)
+            # Materialize the selected child lazily (clone+apply on first visit).
+            if node.state is None:
+                node.state, node._canonical_used = self._make_child(
+                    node._parent_state, node._canonicals
+                )
+                node._parent_state = None
+                node._canonicals = None
+                if node.state is None:
+                    # No executable canonical (engine enumerated a broken move):
+                    # treat this line as a draw-ish leaf and stop descending.
+                    value = np.zeros(node.n_players, dtype=np.float64)
+                    break
             path.append(node)
             depth += 1
 
@@ -150,20 +185,19 @@ class ISMCTS:
 
     # --------------------------------------------------------------- expand
     def _expand(self, node: Node) -> np.ndarray:
-        """Create children for each legal slot; evaluate priors (to-move player)
-        and the MaxN value vector (all players) in one batched forward.
+        """Create lazy children for each legal slot; evaluate priors (to-move
+        player) and the MaxN value vector (all players) in one batched forward.
 
-        Slots whose every canonical move fails to execute are dropped (the
-        engine can enumerate double-rail coal choices that do not actually
-        apply; we match the Rust MCTS by skipping them)."""
+        Child states are NOT materialized here (that was ~2.7k clone+apply per
+        ~40 sims); each child stores a reference to the immutable parent state
+        and clones only on first descent (_simulate)."""
         groups = self._group_legal(node.state)
         node.legal = []
         children = []
         for slot, (describe, canonicals) in groups.items():
-            child_state = self._make_child(node.state, canonicals)
-            if child_state is None:
-                continue
-            child = Node(state=child_state, n_players=node.n_players)
+            child = Node(state=None, n_players=node.n_players)
+            child._parent_state = node.state
+            child._canonicals = canonicals
             child.value_sum = np.zeros(node.n_players, dtype=np.float64)
             children.append(child)
             node.legal.append((slot, canonicals[0], describe))
@@ -200,15 +234,17 @@ class ISMCTS:
 
     @staticmethod
     def _make_child(state, canonicals):
-        """Clone `state` and apply the first executable canonical; None if none."""
+        """Clone `state` and apply the first executable canonical.
+
+        Returns (child_state, canonical_used); (None, None) if none works."""
         for canonical in canonicals:
             c = state.clone()
             try:
                 c.apply_move(canonical)
-                return c
+                return c, canonical
             except ValueError:
                 continue
-        return None
+        return None, None
 
     # -------------------------------------------------------------- evaluate
     def _eval_value(self, node: Node) -> np.ndarray:

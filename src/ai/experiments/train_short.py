@@ -19,7 +19,7 @@ from brass_ai.evaluate import evaluate_mcts_vs_baseline
 from brass_ai.mcts import ISMCTS, MCTSConfig
 from brass_ai.net import PolicyValueNet
 from brass_ai.selfplay import SelfPlayConfig, play_batch
-from brass_ai.train import TrainConfig, train_on_samples
+from brass_ai.train import TrainConfig, Trainer
 
 
 def main():
@@ -41,7 +41,9 @@ def main():
 
     net = PolicyValueNet()
     mcts = ISMCTS(net, MCTSConfig(c_puct=1.5, max_depth=8), device=device)
-    tc = TrainConfig(device=device, epochs=args.epochs, batch_size=args.batch, lr=args.lr)
+    trainer = Trainer(net, TrainConfig(
+        device=device, epochs=args.epochs, batch_size=args.batch, lr=args.lr,
+    ))
     sp = SelfPlayConfig(players=4, sims=args.sims, temperature=1.0, max_moves=600)
 
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
@@ -54,7 +56,7 @@ def main():
         sp_t = time.time() - t0
 
         t1 = time.time()
-        losses = train_on_samples(net, samples, tc)
+        losses = trainer.train_on_samples(samples)
         tr_t = time.time() - t1
 
         wr_h, mvp_h, hvp_h = evaluate_mcts_vs_baseline(

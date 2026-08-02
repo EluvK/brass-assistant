@@ -202,5 +202,71 @@ autocast；`ISMCTS(device=...)` 把网络与 batch 搬到 GPU。`mcts.py` 已支
 2. 提高自对弈吞吐（提高 sims / 多进程 / 阶段 H 搬回 Rust）以提供足够多样数据；
 3. 持久化 optimizer + LR schedule，避免每迭代重建 Adam 的动量丢失。
 
+### Step 0 去风险验证（已完成，2026-08）
+
+`train.py` 重构为持久 `Trainer`（常驻 AdamW + CosineAnnealingLR，跨代保留状态，
+`state_dict` 可存/载）。`src/ai/selfplay_from_bootstrap.py` 从 `bootstrap.pt` 起点，
+低 LR(1e-4) 微调，自对弈 3 轮（sims=120，2 局/轮），每轮仅 vs 启发式快评（2 局）。
+
+**结果：未塌缩。** MCTS vs 启发式 VP：48.5 → 27.0 → 35.5 → **59.0**（启发式 79.8→66.0），
+逼近基线。对照随机起点的 5 轮塌缩到 0 VP，bootstrap 起点 + 持久优化器 + 低 LR
+微调的组合方向正确。Trainer 状态存 `checkpoints/selfplay0_it*.pt`。
+
+注意点（供 Step 1）：
+- 单次评估仅 2 局噪声大（VP 波动 ±15）；正式评估需多局或滚动平均。
+- 本次 `t_max=iters*epochs=9` 使 LR 快速退到 1e-5；正式训练应把 `t_max` 设为总轮数。
+- 自对弈吞吐 ~3min/2 局（sims=120），多进程仍是关键杠杆。
+
+### Step 1 发现与实验 V1（2026-08）
+
+多进程 worker 池（`mp_selfplay.py`，spawn，8 workers → 4.7× 吞吐）、持久 Trainer、
+评估门控回退均已实现。但诊断出两个核心事实：
+
+1. **自对弈训练塌缩**：从 bootstrap 起点跑 8 轮（sims=200，16 局/轮）后 MCTS VP 塌缩到
+   2.6（起点 ~40）。根因：弱 value 使自对弈目标嘈杂 → value 被污染 → MCTS Q 变噪声 →
+   负反馈。`train_mp.py` 现支持评估门控（VP 退化自动回滚到最佳权重）作为防线。
+2. **网络本质弱点**（诊断数据）：
+   - 纯 policy 贪心 = ~7 VP（policy 头模仿不充分）
+   - MCTS（同网络）= ~37 VP（**是 value 头在扛 Q 选择**）
+   - 启发式 = 60-70 VP
+
+**实验 V1（强化 value 头，`exp_value.py`）**：250 局启发式数据，两阶段训练 value——
+- Phase A 只训 value_head（冻结 trunk）：MCTS 39.8 → **42-46 VP**（+3-6，真实但小）
+- Phase B 解冻 trunk 训 value：**变差到 38.5**（共享 trunk 漂移污染冻结的 policy_head；
+  val_mse 虽降到 0.49 但净效果负）
+- 结论：value 头被轻微低估（可免费 +3-6 VP，`best_value.pt` 已存为改进基线），但**不是
+  关键瓶颈**；解冻 trunk 训 value 不可取。
+
+**性能优化**：子节点惰性物化（`mcts.py`，展开时不再一次性 clone 全部 ~68 个孩子，首次
+下降才物化）→ 单模拟 5.6ms → **3.3ms（1.7×）**。全链路接入 `progress.py`（自对弈/评估/
+训练均有 elapsed + ETA 输出）。
+
+### 关键修复：masked policy loss（2026-08，重大突破）
+
+**根因**：`compute_loss` 的 `log_softmax` 在全部 1316 槽上归一化，但目标 `pi` 只在合法槽
+非零。703 个 double-rail 幽灵槽（绝大多数状态非法）仍进分母——初始随机权重下约 **53% 的
+概率质量在幽灵槽上**，网络把大量梯度用于压制它们，与「分辨真实合法动作」争抢信号。
+这解释了 policy 贪心仅 ~7 VP 的异常弱。
+
+**修复**（`train.py compute_loss`）：用每样本的 `legal` 掩码做 masked log_softmax——
+`logits.masked_fill(~mask, -inf)` 归一化只覆盖合法槽，再把非法槽 log_probs 清零避免
+`0×-inf=NaN`。`Sample` 新增 `legal` 字段（`state.legal_mask()` 生成），经 `_to_batch` /
+`mp_selfplay` 打包透传。
+
+**效果**（`experiments/exp_masked_loss.py`，250 局模仿 + 15 epoch）：
+
+| 指标 | 旧（unmasked） | 新（masked） |
+| --- | --- | --- |
+| Greedy policy VP（10 局） | 7.2 | **50.2** |
+| MCTS vs heuristic（8 局） | 34.5 / 69.8 | **72.6 / 65.2，胜率 62%** |
+| MCTS vs 2ply（8 局） | ~61 / 78 | **70.8 / 75.8** |
+
+结论：masked-loss 是弱 policy 的元凶，修复后 MCTS 反超启发式、逼近 2ply。当前最佳基线
+为 `checkpoints/best_masked.pt`。这同时回答了「1316 维动作空间会不会有问题」——问题不在
+维度本身，而在 loss 未掩码；掩码后幽灵槽零梯度，维度开销可忽略。
+
+
+
+
 
 

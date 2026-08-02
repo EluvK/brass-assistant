@@ -1,16 +1,16 @@
+import numpy as np
 import torch
 
+from brass_ai.mcts import ISMCTS, MCTSConfig
 from brass_ai.net import PolicyValueNet
 from brass_ai.selfplay import SelfPlayConfig, play_game
-from brass_ai.train import TrainConfig, train_on_samples
+from brass_ai.train import TrainConfig, Trainer, compute_loss
 
 
-def test_train_on_samples_reduces_loss():
+def test_trainer_reduces_loss_and_is_persistent():
     torch.manual_seed(0)
     torch.set_num_threads(2)
     net = PolicyValueNet()
-    from brass_ai.mcts import ISMCTS, MCTSConfig
-
     mcts = ISMCTS(net, MCTSConfig(c_puct=1.5, max_depth=8))
     samples, _ = play_game(
         mcts, SelfPlayConfig(players=4, sims=20, max_moves=120, seed=3)
@@ -18,13 +18,7 @@ def test_train_on_samples_reduces_loss():
     assert len(samples) >= 10
 
     cfg = TrainConfig(device="cpu", epochs=3, batch_size=32, lr=1e-3)
-    before = {"policy": 0.0, "value": 0.0}
-    l1 = train_on_samples(net, samples[:], cfg)
-    # After training on the same data, policy loss should drop.
-    net.eval()
-    import numpy as np
-
-    from brass_ai.train import compute_loss
+    trainer = Trainer(net, cfg)
 
     b = {
         "board": np.stack([s.board for s in samples]).astype("f4"),
@@ -34,8 +28,39 @@ def test_train_on_samples_reduces_loss():
         "opp_hands": np.stack([s.opp_hands for s in samples]).astype("f4"),
         "policy": np.stack([s.policy for s in samples]).astype("f4"),
         "value": np.asarray([s.value for s in samples]).astype("f4"),
+        "legal": np.stack([s.legal for s in samples]).astype(bool),
     }
+
+    net.eval()
     with torch.no_grad():
-        pl, vl, _ = compute_loss(b, net, 0.0, "cpu")
-    assert pl.item() < l1["policy"] * 1.5 or True  # loss broadly decreases
-    assert l1["policy"] > 0
+        pl_before, _, _ = compute_loss(b, net, 0.0, "cpu")
+
+    trainer.train_on_samples(samples[:])
+
+    # Trainer must keep its optimizer across calls (state persists).
+    assert trainer.optimizer.state, "optimizer should have state after a step"
+    before_lr = trainer.current_lr()
+    trainer.train_on_samples(samples[:])  # second call reuses the same optimizer
+    assert trainer.epoch_count == 2 * cfg.epochs
+
+    # Loss on the training data should drop after fitting.
+    net.eval()
+    with torch.no_grad():
+        pl_after, _, _ = compute_loss(b, net, 0.0, "cpu")
+    assert pl_after.item() < pl_before.item(), \
+        "policy loss should decrease after training"
+    assert before_lr > 0.0
+
+
+def test_trainer_state_roundtrip():
+    torch.manual_seed(1)
+    net = PolicyValueNet()
+    trainer = Trainer(net, TrainConfig(device="cpu", epochs=1, batch_size=16))
+    sd = trainer.state_dict()
+    net2 = PolicyValueNet()
+    trainer2 = Trainer(net2, TrainConfig(device="cpu", epochs=1, batch_size=16))
+    trainer2.load_state_dict(sd)
+    assert trainer2.epoch_count == 0
+    # loaded weights are identical
+    for p1, p2 in zip(trainer.net.parameters(), trainer2.net.parameters()):
+        assert torch.equal(p1.detach().cpu(), p2.detach().cpu())
