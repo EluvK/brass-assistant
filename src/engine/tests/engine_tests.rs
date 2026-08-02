@@ -67,6 +67,16 @@ fn place_test_brewery(state: &mut GameState<StdRng>, loc: Loc, owner: usize, cub
     );
 }
 
+fn test_coal_from_cannock(state: &GameState<StdRng>) -> brass_engine::graph::CoalSource {
+    let key = state.city_slot_key(Loc::Cannock, 0).expect("cannock coal slot");
+    brass_engine::graph::CoalSource {
+        kind: brass_engine::graph::CoalSourceKind::Mine,
+        key,
+        price: 0,
+        free: true,
+    }
+}
+
 fn place_test_presence_tile(state: &mut GameState<StdRng>, loc: Loc, owner: usize) {
     state.place_tile(
         loc,
@@ -224,7 +234,15 @@ fn build_changes_board_and_discards_card() {
         })
         .expect("valid build target must have a matching card");
 
-    let res = execute_build(&mut state, pid, t.loc, t.slot_index, t.ind, card_idx);
+    let coal = brass_engine::rules::coal_source_options(&state, t.loc, t.cost_coal as usize)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let iron = brass_engine::rules::iron_source_options(&state, t.cost_iron as usize)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let res = execute_build(&mut state, pid, t.loc, t.slot_index, t.ind, &coal, &iron, card_idx);
     assert!(res.is_ok(), "build failed: {:?}", res);
     assert_eq!(state.players[pid].hand.len(), hand_before - 1);
 }
@@ -236,7 +254,7 @@ fn execute_network_places_link() {
     let targets = get_valid_network_targets(&state, pid);
     assert!(targets.len() > 0, "no network targets at setup");
     let conn_id = targets[0];
-    let res = execute_network(&mut state, pid, conn_id, 0);
+    let res = execute_network(&mut state, pid, conn_id, None, 0);
     assert!(res.is_ok(), "network failed: {:?}", res);
     assert!(state.links[conn_id].is_some());
 }
@@ -464,7 +482,15 @@ fn execute_network_double_consumes_two_coal_and_one_own_beer() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
 
-    let res = execute_network_double(&mut state, pid, 15, 33, 0);
+    let own_beer = brass_engine::graph::BeerSource {
+        kind: brass_engine::graph::BeerSourceKind::Own,
+        key: usize::MAX,
+        farm_idx: Some(1),
+        merchant_idx: None,
+    };
+    let coal1 = test_coal_from_cannock(&state);
+    let coal2 = test_coal_from_cannock(&state);
+    let res = execute_network_double(&mut state, pid, 15, 33, coal1, coal2, own_beer, 0);
 
     assert!(res.is_ok(), "double rail should succeed with 2 coal and 1 own beer available: {res:?}");
     let coal_tile = state.tile_at(Loc::Cannock, 0).expect("coal tile should remain on board");
@@ -488,7 +514,16 @@ fn execute_network_double_can_use_connected_opponent_beer() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::Stone, 1, 1);
 
-    let res = execute_network_double(&mut state, pid, 15, 33, 0);
+    let stone_key = state.city_slot_key(Loc::Stone, 0).expect("stone slot should exist");
+    let opp_beer = brass_engine::graph::BeerSource {
+        kind: brass_engine::graph::BeerSourceKind::Opponent,
+        key: stone_key,
+        farm_idx: None,
+        merchant_idx: None,
+    };
+    let coal1 = test_coal_from_cannock(&state);
+    let coal2 = test_coal_from_cannock(&state);
+    let res = execute_network_double(&mut state, pid, 15, 33, coal1, coal2, opp_beer, 0);
 
     assert!(res.is_ok(), "connected opponent beer should be usable for double rail: {res:?}");
     let opp_brewery = state.tile_at(Loc::Stone, 0).expect("opponent brewery should remain on board");
@@ -503,9 +538,17 @@ fn execute_network_double_without_connected_beer_rolls_back_temp_changes() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::BrewerySouth, 1, 1);
 
-    let res = execute_network_double(&mut state, pid, 15, 33, 0);
+    let opp_beer = brass_engine::graph::BeerSource {
+        kind: brass_engine::graph::BeerSourceKind::Opponent,
+        key: usize::MAX,
+        farm_idx: Some(1),
+        merchant_idx: None,
+    };
+    let coal1 = test_coal_from_cannock(&state);
+    let coal2 = test_coal_from_cannock(&state);
+    let res = execute_network_double(&mut state, pid, 15, 33, coal1, coal2, opp_beer, 0);
 
-    assert_eq!(res, Err("No beer available for the second link".to_string()));
+    assert_eq!(res, Err("Chosen beer source is not legal for the second link".to_string()));
     let coal_tile = state.tile_at(Loc::Cannock, 0).expect("coal tile should remain on board");
     assert_eq!(coal_tile.resource_cubes, 2, "failed double rail must not consume coal");
     assert!(!coal_tile.flipped, "failed double rail must not flip the coal mine");
@@ -516,6 +559,58 @@ fn execute_network_double_without_connected_beer_rolls_back_temp_changes() {
     assert!(state.links[15].is_none() && state.links[33].is_none(), "failed double rail must not leave links on the board");
     assert_eq!(state.players[pid].money, 100, "failed double rail must not spend money");
     assert_eq!(state.players[pid].rail_links, LINKS_PER_PLAYER, "failed double rail must not consume rail links");
+}
+
+#[test]
+fn network_rejects_market_coal_while_free_source_available() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    // Player has presence + a connected free coal source (Cannock mine).
+    place_test_presence_tile(&mut state, Loc::Stafford, pid);
+    place_test_coal_mine(&mut state, 1);
+    state.links[15] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+
+    // Build a rail link using a PAID market coal source while a free connected
+    // mine (Cannock) is available -> must fail under the free-first rule.
+    let market_coal = brass_engine::graph::CoalSource {
+        kind: brass_engine::graph::CoalSourceKind::Market,
+        key: usize::MAX,
+        price: state.coal_price(),
+        free: false,
+    };
+    let res = execute_network(&mut state, pid, 33, Some(market_coal), 0);
+    assert_eq!(
+        res,
+        Err("Free sources must be used before the market".to_string()),
+        "market coal must be rejected while a free source is available"
+    );
+    assert!(state.links[33].is_none(), "failed network must not place the link");
+    let mine = state.tile_at(Loc::Cannock, 0).expect("cannock mine should remain");
+    assert_eq!(mine.resource_cubes, 2, "failed network must not consume free coal");
+    assert!(!mine.flipped, "failed network must not flip the mine");
+}
+
+#[test]
+fn network_uses_the_explicitly_chosen_free_coal_source() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    place_test_presence_tile(&mut state, Loc::Stafford, pid);
+    place_test_coal_mine(&mut state, 1);
+    state.links[15] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+
+    // Explicitly choose the Cannock free mine as the rail coal source.
+    let coal_key = state.city_slot_key(Loc::Cannock, 0).expect("cannock slot");
+    let coal = brass_engine::graph::CoalSource {
+        kind: brass_engine::graph::CoalSourceKind::Mine,
+        key: coal_key,
+        price: 0,
+        free: true,
+    };
+    let res = execute_network(&mut state, pid, 33, Some(coal), 0);
+    assert!(res.is_ok(), "free coal network should succeed: {res:?}");
+    assert!(state.links[33].is_some());
+    let mine = state.tile_at(Loc::Cannock, 0).expect("cannock mine should remain");
+    assert_eq!(mine.resource_cubes, 1, "one free coal cube should be consumed");
 }
 
 #[test]

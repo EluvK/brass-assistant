@@ -158,6 +158,7 @@ TTS 官方热门的《伯明翰》Mod 的 **Lua 脚本**，是 TTS 集成与数�
 - **rail_era（2级+）板块翻面后 VP 在两个时代末各计一次**（`scoring.rs score_era` 在运河/铁路各调一次）；AI 建厂评分用 1.1x（运河）/2x（铁路）反映（`heuristic_ai.rs double_vp`）
 - **可卖板块（棉/陶/制造）只有卖出才翻面**：AI 的 `estimate_flip_probability` 必须要求"连通接受该产业的商家 + 有啤酒可用"才给高翻面概率，否则低分（这是贷款→建厂→翻面→回收入经济链的关键）
 - **啤酒按需供给**：酒桶数应匹配自己未翻面可卖板块的 `beers_to_sell` 需求 + 铁路建网缓冲，超出即浪费（`heuristic_ai.rs sellable_beer_demand`）
+- **煤/铁源选择必须显式建模**（与啤酒选择同原则）：`Move::Build/Network/NetworkDouble/Develop` 都携带显式的 `coal`/`iron` 源列表；执行时校验（a）数量匹配（b）所选源当前可用（c）**免费优先**：有免费源时不得用市场源（防玩家故意不翻对手建筑）。`rules.rs` 的 `source_options`/`validate_source_choice` 是唯一事实来源，AI/heuristic/MCTS 都必须从这里取合法源，禁止执行函数内再自动挑源（`cheapest_coal_for_connection` 仅用于候选生成的成本估算）
 
 ## 9. 已裁决的规则分歧（以用户规则书为准）
 

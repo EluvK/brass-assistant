@@ -156,13 +156,13 @@ fn neighbors_of(a: Loc, b: Loc, via: Option<Loc>, here: Loc) -> [Option<Loc>; 2]
 // Resource sources
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CoalSourceKind {
     Mine,
     Market,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CoalSource {
     pub kind: CoalSourceKind,
     /// City slot key for a mine; usize::MAX for market.
@@ -249,7 +249,7 @@ pub fn find_coal_sources(state: &GameState<impl Rng>, loc: Loc) -> Vec<CoalSourc
     sources
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IronSource {
     pub key: usize, // city slot key; usize::MAX for market
     pub price: u8,
@@ -289,14 +289,14 @@ pub fn find_iron_sources(state: &GameState<impl Rng>) -> Vec<IronSource> {
     sources
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BeerSourceKind {
     Own,
     Opponent,
     Merchant,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BeerSource {
     pub kind: BeerSourceKind,
     pub key: usize, // city slot key; usize::MAX for farm/merchant

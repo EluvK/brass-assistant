@@ -73,17 +73,24 @@ enum MoveKey {
         loc: Loc,
         slot: usize,
         ind: IndustryType,
+        coal: Vec<(crate::graph::CoalSourceKind, usize)>,
+        iron: Vec<(usize, bool)>,
     },
     Network {
         conn: usize,
+        coal: Option<crate::graph::CoalSource>,
     },
     NetworkDouble {
         c1: usize,
         c2: usize,
+        coal1: crate::graph::CoalSource,
+        coal2: crate::graph::CoalSource,
+        beer: crate::graph::BeerSource,
     },
     Develop {
         i1: IndustryType,
         i2: Option<IndustryType>,
+        iron: Vec<(usize, bool)>,
     },
     ResolveFreeDevelop {
         i1: IndustryType,
@@ -103,20 +110,42 @@ enum MoveKey {
 
 fn move_key(mv: &Move) -> MoveKey {
     match mv {
-        Move::Build { loc, slot_index, ind, .. } => MoveKey::Build {
-            loc: *loc,
-            slot: *slot_index,
-            ind: *ind,
+        Move::Build { loc, slot_index, ind, coal, iron, .. } => {
+            let mut coal_ids: Vec<(crate::graph::CoalSourceKind, usize)> =
+                coal.iter().map(|c| (c.kind, c.key)).collect();
+            coal_ids.sort_unstable();
+            let mut iron_ids: Vec<(usize, bool)> =
+                iron.iter().map(|i| (i.key, i.free)).collect();
+            iron_ids.sort_unstable();
+            MoveKey::Build {
+                loc: *loc,
+                slot: *slot_index,
+                ind: *ind,
+                coal: coal_ids,
+                iron: iron_ids,
+            }
+        }
+        Move::Network { conn_id, coal, .. } => MoveKey::Network {
+            conn: *conn_id,
+            coal: *coal,
         },
-        Move::Network { conn_id, .. } => MoveKey::Network { conn: *conn_id },
-        Move::NetworkDouble { conn1, conn2, .. } => MoveKey::NetworkDouble {
+        Move::NetworkDouble { conn1, conn2, coal1, coal2, beer, .. } => MoveKey::NetworkDouble {
             c1: *conn1,
             c2: *conn2,
+            coal1: *coal1,
+            coal2: *coal2,
+            beer: *beer,
         },
-        Move::Develop { ind1, ind2, .. } => MoveKey::Develop {
-            i1: *ind1,
-            i2: *ind2,
-        },
+        Move::Develop { ind1, ind2, iron, .. } => {
+            let mut iron_ids: Vec<(usize, bool)> =
+                iron.iter().map(|i| (i.key, i.free)).collect();
+            iron_ids.sort_unstable();
+            MoveKey::Develop {
+                i1: *ind1,
+                i2: *ind2,
+                iron: iron_ids,
+            }
+        }
         Move::ResolveFreeDevelop { ind1, ind2 } => MoveKey::ResolveFreeDevelop {
             i1: *ind1,
             i2: *ind2,

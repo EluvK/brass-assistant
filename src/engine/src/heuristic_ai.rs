@@ -673,11 +673,23 @@ pub(crate) fn score_top_builds(state: &mut GameState<impl Rng>, pid: usize, k: u
     let mut out = Vec::new();
     for (cand, score) in scored {
         if let Some(card_index) = pick_build_card(state, pid, &cand) {
+            let coal_needed = cand.cost_coal as usize;
+            let iron_needed = cand.cost_iron as usize;
+            let coal = crate::rules::coal_source_options(state, cand.loc, coal_needed)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let iron = crate::rules::iron_source_options(state, iron_needed)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             out.push(Decision {
                 mv: Move::Build {
                     loc: cand.loc,
                     slot_index: cand.slot_index,
                     ind: cand.ind,
+                    coal,
+                    iron,
                     card_index,
                 },
                 score,
@@ -840,9 +852,19 @@ pub(crate) fn score_top_networks(state: &mut GameState<impl Rng>, pid: usize, k:
         .into_iter()
         .filter_map(|(conn_id, score)| {
             let card_index = pick_any_card(state, pid)?;
+            let coal = if state.era == Era::Rail {
+                let conn = &connections()[conn_id];
+                crate::rules::coal_options_for_connection(state, conn, 1)
+                    .into_iter()
+                    .next()
+                    .and_then(|opt| opt.into_iter().next())
+            } else {
+                None
+            };
             Some(Decision {
                 mv: Move::Network {
                     conn_id,
+                    coal,
                     card_index,
                 },
                 score,
@@ -883,11 +905,33 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
         }
     }
     let (conn1, conn2, score) = best?;
+    // Prefer consuming our own beer (advances our own income when it flips) over
+    // an opponent's beer (which would advance theirs).
+    let opt = crate::rules::get_second_rail_options(state, pid, conn1)
+        .into_iter()
+        .find(|o| o.conn == conn2)?;
+    let beer = opt
+        .beers
+        .iter()
+        .copied()
+        .find(|b| b.kind == crate::graph::BeerSourceKind::Own)
+        .or_else(|| opt.beers.first().copied())?;
+    let coal1 = crate::rules::coal_options_for_connection(state, &connections()[conn1], 1)
+        .into_iter()
+        .next()
+        .and_then(|o| o.into_iter().next())?;
+    let coal2 = crate::rules::coal_options_for_connection(state, &connections()[conn2], 1)
+        .into_iter()
+        .next()
+        .and_then(|o| o.into_iter().next())?;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::NetworkDouble {
             conn1,
             conn2,
+            coal1,
+            coal2,
+            beer,
             card_index,
         },
         score,
@@ -985,11 +1029,16 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
         0.0,
     ) - iron_scarcity;
 
+    let iron_needed = if second.is_some() { 2 } else { 1 };
+    let iron_choice = crate::rules::iron_source_options(state, iron_needed)
+        .into_iter()
+        .next()?;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::Develop {
             ind1: first.0,
             ind2: second,
+            iron: iron_choice,
             card_index,
         },
         score,
