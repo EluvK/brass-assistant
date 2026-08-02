@@ -1690,13 +1690,19 @@ pub fn execute_resolve_free_develop(
 
     let first = state.players[pid]
         .consume_tile(ind1)
-        .ok_or("Failed to consume first free develop tile")?;
+        .ok_or("No tile available to develop for first industry")?;
     let mut removed = vec![format!("{} Lv{}", log_industry_label(ind1), first.level)];
-    if let Some(ind2) = ind2 {
-        let second = state.players[pid]
-            .consume_tile(ind2)
-            .ok_or("Failed to consume second free develop tile")?;
-        removed.push(format!("{} Lv{}", log_industry_label(ind2), second.level));
+    if let Some(i2) = ind2 {
+        let t2 = state.players[pid]
+            .consume_tile(i2)
+            .ok_or("No tile available to develop for second industry")?;
+        removed.push(format!("{} Lv{}", log_industry_label(i2), t2.level));
+    }
+    // Track develop-action economy (the free-develop bonus path does NOT go
+    // through here, so it never counts against the action budget).
+    match state.era {
+        crate::data::Era::Canal => state.players[pid].develops_in_canal += 1,
+        crate::data::Era::Rail => state.players[pid].develops_in_rail += 1,
     }
 
     state.pending_bonus = None;

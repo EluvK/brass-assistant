@@ -124,6 +124,10 @@ pub struct Player {
     pub industry_next: [u8; 6],
     pub canal_links: u8,
     pub rail_links: u8,
+    /// Develop actions taken this era (for the action-economy guardrail:
+    /// humans develop ~4x in canal, ~0-1x in rail).
+    pub develops_in_canal: u8,
+    pub develops_in_rail: u8,
     pub has_wild_location: bool,
     pub has_wild_industry: bool,
 }
@@ -149,6 +153,8 @@ impl Player {
             industry_next: [0; 6],
             canal_links: LINKS_PER_PLAYER,
             rail_links: LINKS_PER_PLAYER,
+            develops_in_canal: 0,
+            develops_in_rail: 0,
             has_wild_location: false,
             has_wild_industry: false,
         }

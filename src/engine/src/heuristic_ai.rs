@@ -315,13 +315,11 @@ fn simulate_market_sale(state: &GameState<impl Rng>, is_coal: bool, cubes: u8) -
     }
 }
 
-/// How saturated is the player's sell capacity in `loc`'s beer pool? Ratio of
-/// beer reachable to fuel a sale at `loc` vs. the beer demanded by the
-/// player's unflipped sellable tiles (including the one about to be built)
-/// that share that pool. 1.0 = plenty of beer; <1.0 = the marginal tile
-/// competes for scarce beer and may never sell (merchant barrels are one-shot
-/// per era, own/opponent breweries are per-cube). This stops the AI from
-/// stacking sellable tile after tile while only the first few can ever flip.
+/// How much sell beer remains for the tile being evaluated in `loc`'s beer
+/// pool. The new tile only flips if there is beer LEFT OVER after the player's
+/// already-unflipped sellable tiles in that pool take their share — the new
+/// tile is at the back of the queue. 1.0 = beer to spare; ~0 = every existing
+/// tile already claims the beer, so the marginal tile can't sell this era.
 fn sell_saturation(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> f64 {
     let connected = connected_locations(state, loc);
     let supply = find_beer_sources(state, loc, pid, &[]).len() as f64
@@ -330,24 +328,21 @@ fn sell_saturation(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> f64 {
             .iter()
             .filter(|mt| mt.has_beer && connected.contains(&mt.loc))
             .count() as f64;
-    let mut demand = 1.0; // the tile being evaluated
+    let mut existing_demand = 0.0;
     for (i, l) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
         for slot in 0..city_slots(*l).len() {
             let key = city_slot_offsets()[i] + slot;
             if let Some(t) = state.city_tiles[key].as_ref() {
                 if t.player == pid && !t.flipped && t.ind.is_sellable() {
                     if *l == loc || connected.contains(l) {
-                        demand += t.def.beers_to_sell.unwrap_or(1) as f64;
+                        existing_demand += t.def.beers_to_sell.unwrap_or(1) as f64;
                     }
                 }
             }
         }
     }
-    if supply >= demand {
-        1.0
-    } else {
-        supply / demand
-    }
+    let remaining = (supply - existing_demand).max(0.0);
+    remaining.clamp(0.0, 1.0)
 }
 
 fn estimate_flip_probability(
@@ -416,10 +411,28 @@ fn estimate_flip_probability(
             }
         }
     } else if ind == IndustryType::Brewery {
-        // Beer barrels are consumed by sells AND rail links; a brewery will
-        // likely flip. Level-1 disappears at era end but that's handled in
-        // score_build_candidate via the level bonus.
-        0.7
+        // Beer barrels are consumed by sells AND rail links; a brewery flips
+        // only if there is actual demand for its beer. In the canal era beer
+        // has no use beyond fueling your own sells, so a brewery with no
+        // sellable tiles to feed (or surplus barrels beyond demand) is waste:
+        // it will sit unflipped. In the rail era double-rails also eat beer,
+        // so demand gets a small floor.
+        let next_cubes = state
+            .players
+            .get(pid)
+            .and_then(|p| p.next_tile(ind))
+            .map(|t| t.resource_cubes as usize)
+            .unwrap_or(1);
+        let demand = sellable_beer_demand(state, pid) as f64
+            + if state.era == Era::Rail { 1.0 } else { 0.0 };
+        let barrels = (owned_beer_barrels(state, pid) + next_cubes) as f64;
+        if demand <= 0.5 && state.era == Era::Canal {
+            0.25
+        } else if barrels > demand {
+            0.45
+        } else {
+            0.7
+        }
     } else {
         // Sellable tiles ONLY flip when sold: that requires a reachable
         // merchant that accepts this industry AND beer to fuel the sale. A
@@ -1104,21 +1117,28 @@ fn score_network_candidate(
     } else {
         vp_potential * 0.03 + potential_link_vp * 0.20
     };
-    let has_industry = state
-        .city_tiles
-        .iter()
-        .flatten()
-        .any(|t| t.player == pid);
     let player = &state.players[pid];
     let links_built = if is_canal {
         14 - player.canal_links
     } else {
         14 - player.rail_links
     };
-    let over_networking_penalty = if !has_industry && links_built >= 1 {
-        1.0
+    // Links are only as valuable as the tiles they connect. A player building
+    // far more links than they have productive (flippable) tiles is over-
+    // networking: money locked into potential that never pays off, which is
+    // how broken boards end up with 8-14 links and 0 flips. Penalize the
+    // surplus links proportionally so network "tempo" can't be spammed from a
+    // position with nothing to connect.
+    let productive = state
+        .city_tiles
+        .iter()
+        .flatten()
+        .filter(|t| t.player == pid)
+        .count() as f64;
+    let over_networking_penalty = if productive <= 0.0 {
+        (links_built as f64 - 1.0).max(0.0) * 1.2
     } else {
-        0.0
+        (links_built as f64 - 2.0 * productive - 1.0).max(0.0) * 0.6
     };
     let exploration_bonus = (1.6 - links_built as f64 * 0.3).max(0.0);
 
@@ -1379,6 +1399,22 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
             score += 0.5;
         }
     }
+
+    // Action-economy guardrail: develop is only worth the action budget it
+    // consumes. Humans develop at most ~4 times in the canal era (8 tiles via
+    // double-develops) and ~0-1 times in the rail era — beyond that, develop
+    // crowds out builds/links/sells that actually score (even a bare link
+    // beats a 5th develop). Penalize past the era's limit, growing steeply.
+    let already = if state.era == Era::Canal {
+        state.players[pid].develops_in_canal
+    } else {
+        state.players[pid].develops_in_rail
+    };
+    let this_would_be = already + 1;
+    let limit = if state.era == Era::Canal { 4.0 } else { 1.0 };
+    let over = (this_would_be as f64 - limit).max(0.0);
+    let develop_count_penalty = over * over * 2.0 + over;
+    score -= develop_count_penalty;
 
     let iron_needed = if second.is_some() { 2 } else { 1 };
     let iron_choice = crate::rules::iron_source_options(state, iron_needed)
