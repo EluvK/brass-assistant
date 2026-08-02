@@ -132,9 +132,9 @@ fn main() {
     println!("  翻面建筑: {}", flipped_desc(&state).join(", "));
 
     println!("\n===== 各玩家动作汇总（运河时代 / 铁路时代）=====");
-    let ind_names = [
-        "煤", "铁", "棉", "制造", "陶", "酒",
-    ];
+    // Must match IndustryType discriminant order:
+    // Cotton, Coal, Iron, Manufacturer, Pottery, Brewery.
+    let ind_names = ["棉", "煤", "铁", "制造", "陶", "酒"];
     for pid in 0..players {
         let c = &canal[pid];
         let r = &rail[pid];

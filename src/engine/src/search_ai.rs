@@ -16,12 +16,18 @@ use crate::state::GameState;
 
 /// Discount applied to the look-ahead (best second action) score.
 const ALPHA: f64 = 0.6;
+/// Wider first-action candidate pool: helps uncover tactical combos such as
+/// Network -> Build and Loan -> Build that can be missed by a single
+/// representative candidate per action type.
+const FIRST_ACTION_K: usize = 3;
+/// Slightly wider second-action set for better same-turn continuation quality.
+const SECOND_ACTION_K: usize = 2;
 
 /// Choose the current player's action by 2-ply lookahead over their two
 /// same-turn actions.
 pub fn choose_action_2ply<R: rand::Rng + Clone>(state: &mut GameState<R>) -> Decision {
     let pid = state.current_player_id();
-    let first_candidates = heuristic_ai::candidate_actions(state);
+    let first_candidates = heuristic_ai::candidate_actions_k(state, FIRST_ACTION_K);
 
     let mut best: Option<(crate::rules::Move, f64)> = None;
     for c1 in first_candidates {
@@ -36,7 +42,7 @@ pub fn choose_action_2ply<R: rand::Rng + Clone>(state: &mut GameState<R>) -> Dec
         // If the same player still has a second action this turn, add a
         // discounted bonus for the best same-player continuation.
         let value = if s1.current_player_id() == pid {
-            let second_candidates = heuristic_ai::candidate_actions(&mut s1);
+            let second_candidates = heuristic_ai::candidate_actions_k(&mut s1, SECOND_ACTION_K);
             let mut best_second = f64::NEG_INFINITY;
             for c2 in second_candidates {
                 if c2.score > best_second {

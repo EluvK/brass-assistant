@@ -5,6 +5,7 @@
 //! highest VP-equivalent score. One-ply, no search.
 
 use crate::data::{Era, IndustryType};
+use crate::engine::{advance_turn, TurnResult};
 use crate::graph::{
     connected_locations, find_beer_sources, find_coal_sources, find_iron_sources, is_in_network,
 };
@@ -21,6 +22,21 @@ const VP_WEIGHT: f64 = 1.0;
 const MONEY_WEIGHT: f64 = 0.12;
 const BASE_INCOME_WEIGHT: f64 = 0.35;
 const FLEX_WEIGHT: f64 = 0.8;
+
+// Hard policy constraints (temporary strategic guardrails requested by user).
+const BAN_BUILD_LV1_BREWERY: bool = true;
+const BAN_DEVELOP_IRON_LV2_PLUS: bool = true;
+
+fn develop_guardrail_penalty(ind: IndustryType, level: u8) -> f64 {
+    if level < 2 {
+        return 0.0;
+    }
+    match ind {
+        IndustryType::Brewery => 1.8 + 0.2 * (level.saturating_sub(2)) as f64,
+        IndustryType::CoalMine => 1.5 + 0.2 * (level.saturating_sub(2)) as f64,
+        _ => 0.0,
+    }
+}
 
 pub struct Decision {
     pub mv: Move,
@@ -102,7 +118,10 @@ pub fn pass_decision(state: &GameState<impl Rng>) -> Decision {
 }
 
 fn score_pending_free_develop(state: &GameState<impl Rng>, pid: usize, count: u8) -> Option<Decision> {
-    let types = state.players[pid].developable_types();
+    let mut types = state.players[pid].developable_types();
+    if BAN_DEVELOP_IRON_LV2_PLUS {
+        types.retain(|(ind, tile)| !(*ind == IndustryType::IronWorks && tile.level >= 2));
+    }
     if types.is_empty() {
         return None;
     }
@@ -127,6 +146,7 @@ fn score_pending_free_develop(state: &GameState<impl Rng>, pid: usize, count: u8
             if player_has_buildable_card(state, pid, ind) {
                 v += 0.3;
             }
+            v -= develop_guardrail_penalty(ind, tile.level);
             (ind, v)
         })
         .collect();
@@ -463,6 +483,10 @@ fn score_build_candidate(
     let tile = state.players[pid].next_tile(cand.ind);
     let Some(tile) = tile else { return f64::NEG_INFINITY };
 
+    if BAN_BUILD_LV1_BREWERY && cand.ind == IndustryType::Brewery && tile.level == 1 {
+        return f64::NEG_INFINITY;
+    }
+
     let player = &state.players[pid];
     let cash = player.money as f64;
     let cost = cand.cost_total as f64;
@@ -510,9 +534,15 @@ fn score_build_candidate(
             (14 - state.coal_market) as f64 / 14.0
         } else {
             0.6 * (10 - state.iron_market) as f64 / 10.0
-        };        if market_ok {
+        };
+        if market_ok {
             let sale = simulate_market_sale(state, is_coal, tile.resource_cubes);
             let sell_value = sale.cash * MONEY_WEIGHT;
+            let cash_back_bonus = if sale.cash > 0.0 {
+                sale.cash * 0.11 + if sale.flips { 0.6 } else { 0.0 }
+            } else {
+                0.0
+            };
             let scarcity_value = scarcity * (1.0 + sale.sold as f64) * 0.6;
             let leftover_penalty = if is_coal && state.era == Era::Rail {
                 // In the rail era, coal is consumed by nearly every build and
@@ -522,7 +552,7 @@ fn score_build_candidate(
             } else {
                 (sale.total - sale.sold) as f64 * 0.5
             };
-            sell_value + scarcity_value - leftover_penalty
+            sell_value + cash_back_bonus + scarcity_value - leftover_penalty
         } else {
             // Not merchant-connected: cubes can't be sold today. For an
             // ISLAND COAL MINE this is a strongly negative move in the canal
@@ -601,6 +631,17 @@ fn score_build_candidate(
         };
         let level_bonus = if tile.level >= 2 { 0.3 } else { 0.0 };
         beer_bonus += sell_support + rail_beer_value + level_bonus + sat;
+
+        // Canal-era level-1 brewery is often a weak tempo move: it disappears
+        // at era end and does not support rail links. Bias toward develop-first
+        // (brewery 2+) unless there is clear immediate sell demand.
+        if state.era == Era::Canal && tile.level == 1 {
+            let rounds_left = estimate_rounds_remaining(state);
+            let demand_now = sellable_beer_demand(state, pid) as f64;
+            let no_real_demand = if demand_now < 1.0 { 1.0 } else { 0.0 };
+            let long_horizon = if rounds_left > 3.0 { 1.0 } else { 0.0 };
+            beer_bonus -= 1.0 + 0.7 * no_real_demand + 0.4 * long_horizon;
+        }
     }
 
     // Rail-era tiles score their flipped VP at BOTH era ends (canal survives
@@ -946,7 +987,10 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
     if !can_develop(state, pid) {
         return None;
     }
-    let types = state.players[pid].developable_types();
+    let mut types = state.players[pid].developable_types();
+    if BAN_DEVELOP_IRON_LV2_PLUS {
+        types.retain(|(ind, tile)| !(*ind == IndustryType::IronWorks && tile.level >= 2));
+    }
     if types.is_empty() {
         return None;
     }
@@ -986,6 +1030,7 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
             if player_has_buildable_card(state, pid, ind) {
                 v += 0.3;
             }
+            v -= develop_guardrail_penalty(ind, tile.level);
             (ind, v, tile.level)
         })
         .collect();
@@ -1241,7 +1286,7 @@ fn score_sell_plan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<D
 // LOAN
 // ---------------------------------------------------------------------------
 
-fn score_loan_result(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> {
+fn score_loan_result<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<Decision> {
     if !state.can_take_loan(pid) {
         return None;
     }
@@ -1262,26 +1307,84 @@ fn score_loan_result(state: &GameState<impl Rng>, pid: usize) -> Option<Decision
     let now = best_affordable_build_score(state, pid, cash);
     let gain = (after - now).max(0.0);
 
+    // Same-turn combo value: Loan is strongest when it immediately unlocks a
+    // productive second action (Loan -> Build / Network / Develop / Sell).
+    let mut combo_gain = 0.0;
+    if cash < 24.0 && rounds_left > 1.5 {
+        if let Some(sim_gain) = best_same_turn_after_loan(state, pid) {
+            combo_gain = sim_gain.max(0.0) * 0.7;
+        }
+    }
+
     // Idle protection: if the current hand can't do anything positive, borrow.
     let idle_bonus = if cash < 6.0 { 2.0 } else { 0.0 };
 
     // Income floor: never borrow into deep debt.
-    let floor_penalty = if income_level <= -7 {
-        9.0
-    } else if income_level <= -4 {
-        4.0
-    } else if income_level <= 0 {
+    let post_loan_income = income_level - crate::map::LOAN_INCOME_PENALTY;
+    let floor_penalty = if post_loan_income <= -8 {
+        7.0
+    } else if post_loan_income <= -6 {
+        4.2
+    } else if post_loan_income <= -4 {
+        2.6
+    } else if post_loan_income <= -2 {
+        1.4
+    } else if post_loan_income < 0 {
         0.6
     } else {
         0.0
     };
 
-    let score = gain + idle_bonus - income_cost - floor_penalty;
+    // Do not over-borrow with plenty of cash, and avoid debt spiral in late
+    // era where income recovery window is too short.
+    let rich_penalty = if cash >= 55.0 {
+        5.0
+    } else if cash >= 42.0 {
+        2.4
+    } else if cash >= 30.0 {
+        1.0
+    } else {
+        0.0
+    };
+    let late_era_penalty = if rounds_left <= 1.0 {
+        3.0
+    } else if rounds_left <= 1.5 {
+        1.0
+    } else {
+        0.0
+    };
+    let unlock_bonus = if now <= 0.0 && after > 0.8 {
+        3.2
+    } else {
+        0.0
+    };
+
+    let score = gain + combo_gain + idle_bonus + unlock_bonus - income_cost - floor_penalty - rich_penalty - late_era_penalty;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::Loan { card_index },
         score,
     })
+}
+
+fn best_same_turn_after_loan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<f64> {
+    let card_index = pick_any_card(state, pid)?;
+    let mut sim = state.clone();
+    crate::rules::apply_move(&mut sim, &Move::Loan { card_index }).ok()?;
+    let tr = advance_turn(&mut sim);
+    match tr {
+        TurnResult::Continue => {}
+        TurnResult::EndCanalEra | TurnResult::EndGame => return Some(0.0),
+    }
+    if sim.current_player_id() != pid {
+        return Some(0.0);
+    }
+    let cands = candidate_actions_k(&mut sim, 3);
+    cands
+        .into_iter()
+        .filter(|d| !matches!(d.mv, Move::Loan { .. }))
+        .map(|d| d.score)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
 }
 
 /// Best build score the player could afford within a cash budget.
