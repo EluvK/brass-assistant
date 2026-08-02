@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import torch
 
 from . import build_input
 from .net import PolicyValueNet
@@ -63,9 +64,17 @@ class Node:
 
 
 class ISMCTS:
-    def __init__(self, net: PolicyValueNet, cfg: MCTSConfig | None = None):
+    def __init__(
+        self,
+        net: PolicyValueNet,
+        cfg: MCTSConfig | None = None,
+        device: str | None = None,
+    ):
         self.net = net
         self.cfg = cfg or MCTSConfig()
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device != "cpu":
+            self.net.to(self.device)
 
     # ------------------------------------------------------------------ core
     def search(self, root_state, sims: int, add_root_noise: bool = False) -> SearchResult:
@@ -220,10 +229,12 @@ class ISMCTS:
         return (vps - vps.mean()) / std
 
     # --------------------------------------------------------------- helpers
-    @staticmethod
-    def _encode_perspectives(state, pids):
+    def _encode_perspectives(self, state, pids):
         rows = [state.state_to_tensor(perspective=p) for p in pids]
-        return build_input.encode_arrays(*zip(*rows))
+        batch = build_input.encode_arrays(*zip(*rows))
+        if self.device != "cpu":
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+        return batch
 
     @staticmethod
     def _masked_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:

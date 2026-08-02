@@ -168,4 +168,39 @@ NetworkDouble 对数动态计算（`develop_offset()` 等函数）。
 - 运行：`PYTHONPATH=src/ai .venv/Scripts/python.exe -m pytest src/ai/tests -q`（CPU 版，
   9 项测试）。CUDA 训练：把 `TrainConfig.device` 设为 `"cuda"` 并安装 cu12x torch。
 
+## 阶段 F 初步：CUDA 训练验证（已完成验证）
+
+### 换 CUDA 步骤
+
+```bash
+# 安装 CUDA 版 torch（官方源，清华镜像只有 CPU 版；~2.5GB）
+# 3060 Ti 驱动 595.97 支持 CUDA 13.2，用 cu126 wheel（有匹配 2.13.0+cu126）
+pip install --force-reinstall "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
+python -c "import torch; print(torch.cuda.is_available())"   # -> True
+```
+
+代码无需改动：`TrainConfig.device` 默认 `cuda if available`；AMP 自动走 FP16
+autocast；`ISMCTS(device=...)` 把网络与 batch 搬到 GPU。`mcts.py` 已支持 device
+（`_encode_perspectives` 返回的 batch `.to(device)`）。
+
+### 性能与发现（3060 Ti）
+
+- 网络仅 ~40 万参数，GPU 前向微秒级；**瓶颈在 Python 状态操作**（legal_moves /
+  clone / apply_move 的 Rust 跨边界调用 + 张量组装），单决策 ~7ms/sim，GPU 对小
+  网络无明显提速。大网络 / 批量推理（阶段 H 搬回 Rust）才有量级收益。
+- 纯随机自对弈短训（5 轮 × 124 样本）**严重过拟合**：loss 降但 MCTS 退化到 0 VP。
+  这是随机自对弈 + 小数据的预期现象，非流程问题。
+- **启发式行为克隆预热**（`src/ai/bootstrap_imitation.py`）可快速验证学习：
+  - 60 局（7517 样本）: MCTS vs 启发式 17.5/50.3 VP
+  - 150 局（18796 样本）: MCTS vs 启发式 34.5/69.8，vs 2ply 61.2/77.8
+  - 网络从 0 VP → 34.5 VP，逼近 2ply 基线，证明「数据→训练→MCTS→评估」闭环有效。
+
+### 结论
+
+流程已端到端验证 OK。正式训练（阶段 F 主体）方向：
+1. 以 bootstrap 网络为起点，切回纯 AlphaZero 自对弈（比随机起点快得多）；
+2. 提高自对弈吞吐（提高 sims / 多进程 / 阶段 H 搬回 Rust）以提供足够多样数据；
+3. 持久化 optimizer + LR schedule，避免每迭代重建 Adam 的动量丢失。
+
+
 
