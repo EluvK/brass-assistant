@@ -1,8 +1,9 @@
 """AlphaZero-style training loop with a persistent optimizer.
 
 Loss (per sample):
-  L = -sum_t p_t * log_softmax(logits)_t   (policy cross-entropy over 1316 slots)
-    + (value - z)^2                        (MSE on normalized final VP)
+  L = -sum_t p_t * log_softmax_masked(logits)_t   (policy CE over LEGAL slots;
+      the ~700 always-illegal double-rail slots are masked out of the softmax)
+    + (value - z)^2                               (MSE on normalized final VP)
     + l2 * ||theta||^2
 
 The `Trainer` class owns the network, a persistent AdamW optimizer and a

@@ -33,7 +33,6 @@ class MCTSConfig:
     max_depth: int = 10
     dirichlet_alpha: float = 0.3
     dirichlet_weight: float = 0.25
-    temperature: float = 1.0  # root sampling temp for self-play
 
 
 @dataclass

@@ -159,6 +159,8 @@ TTS 官方热门的《伯明翰》Mod 的 **Lua 脚本**，是 TTS 集成与数�
 - **可卖板块（棉/陶/制造）只有卖出才翻面**：AI 的 `estimate_flip_probability` 必须要求"连通接受该产业的商家 + 有啤酒可用"才给高翻面概率，否则低分（这是贷款→建厂→翻面→回收入经济链的关键）
 - **啤酒按需供给**：酒桶数应匹配自己未翻面可卖板块的 `beers_to_sell` 需求 + 铁路建网缓冲，超出即浪费（`heuristic_ai.rs sellable_beer_demand`）
 - **煤/铁源选择必须显式建模**（与啤酒选择同原则）：`Move::Build/Network/NetworkDouble/Develop` 都携带显式的 `coal`/`iron` 源列表；执行时校验（a）数量匹配（b）所选源当前可用（c）**免费优先**：有免费源时不得用市场源（防玩家故意不翻对手建筑）。`rules.rs` 的 `source_options`/`validate_source_choice` 是唯一事实来源，AI/heuristic/MCTS 都必须从这里取合法源，禁止执行函数内再自动挑源（`cheapest_coal_for_connection` 仅用于候选生成的成本估算）
+- **Policy 头必须对合法槽位掩码后再算 CE loss（重要教训）**：策略表含 ~703 个 double-rail 幽灵槽（绝大多数状态非法）。若 loss 用全空间 `log_softmax`，幽灵槽仍进分母，初始约 53% 概率质量压在幽灵槽上，网络浪费梯度压制它们 → policy 极弱（贪心仅 ~7 VP）。修复见 `train.py compute_loss`：用每样本 `legal` 掩码 `masked_fill(~mask, -inf)`，并把非法槽 log_probs 清零避免 `0×-inf=NaN`。修复后贪心 7→50 VP、MCTS 反超启发式。MCTS 侧 `_masked_softmax` 一直是对的；只有训练侧曾漏掩码
+- **双铁路允许不共享端点（已裁决）**：引擎与 npow 参考实现一致，两条铁路只需都在玩家网络内。因此策略表双铁路域是全部无序铁路对（703），不能用"共享端点"缩小
 
 ## 9. 已裁决的规则分歧（以用户规则书为准）
 
