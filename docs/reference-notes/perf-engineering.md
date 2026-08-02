@@ -45,8 +45,10 @@
 ## 正确性验证
 
 - 当时版本 11 个单测全过；当前仓库已演进到更高测试数，需以最新 `cargo test --release` 为准
+- 截至 `2026-08-02`：当前仓库为 `3` 个 unit tests + `25` 个 integration tests
 - 旧版 `avg VP ≈ 32` 仅能说明当时优化未改坏"当时引擎"，不能代表当前强度基线
 - seed=7 replay 单局动作序列一致这一类结论，现应重新以修复后 replay / stat_game 结果为准
+- 连接积分曾出现“误计未翻面建筑”的错误，故所有旧 avg VP / 强度数字都不能跨版本直接比较
 - clippy 无新增 warning（pre-existing 警告未动）
 
 ## 未做 / 后续可做

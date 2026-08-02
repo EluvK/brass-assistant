@@ -104,6 +104,39 @@ impl Loc {
         }
     }
 
+    pub fn zh_name(&self) -> &'static str {
+        use Loc::*;
+        match self {
+            Belper => "贝尔珀",
+            Derby => "德比",
+            Leek => "利克",
+            StokeOnTrent => "斯托克",
+            Stone => "斯通",
+            Uttoxeter => "阿托克西特",
+            Stafford => "斯塔福德",
+            BurtonOnTrent => "伯顿",
+            Cannock => "坎诺克",
+            Tamworth => "塔姆沃思",
+            Walsall => "沃尔索尔",
+            Wolverhampton => "伍尔弗汉普顿",
+            Coalbrookdale => "科尔布鲁克代尔",
+            Dudley => "达德利",
+            Kidderminster => "基德明斯特",
+            Worcester => "伍斯特",
+            Birmingham => "伯明翰",
+            Coventry => "考文垂",
+            Nuneaton => "纳尼顿",
+            Redditch => "雷迪奇",
+            Shrewsbury => "什鲁斯伯里",
+            Gloucester => "格洛斯特",
+            Oxford => "牛津",
+            Warrington => "沃灵顿",
+            Nottingham => "诺丁汉",
+            BreweryNorth => "北部啤酒农场",
+            BrewerySouth => "南部啤酒农场",
+        }
+    }
+
     pub fn is_city(&self) -> bool {
         (*self as usize) < CITY_COUNT
     }

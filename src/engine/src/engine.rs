@@ -16,6 +16,9 @@ pub enum TurnResult {
 }
 
 pub fn advance_turn(state: &mut GameState<impl Rng>) -> TurnResult {
+    if state.pending_bonus.is_some() {
+        return TurnResult::Continue;
+    }
     state.actions_this_turn += 1;
 
     // Era may end mid-turn when all hands empty and deck exhausted.
@@ -222,6 +225,7 @@ pub fn end_canal_era(state: &mut GameState<impl Rng>) {
     state.actions_per_turn = ACTIONS_PER_TURN;
     state.current_index = 0;
     state.actions_this_turn = 0;
+    state.pending_bonus = None;
 
     // Reset merchant beer.
     for mt in state.merchants.iter_mut() {

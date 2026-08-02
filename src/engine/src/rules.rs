@@ -16,6 +16,21 @@ use crate::map::*;
 use crate::state::{city_slot_offsets, BoardTile, Card, GameState, Player};
 use rand::Rng;
 
+fn log_loc_label(loc: Loc) -> String {
+    format!("{}({})", loc.zh_name(), loc.name())
+}
+
+fn log_industry_label(ind: IndustryType) -> &'static str {
+    match ind {
+        IndustryType::CottonMill => "棉纺厂(Cotton Mill)",
+        IndustryType::CoalMine => "煤矿(Coal Mine)",
+        IndustryType::IronWorks => "铁厂(Iron Works)",
+        IndustryType::Manufacturer => "制造厂(Manufacturer)",
+        IndustryType::Pottery => "陶器厂(Pottery)",
+        IndustryType::Brewery => "啤酒厂(Brewery)",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Move representation
 // ---------------------------------------------------------------------------
@@ -44,8 +59,13 @@ pub enum Move {
     },
     Sell {
         keys: Vec<usize>,
+        merchant_indices: Vec<usize>,
         use_merchant_beer: Vec<bool>,
         card_index: usize,
+    },
+    ResolveFreeDevelop {
+        ind1: IndustryType,
+        ind2: Option<IndustryType>,
     },
     Loan {
         card_index: usize,
@@ -66,6 +86,7 @@ impl Move {
             Move::NetworkDouble { .. } => Action::Network,
             Move::Develop { .. } => Action::Develop,
             Move::Sell { .. } => Action::Sell,
+            Move::ResolveFreeDevelop { .. } => Action::Develop,
             Move::Loan { .. } => Action::Loan,
             Move::Scout { .. } => Action::Scout,
             Move::Pass { .. } => Action::Pass,
@@ -99,6 +120,13 @@ impl Move {
             }
             Move::Sell { keys, .. } => {
                 format!("Sell {} tile(s)", keys.len())
+            }
+            Move::ResolveFreeDevelop { ind1, ind2 } => {
+                if let Some(i2) = ind2 {
+                    format!("Resolve free develop {} + {}", ind1.name(), i2.name())
+                } else {
+                    format!("Resolve free develop {}", ind1.name())
+                }
             }
             Move::Loan { .. } => "Take loan".to_string(),
             Move::Scout { .. } => "Scout (wild cards)".to_string(),
@@ -697,19 +725,7 @@ pub fn get_valid_second_rail_links(
     // Place the first link and dry-run its coal consumption so second-link
     // generation matches the real execution order.
     state.links[first_conn] = Some(crate::state::Link { player: pid, is_canal: false });
-    let mut consumed_coal1 = None;
-    let mut flipped_coal1 = None;
-    let mut income_space_before = None;
-    let mut coal1_owner = None;
-    if coal1.kind == CoalSourceKind::Mine {
-        if let Some(tile) = state.city_tiles[coal1.key].as_ref() {
-            consumed_coal1 = Some(tile.resource_cubes);
-            flipped_coal1 = Some(tile.flipped);
-            coal1_owner = Some(tile.player);
-            income_space_before = Some(state.players[tile.player].income_space);
-        }
-        state.consume_from_city(coal1.key);
-    }
+    let coal1_undo = consume_coal_for_double_rail(state, coal1);
 
     let mut out = Vec::new();
     for conn in connections() {
@@ -734,17 +750,7 @@ pub fn get_valid_second_rail_links(
         out.push(conn.id);
     }
 
-    if let Some(prev_cubes) = consumed_coal1 {
-        if let Some(tile) = state.city_tiles[coal1.key].as_mut() {
-            tile.resource_cubes = prev_cubes;
-            if let Some(prev_flipped) = flipped_coal1 {
-                tile.flipped = prev_flipped;
-            }
-        }
-    }
-    if let (Some(owner), Some(income_space)) = (coal1_owner, income_space_before) {
-        state.players[owner].income_space = income_space;
-    }
+    rollback_double_rail_coal(state, coal1_undo);
     state.links[first_conn] = None;
     out
 }
@@ -764,6 +770,66 @@ fn find_beer_for_link(
             .next();
     }
     sources.into_iter().next()
+}
+
+#[derive(Clone, Copy)]
+enum ResourceUndo {
+    Market { prev_market: usize },
+    City {
+        key: usize,
+        prev_cubes: u8,
+        prev_flipped: bool,
+        owner: usize,
+        prev_income_space: u8,
+    },
+}
+
+fn consume_coal_for_double_rail(
+    state: &mut GameState<impl Rng>,
+    coal: CoalSource,
+) -> ResourceUndo {
+    match coal.kind {
+        CoalSourceKind::Mine => {
+            let tile = state.city_tiles[coal.key]
+                .as_ref()
+                .expect("coal mine source must exist when consumed");
+            let undo = ResourceUndo::City {
+                key: coal.key,
+                prev_cubes: tile.resource_cubes,
+                prev_flipped: tile.flipped,
+                owner: tile.player,
+                prev_income_space: state.players[tile.player].income_space,
+            };
+            state.consume_from_city(coal.key);
+            undo
+        }
+        CoalSourceKind::Market => {
+            let undo = ResourceUndo::Market {
+                prev_market: state.coal_market,
+            };
+            state.take_market_coal();
+            undo
+        }
+    }
+}
+
+fn rollback_double_rail_coal(state: &mut GameState<impl Rng>, undo: ResourceUndo) {
+    match undo {
+        ResourceUndo::Market { prev_market } => state.coal_market = prev_market,
+        ResourceUndo::City {
+            key,
+            prev_cubes,
+            prev_flipped,
+            owner,
+            prev_income_space,
+        } => {
+            if let Some(tile) = state.city_tiles[key].as_mut() {
+                tile.resource_cubes = prev_cubes;
+                tile.flipped = prev_flipped;
+            }
+            state.players[owner].income_space = prev_income_space;
+        }
+    }
 }
 
 pub fn execute_network_double(
@@ -798,21 +864,12 @@ pub fn execute_network_double(
 
     let coal1 = cheapest_coal_for_connection(state, c1).ok_or("No coal for first link")?;
     let mut total = RAIL_DOUBLE_LINK_COST + if coal1.free { 0 } else { coal1.price as i32 };
-    // dry-run coal1 consumption
-    if coal1.kind == CoalSourceKind::Mine {
-        state.consume_from_city(coal1.key);
-    }
+    let coal1_undo = consume_coal_for_double_rail(state, coal1);
 
     // Link 2 adjacency (with link1 on board)
     if !is_in_network(state, pid, c2.a) && !is_in_network(state, pid, c2.b) {
-        // rollback coal1
-        if coal1.kind == CoalSourceKind::Mine {
-            if let Some(t) = state.city_tiles[coal1.key].as_mut() {
-                if t.flipped {
-                    // undo flip: extremely unlikely but restore
-                }
-            }
-        }
+        rollback_double_rail_coal(state, coal1_undo);
+        state.links[conn1] = None;
         return Err("Second link is not adjacent to your network".into());
     }
     state.links[conn2] = Some(crate::state::Link { player: pid, is_canal: false });
@@ -820,19 +877,20 @@ pub fn execute_network_double(
     let coal2 = match cheapest_coal_for_connection(state, c2) {
         Some(c) => c,
         None => {
+            rollback_double_rail_coal(state, coal1_undo);
             state.links[conn1] = None;
             state.links[conn2] = None;
             return Err("No coal for second link".into());
         }
     };
     total += if coal2.free { 0 } else { coal2.price as i32 };
-    if coal2.kind == CoalSourceKind::Mine {
-        state.consume_from_city(coal2.key);
-    }
+    let coal2_undo = consume_coal_for_double_rail(state, coal2);
 
     let beer = match find_beer_for_link(state, pid, c2) {
         Some(b) => b,
         None => {
+            rollback_double_rail_coal(state, coal2_undo);
+            rollback_double_rail_coal(state, coal1_undo);
             state.links[conn1] = None;
             state.links[conn2] = None;
             return Err("No beer available for the second link".into());
@@ -840,6 +898,8 @@ pub fn execute_network_double(
     };
 
     if total > state.players[pid].money {
+        rollback_double_rail_coal(state, coal2_undo);
+        rollback_double_rail_coal(state, coal1_undo);
         state.links[conn1] = None;
         state.links[conn2] = None;
         return Err("Cannot afford both links".into());
@@ -923,58 +983,81 @@ pub fn execute_develop(
     }
 
     // Remove tiles from mat
-    let _t1 = state.players[pid].consume_tile(ind1);
+    let t1 = state.players[pid]
+        .consume_tile(ind1)
+        .ok_or("No tile available to develop for first industry")?;
+    let mut removed = vec![format!("{} Lv{}", log_industry_label(ind1), t1.level)];
     if let Some(i2) = ind2 {
-        let _t2 = state.players[pid].consume_tile(i2);
+        let t2 = state.players[pid]
+            .consume_tile(i2)
+            .ok_or("No tile available to develop for second industry")?;
+        removed.push(format!("{} Lv{}", log_industry_label(i2), t2.level));
     }
 
     discard_card(state, pid, card_index);
-    Ok(format!(
-        "Developed {} {}",
-        ind1.name(),
-        ind2.map(|i| format!("+ {}", i.name())).unwrap_or_default()
-    ))
+    Ok(format!("Developed {}", removed.join(" + ")))
 }
 
 // ---------------------------------------------------------------------------
 // SELL
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct SellTarget {
     pub key: usize,
-    pub merchant_indices: Vec<usize>,
     pub beer_needed: u8,
-    pub merchant_beer_available: bool,
+    pub routes: Vec<SellRoute>,
 }
 
-fn can_sell_target(
+#[derive(Debug, Clone, Copy)]
+pub struct SellRoute {
+    pub merchant_index: usize,
+    pub use_merchant_beer: bool,
+}
+
+fn sell_routes_for_target(
     state: &GameState<impl Rng>,
     pid: usize,
     loc: Loc,
     merchant_indices: &[usize],
     beer_needed: u8,
-) -> Option<bool> {
+) -> Vec<SellRoute> {
+    let mut routes = Vec::new();
     if merchant_indices.is_empty() {
-        return None;
+        return routes;
     }
+
+    let brewery_beer = find_beer_sources(state, loc, pid, &[]).len();
 
     if beer_needed == 0 {
-        return Some(merchant_indices.iter().any(|&i| state.merchants[i].has_beer));
+        for &merchant_index in merchant_indices {
+            routes.push(SellRoute {
+                merchant_index,
+                use_merchant_beer: false,
+            });
+        }
+        return routes;
     }
 
-    let brewery_beer = find_beer_sources(state, loc, pid, &[]);
-    if brewery_beer.len() >= beer_needed as usize {
-        return Some(false);
+    if brewery_beer >= beer_needed as usize {
+        for &merchant_index in merchant_indices {
+            routes.push(SellRoute {
+                merchant_index,
+                use_merchant_beer: false,
+            });
+        }
     }
 
-    let merchant_beer_available = merchant_indices.iter().any(|&i| {
-        state.merchants[i].has_beer && brewery_beer.len() + 1 >= beer_needed as usize
-    });
-    if merchant_beer_available {
-        return Some(true);
+    for &merchant_index in merchant_indices {
+        if state.merchants[merchant_index].has_beer && brewery_beer + 1 >= beer_needed as usize {
+            routes.push(SellRoute {
+                merchant_index,
+                use_merchant_beer: true,
+            });
+        }
     }
 
-    None
+    routes
 }
 
 pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<SellTarget> {
@@ -992,16 +1075,14 @@ pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<Se
         let loc = loc.unwrap();
         let merchant_indices = sell_merchants_for(state, pid, loc, t.ind);
         let beer_needed = t.def.beers_to_sell.unwrap_or(0);
-        let Some(merchant_beer_available) =
-            can_sell_target(state, pid, loc, &merchant_indices, beer_needed)
-        else {
+        let routes = sell_routes_for_target(state, pid, loc, &merchant_indices, beer_needed);
+        if routes.is_empty() {
             continue;
-        };
+        }
         out.push(SellTarget {
             key: k,
-            merchant_indices,
             beer_needed,
-            merchant_beer_available,
+            routes,
         });
     }
     out
@@ -1038,15 +1119,46 @@ fn loc_from_key(_state: &GameState<impl Rng>, key: usize) -> Option<Loc> {
     None
 }
 
+fn beer_source_label(state: &GameState<impl Rng>, src: &BeerSource) -> String {
+    match src.kind {
+        crate::graph::BeerSourceKind::Merchant => src
+            .merchant_idx
+            .and_then(|mi| state.merchants.get(mi))
+            .map(|mt| format!("商家酒@{}", log_loc_label(mt.loc)))
+            .unwrap_or_else(|| "商家酒@?".to_string()),
+        crate::graph::BeerSourceKind::Own | crate::graph::BeerSourceKind::Opponent => {
+            if let Some(fi) = src.farm_idx {
+                let loc = if fi == 0 {
+                    Loc::BreweryNorth
+                } else {
+                    Loc::BrewerySouth
+                };
+                format!("酒@{}", log_loc_label(loc))
+            } else {
+                let loc = loc_from_key(state, src.key)
+                    .map(log_loc_label)
+                    .unwrap_or_else(|| "?".to_string());
+                format!("酒@{loc}")
+            }
+        }
+    }
+}
+
 pub fn execute_sell(
     state: &mut GameState<impl Rng>,
     pid: usize,
     keys: &[usize],
+    merchant_indices: &[usize],
     use_merchant_beer: &[bool],
     card_index: usize,
 ) -> Result<String, String> {
+    if merchant_indices.len() != keys.len() || use_merchant_beer.len() != keys.len() {
+        return Err("Sell move shape mismatch".into());
+    }
+
     let mut sold = 0usize;
     let mut notes = Vec::new();
+    let mut beer_notes = Vec::new();
 
     for (entry_idx, &key) in keys.iter().enumerate() {
         // Read tile info without holding a long-lived mutable borrow.
@@ -1064,35 +1176,46 @@ pub fn execute_sell(
             continue;
         }
 
-        let merchant_indices = sell_merchants_for(state, pid, loc, ind);
-        if merchant_indices.is_empty() {
+        let valid_merchants = sell_merchants_for(state, pid, loc, ind);
+        if valid_merchants.is_empty() {
             continue;
         }
 
         let mut beer_remaining = beer_needed;
+        let chosen_merchant = merchant_indices[entry_idx];
         let use_merchant = use_merchant_beer
             .get(entry_idx)
             .copied()
             .unwrap_or(false);
 
-        // Merchant beer first, if requested: pick best-bonus merchant with a barrel
+        if !valid_merchants.contains(&chosen_merchant) {
+            return Err("Chosen merchant is not a valid buyer".into());
+        }
+
+        // Merchant beer first, if requested: use the explicitly chosen merchant.
         if beer_remaining > 0 && use_merchant {
-            let with_beer: Vec<usize> = merchant_indices
-                .iter()
-                .copied()
-                .filter(|&i| state.merchants[i].has_beer)
-                .collect();
-            if let Some(&mi) = with_beer.first() {
-                let mt_loc = state.merchants[mi].loc;
-                {
-                    let mt = &mut state.merchants[mi];
-                    mt.has_beer = false;
-                }
-                beer_remaining -= 1;
-                // Grant merchant bonus
-                let bonus = merchant_bonus_for(state, mt_loc);
-                let note = apply_merchant_bonus(state, pid, bonus);
-                notes.push(note);
+            if !state.merchants[chosen_merchant].has_beer {
+                return Err("Chosen merchant has no beer".into());
+            }
+            let brewery_beer = find_beer_sources(state, loc, pid, &[]);
+            if brewery_beer.len() + 1 < beer_remaining as usize {
+                return Err("Not enough beer available for chosen merchant route".into());
+            }
+            let mt_loc = state.merchants[chosen_merchant].loc;
+            state.merchants[chosen_merchant].has_beer = false;
+            beer_remaining -= 1;
+            beer_notes.push(format!(
+                "{} 使用 商家酒@{}",
+                log_industry_label(ind),
+                log_loc_label(mt_loc)
+            ));
+            let bonus = merchant_bonus_for(state, mt_loc);
+            let note = apply_merchant_bonus(state, pid, bonus);
+            notes.push(note);
+        } else if beer_remaining > 0 {
+            let brewery_beer = find_beer_sources(state, loc, pid, &[]);
+            if brewery_beer.len() < beer_remaining as usize {
+                return Err("Not enough brewery beer for chosen merchant route".into());
             }
         }
 
@@ -1102,8 +1225,20 @@ pub fn execute_sell(
             if beer.len() < beer_remaining as usize {
                 continue; // can't pay beer; skip tile
             }
-            for b in beer.into_iter().take(beer_remaining as usize) {
+            let consumed: Vec<BeerSource> = beer.into_iter().take(beer_remaining as usize).collect();
+            let labels: Vec<String> = consumed
+                .iter()
+                .map(|b| beer_source_label(state, b))
+                .collect();
+            for b in consumed {
                 state.consume_beer_source(&b);
+            }
+            if !labels.is_empty() {
+                beer_notes.push(format!(
+                    "{} 使用 {}",
+                    log_industry_label(ind),
+                    labels.join(", ")
+                ));
             }
         }
 
@@ -1127,7 +1262,22 @@ pub fn execute_sell(
     }
 
     discard_card(state, pid, card_index);
-    Ok(format!("Sold {} tile(s){}", sold, if notes.is_empty() { String::new() } else { format!(" [{}]", notes.join("; ")) }))
+    let mut extra = Vec::new();
+    if !notes.is_empty() {
+        extra.push(notes.join("; "));
+    }
+    if !beer_notes.is_empty() {
+        extra.push(format!("beer: {}", beer_notes.join("; ")));
+    }
+    Ok(format!(
+        "Sold {} tile(s){}",
+        sold,
+        if extra.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", extra.join(" | "))
+        }
+    ))
 }
 
 fn merchant_bonus_for(_state: &GameState<impl Rng>, loc: Loc) -> MerchantBonus {
@@ -1158,34 +1308,65 @@ fn apply_merchant_bonus(
             format!("+{} income spaces (merchant)", spaces)
         }
         MerchantBonus::Develop(_n) => {
-            // Auto-resolve: develop up to n canal-only/lowest tiles for free.
-            let removed = apply_free_develop(state, pid, 1);
-            if removed.is_empty() {
-                "free develop earned".to_string()
-            } else {
-                format!("free develop: {}", removed.join(", "))
-            }
+            state.pending_bonus = Some(crate::state::PendingBonus::FreeDevelop {
+                player_id: pid,
+                count: 1,
+            });
+            "free develop pending".to_string()
         }
     }
 }
 
-pub fn apply_free_develop(state: &mut GameState<impl Rng>, pid: usize, count: usize) -> Vec<String> {
-    let mut removed = Vec::new();
-    for _ in 0..count {
-        let types = state.players[pid].developable_types();
-        if types.is_empty() {
-            break;
-        }
-        // Prefer clearing canal-only tiles, then lowest level.
-        let mut sorted = types;
-        sorted.sort_by_key(|(_, t)| {
-            (if t.rail_era { 0 } else { 1 }, t.level)
-        });
-        let (ind, t) = sorted[0];
-        state.players[pid].consume_tile(ind);
-        removed.push(format!("{} Lv{}", ind.name(), t.level));
+pub fn execute_resolve_free_develop(
+    state: &mut GameState<impl Rng>,
+    pid: usize,
+    ind1: IndustryType,
+    ind2: Option<IndustryType>,
+) -> Result<String, String> {
+    let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus else {
+        return Err("No pending free develop bonus".into());
+    };
+    if player_id != pid {
+        return Err("Pending bonus belongs to another player".into());
     }
-    removed
+
+    let available: Vec<IndustryType> = state.players[pid]
+        .developable_types()
+        .into_iter()
+        .map(|(ind, _)| ind)
+        .collect();
+    if !available.contains(&ind1) {
+        return Err("First free develop choice is not developable".into());
+    }
+
+    let remaining_first = state.players[pid].remaining_count(ind1);
+    if count >= 2 {
+        let Some(ind2) = ind2 else {
+            return Err("Free develop bonus requires two choices".into());
+        };
+        if !available.contains(&ind2) {
+            return Err("Second free develop choice is not developable".into());
+        }
+        if ind1 == ind2 && remaining_first < 2 {
+            return Err("Not enough tiles remaining to free develop the same industry twice".into());
+        }
+    } else if ind2.is_some() {
+        return Err("This free develop bonus only allows one choice".into());
+    }
+
+    let first = state.players[pid]
+        .consume_tile(ind1)
+        .ok_or("Failed to consume first free develop tile")?;
+    let mut removed = vec![format!("{} Lv{}", log_industry_label(ind1), first.level)];
+    if let Some(ind2) = ind2 {
+        let second = state.players[pid]
+            .consume_tile(ind2)
+            .ok_or("Failed to consume second free develop tile")?;
+        removed.push(format!("{} Lv{}", log_industry_label(ind2), second.level));
+    }
+
+    state.pending_bonus = None;
+    Ok(format!("Resolved free develop: {}", removed.join(", ")))
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,6 +1450,37 @@ pub fn execute_pass(
 
 pub fn legal_moves(state: &mut GameState<impl Rng>) -> Vec<Move> {
     let pid = state.current_player_id();
+
+    if let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {
+        if player_id != pid {
+            return Vec::new();
+        }
+        let types: Vec<IndustryType> = state.players[pid]
+            .developable_types()
+            .into_iter()
+            .map(|(ind, _)| ind)
+            .collect();
+        let mut moves = Vec::new();
+        for &ind1 in &types {
+            if count >= 2 {
+                let rem1 = state.players[pid].remaining_count(ind1);
+                let mut second_types = types.clone();
+                if rem1 < 2 {
+                    second_types.retain(|&x| x != ind1);
+                }
+                for &ind2 in &second_types {
+                    moves.push(Move::ResolveFreeDevelop {
+                        ind1,
+                        ind2: Some(ind2),
+                    });
+                }
+            } else {
+                moves.push(Move::ResolveFreeDevelop { ind1, ind2: None });
+            }
+        }
+        return moves;
+    }
+
     let player_hand_len = state.players[pid].hand.len();
     if player_hand_len == 0 {
         return vec![];
@@ -1361,13 +1573,15 @@ pub fn legal_moves(state: &mut GameState<impl Rng>) -> Vec<Move> {
     if !sell_targets.is_empty() {
         // Single-tile sells (one tile per action) — matches real rules.
         for t in &sell_targets {
-            let use_merchant = t.merchant_beer_available;
-            for ci in any_card_indices(&state.players[pid]) {
-                moves.push(Move::Sell {
-                    keys: vec![t.key],
-                    use_merchant_beer: vec![use_merchant],
-                    card_index: ci,
-                });
+            for route in &t.routes {
+                for ci in any_card_indices(&state.players[pid]) {
+                    moves.push(Move::Sell {
+                        keys: vec![t.key],
+                        merchant_indices: vec![route.merchant_index],
+                        use_merchant_beer: vec![route.use_merchant_beer],
+                        card_index: ci,
+                    });
+                }
             }
         }
     }
@@ -1415,8 +1629,16 @@ pub fn apply_move(state: &mut GameState<impl Rng>, mv: &Move) -> Result<String, 
         Move::Develop { ind1, ind2, card_index } => {
             execute_develop(state, pid, *ind1, *ind2, *card_index)
         }
-        Move::Sell { keys, use_merchant_beer, card_index } => {
-            execute_sell(state, pid, keys, use_merchant_beer, *card_index)
+        Move::Sell {
+            keys,
+            merchant_indices,
+            use_merchant_beer,
+            card_index,
+        } => {
+            execute_sell(state, pid, keys, merchant_indices, use_merchant_beer, *card_index)
+        }
+        Move::ResolveFreeDevelop { ind1, ind2 } => {
+            execute_resolve_free_develop(state, pid, *ind1, *ind2)
         }
         Move::Loan { card_index } => execute_loan(state, pid, *card_index),
         Move::Scout { card_indices } => execute_scout(state, pid, *card_indices),

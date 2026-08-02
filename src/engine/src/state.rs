@@ -105,6 +105,11 @@ impl MerchantTile {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingBonus {
+    FreeDevelop { player_id: usize, count: u8 },
+}
+
 // ---------------------------------------------------------------------------
 // Players
 // ---------------------------------------------------------------------------
@@ -229,6 +234,7 @@ pub struct GameState<R: Rng> {
     pub discard_pile: Vec<Card>,
     pub wild_location_pile: u8,
     pub wild_industry_pile: u8,
+    pub pending_bonus: Option<PendingBonus>,
 }
 
 // City slot offsets: slot_offsets[loc as usize] = start index in city_tiles.
@@ -300,6 +306,7 @@ impl<R: Rng> GameState<R> {
             discard_pile: Vec::new(),
             wild_location_pile: WILD_LOCATION_PILE,
             wild_industry_pile: WILD_INDUSTRY_PILE,
+            pending_bonus: None,
         };
 
         state.turn_order.shuffle(&mut state.rng);

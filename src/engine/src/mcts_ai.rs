@@ -85,8 +85,13 @@ enum MoveKey {
         i1: IndustryType,
         i2: Option<IndustryType>,
     },
+    ResolveFreeDevelop {
+        i1: IndustryType,
+        i2: Option<IndustryType>,
+    },
     Sell {
         keys: Vec<usize>,
+        merchant_indices: Vec<usize>,
         use_merchant_beer: Vec<bool>,
     },
     Loan,
@@ -112,17 +117,30 @@ fn move_key(mv: &Move) -> MoveKey {
             i1: *ind1,
             i2: *ind2,
         },
-        Move::Sell { keys, use_merchant_beer, .. } => {
+        Move::ResolveFreeDevelop { ind1, ind2 } => MoveKey::ResolveFreeDevelop {
+            i1: *ind1,
+            i2: *ind2,
+        },
+        Move::Sell {
+            keys,
+            merchant_indices,
+            use_merchant_beer,
+            ..
+        } => {
             let mut k = keys.clone();
-            let mut pairs: Vec<(usize, bool)> = k
+            let mut pairs: Vec<(usize, usize, bool)> = k
                 .drain(..)
+                .zip(merchant_indices.iter().copied())
                 .zip(use_merchant_beer.iter().copied())
+                .map(|((key, merchant_index), use_merchant)| (key, merchant_index, use_merchant))
                 .collect();
-            pairs.sort_unstable_by_key(|(key, _)| *key);
-            let keys = pairs.iter().map(|(key, _)| *key).collect();
-            let use_merchant_beer = pairs.iter().map(|(_, use_merchant)| *use_merchant).collect();
+            pairs.sort_unstable_by_key(|(key, _, _)| *key);
+            let keys = pairs.iter().map(|(key, _, _)| *key).collect();
+            let merchant_indices = pairs.iter().map(|(_, merchant_index, _)| *merchant_index).collect();
+            let use_merchant_beer = pairs.iter().map(|(_, _, use_merchant)| *use_merchant).collect();
             MoveKey::Sell {
                 keys,
+                merchant_indices,
                 use_merchant_beer,
             }
         }

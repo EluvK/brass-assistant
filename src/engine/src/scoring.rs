@@ -23,8 +23,7 @@ pub fn score_era(state: &mut GameState<impl Rng>) -> Vec<ScoreBreakdown> {
         })
         .collect();
 
-    // Score links: 1 VP per link icon in adjacent locations (flipped OR
-    // unflipped tiles show icons; merchants score 2 each).
+    // Score links: only flipped industries contribute link icons; merchants score 2 each.
     for (id, link) in state.links.iter().enumerate() {
         let Some(l) = link else { continue };
         let conn = &connections()[id];
@@ -36,7 +35,9 @@ pub fn score_era(state: &mut GameState<impl Rng>) -> Vec<ScoreBreakdown> {
                 for slot in 0..slots.len() {
                     if let Some(k) = state.city_slot_key(end, slot) {
                         if let Some(t) = &state.city_tiles[k] {
-                            value += t.def.link_vp as u16;
+                            if t.flipped {
+                                value += t.def.link_vp as u16;
+                            }
                         }
                     }
                 }
@@ -46,14 +47,18 @@ pub fn score_era(state: &mut GameState<impl Rng>) -> Vec<ScoreBreakdown> {
             }
             if end.is_farm() {
                 if let Some(t) = state.farm_tile(end) {
-                    value += t.def.link_vp as u16;
+                    if t.flipped {
+                        value += t.def.link_vp as u16;
+                    }
                 }
             }
         }
         // Also score farms the link passes through (e.g. via southern).
         if let Some(via) = conn.via_farm {
             if let Some(t) = state.farm_tile(via) {
-                value += t.def.link_vp as u16;
+                if t.flipped {
+                    value += t.def.link_vp as u16;
+                }
             }
         }
 

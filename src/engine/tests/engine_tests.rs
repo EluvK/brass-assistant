@@ -1,16 +1,84 @@
 use brass_engine::data::{industry_tiles, Era, IndustryType};
+use brass_engine::engine::advance_turn;
 use brass_engine::map::*;
 use brass_engine::rules::{
-    execute_build, execute_network, get_valid_build_targets, get_valid_network_targets, legal_moves,
+    execute_build, execute_network, execute_network_double, execute_sell, get_valid_build_targets,
+    get_valid_network_targets, get_valid_second_rail_links, legal_moves,
 };
 use brass_engine::scoring;
-use brass_engine::state::{BoardTile, GameState};
+use brass_engine::state::{BoardTile, Card, GameState};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 fn setup(players: usize) -> GameState<StdRng> {
     let rng = StdRng::seed_from_u64(42);
     GameState::new(rng, players)
+}
+
+fn setup_clean_rail_state(players: usize) -> GameState<StdRng> {
+    let mut state = setup(players);
+    state.era = Era::Rail;
+    state.round = 1;
+    state.turn_order = (0..players).collect();
+    state.current_index = 0;
+    state.actions_this_turn = 0;
+    state.actions_per_turn = 2;
+    state.is_first_round = false;
+    state.game_over = false;
+    state.city_tiles.iter_mut().for_each(|slot| *slot = None);
+    state.farm_tiles = [None, None];
+    state.links.iter_mut().for_each(|link| *link = None);
+    state.merchants.clear();
+    state.discard_pile.clear();
+    for player in &mut state.players {
+        player.money = 100;
+        player.hand = vec![Card::WildLocation];
+        player.canal_links = LINKS_PER_PLAYER;
+        player.rail_links = LINKS_PER_PLAYER;
+    }
+    state
+}
+
+fn place_test_coal_mine(state: &mut GameState<StdRng>, owner: usize) {
+    state.place_tile(
+        Loc::Cannock,
+        0,
+        BoardTile {
+            player: owner,
+            ind: IndustryType::CoalMine,
+            def: industry_tiles(IndustryType::CoalMine)[0],
+            flipped: false,
+            resource_cubes: 2,
+        },
+    );
+}
+
+fn place_test_brewery(state: &mut GameState<StdRng>, loc: Loc, owner: usize, cubes: u8) {
+    state.place_tile(
+        loc,
+        0,
+        BoardTile {
+            player: owner,
+            ind: IndustryType::Brewery,
+            def: industry_tiles(IndustryType::Brewery)[1],
+            flipped: false,
+            resource_cubes: cubes,
+        },
+    );
+}
+
+fn place_test_presence_tile(state: &mut GameState<StdRng>, loc: Loc, owner: usize) {
+    state.place_tile(
+        loc,
+        0,
+        BoardTile {
+            player: owner,
+            ind: IndustryType::Manufacturer,
+            def: industry_tiles(IndustryType::Manufacturer)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
 }
 
 #[test]
@@ -198,6 +266,53 @@ fn scoring_produces_nonzero_total() {
 }
 
 #[test]
+fn link_scoring_ignores_unflipped_tiles_until_they_flip() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    state.players[pid].vp = 0;
+
+    state.place_tile(
+        Loc::Belper,
+        0,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::Manufacturer,
+            def: industry_tiles(IndustryType::Manufacturer)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    state.place_tile(
+        Loc::Derby,
+        0,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::Brewery,
+            def: industry_tiles(IndustryType::Brewery)[0],
+            flipped: true,
+            resource_cubes: 0,
+        },
+    );
+    state.links[0] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: true,
+    });
+
+    let scores = scoring::score_era(&mut state);
+    let mine = scores.iter().find(|s| s.player_id == pid).unwrap();
+    assert_eq!(mine.link_vp, 2, "only the flipped Derby brewery should contribute link icons");
+    assert_eq!(mine.industry_vp, 4, "only flipped industries should score industry VP");
+
+    state.players[pid].vp = 0;
+    let belper_key = state.city_slot_key(Loc::Belper, 0).unwrap();
+    state.city_tiles[belper_key].as_mut().unwrap().flipped = true;
+
+    let scores = scoring::score_era(&mut state);
+    let mine = scores.iter().find(|s| s.player_id == pid).unwrap();
+    assert_eq!(mine.link_vp, 4, "after Belper flips, both endpoint tiles should contribute link icons");
+}
+
+#[test]
 fn loan_lowers_income_by_three_levels() {
     let mut state = setup(4);
     let pid = state.current_player_id();
@@ -308,4 +423,250 @@ fn legal_moves_do_not_offer_unaffordable_double_develop() {
 
     assert!(single_develops > 0, "expected at least one single develop with one free iron");
     assert_eq!(double_develops, 0, "double develop should not be generated when only one iron is affordable");
+}
+
+#[test]
+fn second_rail_links_allow_own_unconnected_beer() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    place_test_presence_tile(&mut state, Loc::Stafford, pid);
+    place_test_coal_mine(&mut state, 1);
+    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
+
+    let second_links = get_valid_second_rail_links(&mut state, pid, 15);
+
+    assert!(
+        second_links.contains(&33),
+        "own beer anywhere should allow the second rail link even without network connection"
+    );
+}
+
+#[test]
+fn second_rail_links_require_opponent_beer_to_be_connected() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    place_test_coal_mine(&mut state, 1);
+    place_test_brewery(&mut state, Loc::BrewerySouth, 1, 1);
+
+    let second_links = get_valid_second_rail_links(&mut state, pid, 15);
+
+    assert!(
+        !second_links.contains(&33),
+        "opponent beer must be connected to the new rail network to count"
+    );
+}
+
+#[test]
+fn execute_network_double_consumes_two_coal_and_one_own_beer() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    place_test_presence_tile(&mut state, Loc::Stafford, pid);
+    place_test_coal_mine(&mut state, 1);
+    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
+
+    let res = execute_network_double(&mut state, pid, 15, 33, 0);
+
+    assert!(res.is_ok(), "double rail should succeed with 2 coal and 1 own beer available: {res:?}");
+    let coal_tile = state.tile_at(Loc::Cannock, 0).expect("coal tile should remain on board");
+    assert_eq!(coal_tile.resource_cubes, 0, "double rail should consume exactly 2 coal");
+    assert!(coal_tile.flipped, "depleted coal mine should flip");
+    let own_brewery = state
+        .farm_tile(Loc::BrewerySouth)
+        .expect("own brewery should remain on board");
+    assert_eq!(own_brewery.resource_cubes, 0, "double rail should consume exactly 1 beer");
+    assert!(own_brewery.flipped, "depleted brewery should flip");
+    assert!(state.links[15].is_some());
+    assert!(state.links[33].is_some());
+    assert_eq!(state.players[pid].rail_links, LINKS_PER_PLAYER - 2);
+    assert_eq!(state.players[pid].money, 85, "double rail with free coal should cost only £15");
+}
+
+#[test]
+fn execute_network_double_can_use_connected_opponent_beer() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    place_test_coal_mine(&mut state, 1);
+    place_test_brewery(&mut state, Loc::Stone, 1, 1);
+
+    let res = execute_network_double(&mut state, pid, 15, 33, 0);
+
+    assert!(res.is_ok(), "connected opponent beer should be usable for double rail: {res:?}");
+    let opp_brewery = state.tile_at(Loc::Stone, 0).expect("opponent brewery should remain on board");
+    assert_eq!(opp_brewery.resource_cubes, 0, "connected opponent beer should be consumed");
+    assert!(opp_brewery.flipped, "depleted opponent brewery should flip");
+}
+
+#[test]
+fn execute_network_double_without_connected_beer_rolls_back_temp_changes() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    place_test_coal_mine(&mut state, 1);
+    place_test_brewery(&mut state, Loc::BrewerySouth, 1, 1);
+
+    let res = execute_network_double(&mut state, pid, 15, 33, 0);
+
+    assert_eq!(res, Err("No beer available for the second link".to_string()));
+    let coal_tile = state.tile_at(Loc::Cannock, 0).expect("coal tile should remain on board");
+    assert_eq!(coal_tile.resource_cubes, 2, "failed double rail must not consume coal");
+    assert!(!coal_tile.flipped, "failed double rail must not flip the coal mine");
+    let opp_brewery = state
+        .farm_tile(Loc::BrewerySouth)
+        .expect("opponent brewery should remain on board");
+    assert_eq!(opp_brewery.resource_cubes, 1, "failed double rail must not consume beer");
+    assert!(state.links[15].is_none() && state.links[33].is_none(), "failed double rail must not leave links on the board");
+    assert_eq!(state.players[pid].money, 100, "failed double rail must not spend money");
+    assert_eq!(state.players[pid].rail_links, LINKS_PER_PLAYER, "failed double rail must not consume rail links");
+}
+
+#[test]
+fn sell_uses_the_explicitly_chosen_merchant_bonus() {
+    let mut state = setup_clean_rail_state(3);
+    let pid = 0;
+    state.players[pid].hand = vec![Card::WildLocation];
+
+    state.place_tile(
+        Loc::Stone,
+        0,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
+    state.links[34] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[35] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[29] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[28] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.merchants = vec![
+        brass_engine::state::MerchantTile {
+            loc: Loc::Oxford,
+            buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+            has_beer: true,
+        },
+        brass_engine::state::MerchantTile {
+            loc: Loc::Warrington,
+            buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+            has_beer: true,
+        },
+    ];
+    let oxford_idx = 0usize;
+    let warrington_idx = 1usize;
+
+    let tile_key = state.city_slot_key(Loc::Stone, 0).expect("stone slot should exist");
+    let res = execute_sell(&mut state, pid, &[tile_key], &[warrington_idx], &[true], 0);
+
+    assert!(res.is_ok(), "sell should succeed when explicitly targeting warrington: {res:?}");
+    assert_eq!(state.players[pid].money, 105, "warrington should grant +£5");
+    assert!(state.tile_at(Loc::Stone, 0).expect("sold tile should remain on board").flipped, "sold tile should flip");
+    assert!(!state.merchants[warrington_idx].has_beer, "chosen merchant beer should be consumed");
+    assert!(state.merchants[oxford_idx].has_beer, "unchosen merchant beer should remain");
+}
+
+#[test]
+fn gloucester_bonus_becomes_pending_resolve_move() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    state.players[pid].hand = vec![Card::WildLocation];
+    state.players[pid].industry_next[IndustryType::Manufacturer as usize] = 1;
+
+    state.place_tile(
+        Loc::Kidderminster,
+        1,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
+    state.links[29] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[28] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.merchants = vec![brass_engine::state::MerchantTile {
+        loc: Loc::Gloucester,
+        buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+        has_beer: true,
+    }];
+
+    let tile_key = state
+        .city_slot_key(Loc::Kidderminster, 1)
+        .expect("kidderminster slot should exist");
+    let res = execute_sell(&mut state, pid, &[tile_key], &[0], &[true], 0);
+    assert!(res.is_ok(), "sell to gloucester should succeed: {res:?}");
+    assert!(matches!(
+        state.pending_bonus,
+        Some(brass_engine::state::PendingBonus::FreeDevelop { player_id, count }) if player_id == pid && count == 1
+    ));
+
+    let turn_result = advance_turn(&mut state);
+    assert!(matches!(turn_result, brass_engine::engine::TurnResult::Continue));
+    assert_eq!(state.current_player_id(), pid, "pending bonus should keep the same player active");
+
+    let moves = legal_moves(&mut state);
+    assert!(!moves.is_empty(), "pending bonus should expose resolve moves");
+    assert!(moves.iter().all(|mv| matches!(mv, brass_engine::rules::Move::ResolveFreeDevelop { .. })));
+
+    let first = moves[0].clone();
+    let res = brass_engine::rules::apply_move(&mut state, &first);
+    assert!(res.is_ok(), "resolving pending free develop should succeed: {res:?}");
+    assert!(state.pending_bonus.is_none(), "pending bonus should clear after resolution");
+}
+
+#[test]
+fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    state.players[pid].hand = vec![Card::WildLocation];
+
+    state.place_tile(
+        Loc::Worcester,
+        0,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    state.place_tile(
+        Loc::Worcester,
+        1,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    state.links[28] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.merchants = vec![brass_engine::state::MerchantTile {
+        loc: Loc::Gloucester,
+        buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+        has_beer: true,
+    }];
+
+    let sell = brass_engine::heuristic_ai::candidate_actions(&mut state)
+        .into_iter()
+        .find_map(|d| match d.mv {
+            brass_engine::rules::Move::Sell {
+                keys,
+                merchant_indices,
+                use_merchant_beer,
+                card_index,
+            } => Some((keys, merchant_indices, use_merchant_beer, card_index)),
+            _ => None,
+        })
+        .expect("heuristic should generate a sell candidate");
+
+    assert_eq!(sell.0.len(), 1, "heuristic sell plan must not try to sell two cotton mills with one merchant beer");
+
+    let mut sim = state.clone();
+    let res = brass_engine::rules::execute_sell(&mut sim, pid, &sell.0, &sell.1, &sell.2, sell.3);
+    assert!(res.is_ok(), "generated sell plan must execute successfully: {res:?}");
 }

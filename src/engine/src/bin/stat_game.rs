@@ -85,7 +85,7 @@ fn main() {
             Move::Build { ind, .. } => target.build[*ind as usize] += 1,
             Move::Network { .. } => target.network += 1,
             Move::NetworkDouble { .. } => target.dbl_rail += 1,
-            Move::Develop { .. } => target.develop += 1,
+            Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => target.develop += 1,
             Move::Sell { .. } => target.sell += 1,
             Move::Loan { .. } => target.loan += 1,
             Move::Pass { .. } => target.pass += 1,

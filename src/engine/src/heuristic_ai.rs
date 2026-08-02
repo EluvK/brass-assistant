@@ -10,10 +10,10 @@ use crate::graph::{
 };
 use crate::map::{city_slots, connections, Loc};
 use crate::rules::{
-    can_develop, can_scout, get_valid_build_targets, get_valid_network_targets,
+    can_develop, can_scout, execute_sell, get_valid_build_targets, get_valid_network_targets,
     get_valid_second_rail_links, get_valid_sell_targets, valid_build_cards, BuildTarget, Move,
 };
-use crate::state::{Card, GameState};
+use crate::state::{Card, GameState, PendingBonus};
 use rand::Rng;
 
 // Scoring weights (from aiPlayer.js).
@@ -43,15 +43,25 @@ pub fn choose_action<R: Rng + Clone>(state: &mut GameState<R>) -> Decision {
 
 /// Best move per action type (the 1-ply candidate set). Used both by
 /// `choose_action` and by the 2-ply lookahead in search_ai.
-pub fn candidate_actions<R: Rng>(state: &mut GameState<R>) -> Vec<Decision> {
+pub fn candidate_actions<R: Rng + Clone>(state: &mut GameState<R>) -> Vec<Decision> {
     candidate_actions_k(state, 1)
 }
 
 /// Top-K candidates per action type, for MCTS to get a wider prior.
 /// Build and Network get up to `k` candidates each; other action types keep
 /// their single best (develop/sell/loan/scout/pass).
-pub fn candidate_actions_k<R: Rng>(state: &mut GameState<R>, k: usize) -> Vec<Decision> {
+pub fn candidate_actions_k<R: Rng + Clone>(state: &mut GameState<R>, k: usize) -> Vec<Decision> {
     let pid = state.current_player_id();
+
+    if let Some(PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {
+        if player_id != pid {
+            return Vec::new();
+        }
+        return score_pending_free_develop(state, pid, count)
+            .into_iter()
+            .collect();
+    }
+
     let mut out = Vec::new();
 
     for d in score_top_builds(state, pid, k) {
@@ -89,6 +99,61 @@ pub fn pass_decision(state: &GameState<impl Rng>) -> Decision {
         mv: Move::Pass { card_index },
         score: -0.5,
     }
+}
+
+fn score_pending_free_develop(state: &GameState<impl Rng>, pid: usize, count: u8) -> Option<Decision> {
+    let types = state.players[pid].developable_types();
+    if types.is_empty() {
+        return None;
+    }
+
+    let mut scored: Vec<(IndustryType, f64)> = types
+        .into_iter()
+        .map(|(ind, tile)| {
+            let unlocked = state.players[pid].tile_after(ind, 1);
+            let mut v = if tile.rail_era { 0.35 } else { 0.12 };
+            v += 0.18 * tile.level as f64;
+            if let Some(ut) = unlocked {
+                if ut.rail_era {
+                    v += 0.25;
+                }
+            }
+            if ind == IndustryType::Brewery {
+                v += 0.55;
+            }
+            if state.era == Era::Canal {
+                v += 0.15;
+            }
+            if player_has_buildable_card(state, pid, ind) {
+                v += 0.3;
+            }
+            (ind, v)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let first = scored[0].0;
+    let second = if count >= 2 {
+        let rem1 = state.players[pid].remaining_count(first);
+        scored[1..]
+            .iter()
+            .find(|s| s.0 != first || rem1 > 1)
+            .map(|s| s.0)
+    } else {
+        None
+    };
+
+    let second_score = second
+        .and_then(|ind| scored.iter().find(|s| s.0 == ind).map(|s| s.1 * 0.4))
+        .unwrap_or(0.0);
+
+    Some(Decision {
+        mv: Move::ResolveFreeDevelop {
+            ind1: first,
+            ind2: second,
+        },
+        score: scored[0].1 + second_score,
+    })
 }
 
 /// Position-value estimator for player `pid`, used as the MCTS leaf evaluator.
@@ -969,17 +1034,58 @@ fn merchant_bonus_value(state: &GameState<impl Rng>, loc: Loc) -> f64 {
     0.0
 }
 
-fn score_sell_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> {
+fn sell_route_value(state: &GameState<impl Rng>, route: &crate::rules::SellRoute) -> f64 {
+    if route.use_merchant_beer {
+        merchant_bonus_value(state, state.merchants[route.merchant_index].loc)
+    } else {
+        0.0
+    }
+}
+
+fn sell_plan_executes_all<R: Rng + Clone>(
+    state: &GameState<R>,
+    pid: usize,
+    keys: &[usize],
+    merchant_indices: &[usize],
+    use_merchant: &[bool],
+    card_index: usize,
+) -> bool {
+    let mut sim = state.clone();
+    if execute_sell(
+        &mut sim,
+        pid,
+        keys,
+        merchant_indices,
+        use_merchant,
+        card_index,
+    )
+    .is_err()
+    {
+        return false;
+    }
+
+    keys.iter().all(|&key| {
+        sim.city_tiles[key]
+            .as_ref()
+            .map(|tile| tile.player == pid && tile.flipped)
+            .unwrap_or(false)
+    })
+}
+
+fn score_sell_plan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<Decision> {
     let targets = get_valid_sell_targets(state, pid);
     if targets.is_empty() {
         return None;
     }
 
+    let card_index = pick_any_card(state, pid)?;
+
     // Rank targets, then sell all (matches aiPlayer.js sellPlan behavior).
     let mut ranked: Vec<(usize, f64, f64)> = targets
         .iter()
         .map(|t| {
-            let bonus = best_merchant_beer_bonus(state, &t.merchant_indices);
+            let merchant_choices: Vec<usize> = t.routes.iter().map(|r| r.merchant_index).collect();
+            let bonus = best_merchant_beer_bonus(state, &merchant_choices);
             let tile = &state.city_tiles[t.key];
             let tile_value = tile.as_ref().map_or(0.0, |tile| {
                 tile.def.vp as f64 + tile.def.income as f64 * 0.3
@@ -994,25 +1100,64 @@ fn score_sell_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> 
             .then((b.1).partial_cmp(&a.1).unwrap())
     });
 
-    let keys: Vec<usize> = ranked.iter().map(|r| r.0).collect();
-    // align use_merchant to keys
-    let mut use_map = std::collections::HashMap::new();
-    for (i, t) in targets.iter().enumerate() {
-        let _ = i;
-        use_map.insert(t.key, t.merchant_beer_available);
-    }
-    let use_merchant: Vec<bool> = keys.iter().map(|k| *use_map.get(k).unwrap_or(&false)).collect();
+    let mut keys = Vec::new();
+    let mut merchant_indices = Vec::new();
+    let mut use_merchant = Vec::new();
+    for (key, _, _) in &ranked {
+        let Some(target) = targets.iter().find(|t| t.key == *key) else {
+            continue;
+        };
+        let mut routes = target.routes.clone();
+        routes.sort_by(|a, b| sell_route_value(state, b).partial_cmp(&sell_route_value(state, a)).unwrap());
 
-    let total_vp: f64 = ranked.iter().map(|r| r.1).sum();
-    let total_income: f64 = targets
+        for route in routes {
+            let mut try_keys = keys.clone();
+            let mut try_merchants = merchant_indices.clone();
+            let mut try_use = use_merchant.clone();
+            try_keys.push(*key);
+            try_merchants.push(route.merchant_index);
+            try_use.push(route.use_merchant_beer);
+            if sell_plan_executes_all(state, pid, &try_keys, &try_merchants, &try_use, card_index) {
+                keys = try_keys;
+                merchant_indices = try_merchants;
+                use_merchant = try_use;
+                break;
+            }
+        }
+    }
+
+    if keys.is_empty() {
+        return None;
+    }
+
+    let total_income: f64 = keys
         .iter()
-        .map(|t| {
-            state.city_tiles[t.key]
+        .map(|key| {
+            state.city_tiles[*key]
                 .as_ref()
                 .map_or(0.0, |tile| tile.def.income as f64)
         })
         .sum();
-    let total_bonus: f64 = ranked.iter().map(|r| r.2).sum();
+    let total_bonus: f64 = keys
+        .iter()
+        .zip(merchant_indices.iter().copied())
+        .zip(use_merchant.iter().copied())
+        .map(|((_key, merchant_index), use_merchant)| {
+            if use_merchant {
+                merchant_bonus_value(state, state.merchants[merchant_index].loc)
+            } else {
+                0.0
+            }
+        })
+        .sum();
+    let total_vp: f64 = keys
+        .iter()
+        .map(|key| {
+            state.city_tiles[*key]
+                .as_ref()
+                .map_or(0.0, |tile| tile.def.vp as f64 + tile.def.income as f64 * 0.3)
+        })
+        .sum();
 
     // End-of-era urgency: in the final round of the canal era, canal-only
     // (level-1) sellables vanish if unflipped — selling them now is essential
@@ -1032,10 +1177,10 @@ fn score_sell_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> 
         + urgency_bonus
         + income_stream;
 
-    let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::Sell {
             keys,
+            merchant_indices,
             use_merchant_beer: use_merchant,
             card_index,
         },

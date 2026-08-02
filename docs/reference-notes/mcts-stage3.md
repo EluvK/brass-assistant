@@ -8,17 +8,19 @@
 在 Rust 引擎上实现带 Determinization 的 MCTS 搜索，并用 1-ply 启发式作为 Prior 与叶评估，
 性能目标：单决策 5000-10000 次模拟 ≤ 0.5-2 秒；强度目标：固定 seed 下对战 2-ply 有胜率 / Avg VP 提升。
 
-## 修复后复测结果（2026-08）
+## 修复后复测结果（2026-08-02）
+
+> 本轮数字已在修复“连接得分误计未翻面建筑”以及“heuristic 多卖货重复占用同一桶商家酒”之后重跑。
 
 | 指标 | 数值 |
 | --- | --- |
-| 性能（5000 sims / 当前 bench） | **约 7.82s / 决策** |
-| 性能（10000 sims / 当前 bench） | **约 18.32s / 决策** |
-| MCTS vs 1-ply（80局，seat rotated，600 sims） | **27.5% 胜率，avg VP 56.8 vs 57.5** |
-| MCTS vs 2-ply（80局，seat rotated，600 sims） | **20.0% 胜率，avg VP 57.6 vs 63.3** |
-| 单测 | 16 个 integration tests 全过 |
+| 性能（5000 sims / 当前 bench） | **约 12.73s / 决策** |
+| 性能（10000 sims / 当前 bench） | **约 18.33s / 决策** |
+| MCTS vs 1-ply（80局，seat rotated，600 sims） | **27.5% 胜率，avg VP 50.8 vs 47.8** |
+| MCTS vs 2-ply（80局，seat rotated，600 sims） | **21.2% 胜率，avg VP 47.9 vs 52.5** |
+| 单测 | 25 个 integration tests 全过 |
 
-> 当前结论：在修复非法动作、sell 合法性与 mixed 对局稳定性问题后，**MCTS 仍可运行，但当前配置下并未强于 heuristic，更明显弱于 2-ply**。因此旧版文档里的强度结论已失效。
+> 当前结论：在修复非法动作、sell 合法性、连接积分口径，以及 heuristic 多卖货资源超用问题后，**MCTS 仍可运行；当前样本下 avg VP 已高于 heuristic，但优势还不稳，且仍明显弱于 2-ply**。因此旧版文档里的强度结论已失效。
 
 ## 架构（`src/engine/src/mcts_ai.rs`）
 
