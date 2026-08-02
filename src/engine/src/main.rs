@@ -18,6 +18,7 @@ struct GameStats {
     links: u64,
     canal_events: u64,
     stuck: bool,
+    illegal_move: bool,
     /// Action counts across the whole game (all players summed).
     builds: u64,
     networks: u64,
@@ -39,6 +40,7 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
     let mut state = GameState::new(rng, players);
     let mut canal_events = 0u64;
     let mut stuck = false;
+    let mut illegal_move = false;
     let mut builds = 0u64;
     let mut networks = 0u64;
     let mut develops = 0u64;
@@ -107,8 +109,19 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
                 Move::Pass { .. } => passes += 1,
                 Move::Scout { .. } => {}
             }
-            if brass_engine::rules::apply_move(&mut state, &mv).is_err() {
-                stuck = true;
+            if let Err(err) = brass_engine::rules::apply_move(&mut state, &mv) {
+                eprintln!(
+                    "[illegal] seed={} policy={} pid={} era={:?} round={} hand={} move={} err={}",
+                    seed,
+                    policy,
+                    pid,
+                    state.era,
+                    state.round,
+                    state.players[pid].hand.len(),
+                    mv.describe(&state),
+                    err
+                );
+                illegal_move = true;
                 break;
             }
         }
@@ -184,6 +197,7 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
         links,
         canal_events,
         stuck,
+        illegal_move,
         builds,
         networks,
         develops,
@@ -239,6 +253,7 @@ fn main() {
                 links: a.links + b.links,
                 canal_events: a.canal_events + b.canal_events,
                 stuck: a.stuck || b.stuck,
+                illegal_move: a.illegal_move || b.illegal_move,
                 builds: a.builds + b.builds,
                 networks: a.networks + b.networks,
                 develops: a.develops + b.develops,
@@ -267,6 +282,9 @@ fn main() {
     );
     if total.stuck {
         println!("[!] at least one game hit the guard");
+    }
+    if total.illegal_move {
+        println!("[!] at least one game aborted due to an illegal move returned by a policy");
     }
     println!("Canal-era transitions: {}", total.canal_events);
 

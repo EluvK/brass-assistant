@@ -865,16 +865,25 @@ pub fn execute_network_double(
 // ---------------------------------------------------------------------------
 
 pub fn can_develop(state: &GameState<impl Rng>, pid: usize) -> bool {
-    let player = &state.players[pid];
-    let iron = find_iron_sources(state);
-    if iron.is_empty() {
-        return false;
+    affordable_develop_iron_count(state, pid) >= 1 && !state.players[pid].developable_types().is_empty()
+}
+
+fn affordable_develop_iron_count(state: &GameState<impl Rng>, pid: usize) -> usize {
+    let mut money = state.players[pid].money;
+    let mut count = 0usize;
+
+    for src in find_iron_sources(state) {
+        if src.free {
+            count += 1;
+        } else if money >= src.price as i32 {
+            money -= src.price as i32;
+            count += 1;
+        } else {
+            break;
+        }
     }
-    let first = iron[0];
-    if !first.free && first.price as i32 > player.money {
-        return false;
-    }
-    !player.developable_types().is_empty()
+
+    count
 }
 
 pub fn execute_develop(
@@ -938,6 +947,36 @@ pub struct SellTarget {
     pub merchant_beer_available: bool,
 }
 
+fn can_sell_target(
+    state: &GameState<impl Rng>,
+    pid: usize,
+    loc: Loc,
+    merchant_indices: &[usize],
+    beer_needed: u8,
+) -> Option<bool> {
+    if merchant_indices.is_empty() {
+        return None;
+    }
+
+    if beer_needed == 0 {
+        return Some(merchant_indices.iter().any(|&i| state.merchants[i].has_beer));
+    }
+
+    let brewery_beer = find_beer_sources(state, loc, pid, &[]);
+    if brewery_beer.len() >= beer_needed as usize {
+        return Some(false);
+    }
+
+    let merchant_beer_available = merchant_indices.iter().any(|&i| {
+        state.merchants[i].has_beer && brewery_beer.len() + 1 >= beer_needed as usize
+    });
+    if merchant_beer_available {
+        return Some(true);
+    }
+
+    None
+}
+
 pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<SellTarget> {
     let mut out = Vec::new();
     for (k, tile) in state.city_tiles.iter().enumerate() {
@@ -952,23 +991,11 @@ pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<Se
         }
         let loc = loc.unwrap();
         let merchant_indices = sell_merchants_for(state, pid, loc, t.ind);
-        if merchant_indices.is_empty() {
-            continue;
-        }
         let beer_needed = t.def.beers_to_sell.unwrap_or(0);
-        let merchant_beer_available = if beer_needed > 0 {
-            let total_beer = find_beer_sources(state, loc, pid, &merchant_indices);
-            if total_beer.len() < beer_needed as usize {
-                continue;
-            }
-
-            let brewery_beer = find_beer_sources(state, loc, pid, &[]);
-            merchant_indices.iter().any(|&i| {
-                state.merchants[i].has_beer
-                    && brewery_beer.len() + 1 >= beer_needed as usize
-            })
-        } else {
-            merchant_indices.iter().any(|&i| state.merchants[i].has_beer)
+        let Some(merchant_beer_available) =
+            can_sell_target(state, pid, loc, &merchant_indices, beer_needed)
+        else {
+            continue;
         };
         out.push(SellTarget {
             key: k,
@@ -1292,6 +1319,7 @@ pub fn legal_moves(state: &mut GameState<impl Rng>) -> Vec<Move> {
 
     // DEVELOP
     if can_develop(state, pid) {
+        let affordable_iron = affordable_develop_iron_count(state, pid);
         let types: Vec<IndustryType> = state.players[pid]
             .developable_types()
             .into_iter()
@@ -1299,26 +1327,30 @@ pub fn legal_moves(state: &mut GameState<impl Rng>) -> Vec<Move> {
             .collect();
         for &ind1 in &types {
             // Single develop
-            for ci in any_card_indices(&state.players[pid]) {
-                moves.push(Move::Develop {
-                    ind1,
-                    ind2: None,
-                    card_index: ci,
-                });
-            }
-            // Double develop (two distinct types, or same type if count>1)
-            let rem1 = state.players[pid].remaining_count(ind1);
-            let mut second_types: Vec<IndustryType> = types.clone();
-            if rem1 < 2 {
-                second_types.retain(|&x| x != ind1);
-            }
-            for &ind2 in &second_types {
+            if affordable_iron >= 1 {
                 for ci in any_card_indices(&state.players[pid]) {
                     moves.push(Move::Develop {
                         ind1,
-                        ind2: Some(ind2),
+                        ind2: None,
                         card_index: ci,
                     });
+                }
+            }
+            // Double develop (two distinct types, or same type if count>1)
+            if affordable_iron >= 2 {
+                let rem1 = state.players[pid].remaining_count(ind1);
+                let mut second_types: Vec<IndustryType> = types.clone();
+                if rem1 < 2 {
+                    second_types.retain(|&x| x != ind1);
+                }
+                for &ind2 in &second_types {
+                    for ci in any_card_indices(&state.players[pid]) {
+                        moves.push(Move::Develop {
+                            ind1,
+                            ind2: Some(ind2),
+                            card_index: ci,
+                        });
+                    }
                 }
             }
         }

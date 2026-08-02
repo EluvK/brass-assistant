@@ -10,7 +10,7 @@
 TTS 上广受欢迎的《伯明翰》（及《兰开夏》）脚本化 Mod 的源码（Lua 脚本），由 Kinithin（ikegami）维护。
 **`lib/` 下的 `.ttslua` 是给 TTS 桌面全局脚本用的源码；`.json` 文件是可直接导入 TTS 的成品 Mod。**
 
-本项目 **TTS 集成与隐蔽数据抽取** 阶段的黄金参考。
+本项目 **TTS 集成与隐蔽数据抽取** 阶段的主要参考。
 
 ---
 
@@ -39,8 +39,8 @@ TTS 上广受欢迎的《伯明翰》（及《兰开夏》）脚本化 Mod 的�
 - 结论：读 **公共盘面 + 己方手牌** 完全可行；对手手牌会被引擎隔离（返回 nil）
 
 ### 2. 规则交叉验证（阶段 1 辅助）
-- `lib/App/Birmingham.ttslua` 是 TTS 版规则实现，可与 npow 的 `gameLogic.js` 交叉核对边界规则
-- npow 的 README 也明确说明其数据经本 Mod 验证（两者互为印证）
+- `lib/App/Birmingham.ttslua` 可用于观察 TTS Mod 的边界行为与数据组织方式
+- 但它同样只是参考实现，不应单独作为规则定论依据
 
 ### 3. 状态无状态化设计理念
 - 根据 `notes/Birmingham/Information.txt`：脚本是 **quasi-stateless** 设计，所有状态（钱、盘面、卡牌、市场、商家）都能在脚本外手动改

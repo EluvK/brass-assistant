@@ -1,10 +1,10 @@
 use brass_engine::data::{industry_tiles, Era, IndustryType};
 use brass_engine::map::*;
 use brass_engine::rules::{
-    execute_build, execute_network, get_valid_build_targets, get_valid_network_targets,
+    execute_build, execute_network, get_valid_build_targets, get_valid_network_targets, legal_moves,
 };
 use brass_engine::scoring;
-use brass_engine::state::GameState;
+use brass_engine::state::{BoardTile, GameState};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -276,4 +276,36 @@ fn mcts_determinize_keeps_own_hand_and_hand_size() {
             assert_eq!(det.players[i].hand.len(), state.players[i].hand.len());
         }
     }
+}
+
+#[test]
+fn legal_moves_do_not_offer_unaffordable_double_develop() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+
+    state.players[pid].money = 0;
+    state.place_tile(
+        Loc::Birmingham,
+        2,
+        BoardTile {
+            player: (pid + 1) % 4,
+            ind: IndustryType::IronWorks,
+            def: industry_tiles(IndustryType::IronWorks)[0],
+            flipped: false,
+            resource_cubes: 1,
+        },
+    );
+
+    let moves = legal_moves(&mut state);
+    let single_develops = moves
+        .iter()
+        .filter(|mv| matches!(mv, brass_engine::rules::Move::Develop { ind2: None, .. }))
+        .count();
+    let double_develops = moves
+        .iter()
+        .filter(|mv| matches!(mv, brass_engine::rules::Move::Develop { ind2: Some(_), .. }))
+        .count();
+
+    assert!(single_develops > 0, "expected at least one single develop with one free iron");
+    assert_eq!(double_develops, 0, "double develop should not be generated when only one iron is affordable");
 }

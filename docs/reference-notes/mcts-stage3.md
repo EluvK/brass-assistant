@@ -1,19 +1,24 @@
 # 阶段 ③ MCTS（ISMCTS + Determinization）— 里程碑记录
 
+> 历史里程碑。本文中的 avg VP、对比胜率等强度结论建立在较早版本引擎之上；
+> 后续规则修复后应重新测量，当前只能把这些结果看成阶段性实现记录。
+
 ## 目标
 
 在 Rust 引擎上实现带 Determinization 的 MCTS 搜索，并用 1-ply 启发式作为 Prior 与叶评估，
 性能目标：单决策 5000-10000 次模拟 ≤ 0.5-2 秒；强度目标：固定 seed 下对战 2-ply 有胜率 / Avg VP 提升。
 
-## 结果
+## 修复后复测结果（2026-08）
 
 | 指标 | 数值 |
 | --- | --- |
-| 性能（5000 sims / depth6 / OnePly） | **1.19s / 决策**（达标 ≤2s） |
-| 性能（10000 sims） | 2.35s（略超预算，推荐用 5000） |
-| MCTS vs 2-ply 座位胜率（40局旋转座位） | **27.5%**（4人局理论均衡 25%） |
-| MCTS avg VP vs 2-ply avg VP | **43.2 vs 35.3（+7.9）** |
-| 单测 | 15 个全过（新增 4 个 MCTS/弃牌/牌池测试） |
+| 性能（5000 sims / 当前 bench） | **约 7.82s / 决策** |
+| 性能（10000 sims / 当前 bench） | **约 18.32s / 决策** |
+| MCTS vs 1-ply（80局，seat rotated，600 sims） | **27.5% 胜率，avg VP 56.8 vs 57.5** |
+| MCTS vs 2-ply（80局，seat rotated，600 sims） | **20.0% 胜率，avg VP 57.6 vs 63.3** |
+| 单测 | 16 个 integration tests 全过 |
+
+> 当前结论：在修复非法动作、sell 合法性与 mixed 对局稳定性问题后，**MCTS 仍可运行，但当前配置下并未强于 heuristic，更明显弱于 2-ply**。因此旧版文档里的强度结论已失效。
 
 ## 架构（`src/engine/src/mcts_ai.rs`）
 
@@ -54,12 +59,13 @@
 # 性能验证（单决策）
 cargo run --release --bin bench_mcts -- 7 4 5000 10000
 
-# 强度对比（MCTS 座位旋转 vs 2-ply，最后参数是 MCTS sims）
-cargo run --release --bin brass-engine -- 40 4 mcts-vs-2ply 600
+# 强度对比（第 4 个参数是线程数，第 5 个参数是 MCTS sims）
+cargo run --release --bin brass-engine -- 80 4 mcts-vs-2ply 16 600
+cargo run --release --bin brass-engine -- 80 4 mcts-vs-heur 16 600
 
 # MCTS 全对局 / 对 1-ply
 cargo run --release --bin brass-engine -- 8 4 mcts 500
-cargo run --release --bin brass-engine -- 30 4 mcts-vs-heur 400
+cargo run --release --bin bench_mcts -- 7 4 5000 10000
 ```
 
 ## 已知限制 / 下一步
@@ -69,4 +75,6 @@ cargo run --release --bin brass-engine -- 30 4 mcts-vs-heur 400
 - 树在每次决策时重建（未复用历史树）——根并行 / 树复用是下一步提速点
 - `k_candidates`、`c_puct`、`prior_temp`、`max_depth` 未做系统扫描，单状态调参噪声大，
   应以整局胜率为准
-- 下一步可接 Rayon 做根并行（每线程独立树，聚合决策），把 10000 sims 压进 2s 预算
+- `Sell` / 啤酒来源这类细粒度执行语义容易让树搜索与真实根盘面漂移；后续如继续强化 MCTS，
+  应优先保证候选动作身份与执行细节完全一致
+- 下一步可接 Rayon 做根并行（每线程独立树，聚合决策），把 10000 sims 压进可接受预算

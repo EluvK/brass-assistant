@@ -87,6 +87,7 @@ enum MoveKey {
     },
     Sell {
         keys: Vec<usize>,
+        use_merchant_beer: Vec<bool>,
     },
     Loan,
     Scout {
@@ -111,10 +112,19 @@ fn move_key(mv: &Move) -> MoveKey {
             i1: *ind1,
             i2: *ind2,
         },
-        Move::Sell { keys, .. } => {
+        Move::Sell { keys, use_merchant_beer, .. } => {
             let mut k = keys.clone();
-            k.sort_unstable();
-            MoveKey::Sell { keys: k }
+            let mut pairs: Vec<(usize, bool)> = k
+                .drain(..)
+                .zip(use_merchant_beer.iter().copied())
+                .collect();
+            pairs.sort_unstable_by_key(|(key, _)| *key);
+            let keys = pairs.iter().map(|(key, _)| *key).collect();
+            let use_merchant_beer = pairs.iter().map(|(_, use_merchant)| *use_merchant).collect();
+            MoveKey::Sell {
+                keys,
+                use_merchant_beer,
+            }
         }
         Move::Loan { .. } => MoveKey::Loan,
         Move::Scout { card_indices } => {
@@ -386,6 +396,26 @@ pub fn choose_action_mcts<R: Rng + Clone>(state: &mut GameState<R>, cfg: &MctsCo
         .map(|(ch, _, _)| ch)
         .unwrap();
     let score = arena[best.node].value_sum[root_pid] / arena[best.node].visits.max(1) as f64;
+    let mut ordered_root: Vec<(&Child, u32, f64)> = root_node
+        .children
+        .iter()
+        .map(|ch| {
+            let n = &arena[ch.node];
+            (ch, n.visits, n.value_sum[root_pid] / n.visits.max(1) as f64)
+        })
+        .collect();
+    ordered_root.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.partial_cmp(&a.2).unwrap()));
+
+    for (ch, _visits, child_score) in ordered_root {
+        let mut sim = state.clone();
+        if apply_move(&mut sim, &ch.mv).is_ok() {
+            return Decision {
+                mv: ch.mv.clone(),
+                score: child_score,
+            };
+        }
+    }
+
     if std::env::var("BRASS_MCTS_DEBUG").is_ok() {
         eprintln!(
             "[mcts] sims={} avg_depth={:.2} apply_fail={} empty_cand={} nodes={}",

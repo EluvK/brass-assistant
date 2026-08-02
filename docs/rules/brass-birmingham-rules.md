@@ -1,10 +1,10 @@
 # Brass: Birmingham 规则精要（自整理，供引擎/AI 实现参考）
 
 > **重要声明**：本文档是本人对游戏机制的自整理摘要，**非官方规则书原文**，未复制任何受版权保护的规则书内容。
-> 撰写目的是为 AI 引擎实现提供机制层面的参考。**任何具体数值（费用、收入、VP、卡牌张数等）以
-> `reference/npow-brass-birmingham/js/gameData.js` 与 `reference/ikegami-tts-brass/` 源码为准**，
-> 两者冲突时以 npow（经与 TTS Mod 交叉验证）优先，最终以物理游戏实际规则为准。
-> 有争议/待核对的条目见文末「已知歧义」。
+> 撰写目的是为 AI 引擎实现提供机制层面的参考。`reference/npow-brass-birmingham/` 与
+> `reference/ikegami-tts-brass/` 仅是**辅助参考实现**，便于提取数据与定位边界行为；
+> **它们不是绝对规则真源，也已确认存在实现偏差**。当参考实现、本文档、测试结果或用户规则书结论冲突时，
+> 以**用户裁决 / 规则书结论**与本仓库后续锁定的测试为准，不要直接相信 reference 代码。
 
 ---
 
@@ -187,16 +187,17 @@
 
 ## 9. 数据来源指引
 
-| 数据 | 权威来源 |
+| 数据 | 当前使用方式 |
 | --- | --- |
-| 城市 / 连接 / 槽位 | `reference/npow-brass-birmingham/js/gameData.js` |
-| 卡牌构成 | 同上 |
-| 市场 / 商家 / 价格 | 同上 + `js/gameState.js` |
-| 费用 / 收入 / VP 数值 | 同上 + `js/gameLogic.js`（`gameData.js` 中 `income`/`cost`/`vp`/`linkVP`/`canDevelop`） |
-| 合法性判定逻辑 | `reference/npow-brass-birmingham/js/gameLogic.js` (`getDisabledReason`) |
-| 回合/行动数常量 | `gameData.js`: `ACTIONS_PER_TURN=2`, `FIRST_ROUND_ACTIONS=1`, `LOAN_AMOUNT=30`, `LOAN_INCOME_PENALTY=3`, `MIN_INCOME=-10`, `INITIAL_MONEY=17` |
-| TTS 规则实现 | `reference/ikegami-tts-brass/lib/App/Birmingham.ttslua` |
+| 城市 / 连接 / 槽位 | 可先对照 `reference/npow-brass-birmingham/js/gameData.js`，再由本仓库实现与测试锁定 |
+| 卡牌构成 | 同上；若与规则书/用户裁决冲突，以后者为准 |
+| 市场 / 商家 / 价格 | 参考 `gameData.js` + `js/gameState.js`，但需逐项复核 |
+| 费用 / 收入 / VP 数值 | 参考 `gameData.js` / `gameLogic.js`，用于初始录入，不视为最终权威 |
+| 合法性判定逻辑 | `reference/npow-brass-birmingham/js/gameLogic.js` 可作样本，不可逐条盲抄 |
+| 回合/行动数常量 | 本仓库实现 + 用户裁决优先；reference 仅供定位常量名 |
+| TTS 相关脚本行为 | `reference/ikegami-tts-brass/lib/App/Birmingham.ttslua` 可作辅助参考 |
 
-> 写引擎时：**先读 `gameData.js` 对齐数据，再读 `gameLogic.js` 对齐规则校验**。
+> 写引擎时：reference 适合拿来**找数据入口、看命名、找边界样本**；最终规则要靠
+> **用户裁决、最小复现、以及本仓库测试**来锁定。
 
 ---
