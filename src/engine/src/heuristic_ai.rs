@@ -27,23 +27,30 @@ pub struct Decision {
     pub score: f64,
 }
 
-pub fn choose_action(state: &mut GameState<impl Rng>) -> Decision {
-    candidate_actions(state)
-        .into_iter()
-        .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
-        .unwrap_or_else(|| pass_decision(state))
+pub fn choose_action<R: Rng + Clone>(state: &mut GameState<R>) -> Decision {
+    let mut candidates = candidate_actions(state);
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    for cand in candidates {
+        let mut sim = state.clone();
+        if crate::rules::apply_move(&mut sim, &cand.mv).is_ok() {
+            return cand;
+        }
+    }
+
+    pass_decision(state)
 }
 
 /// Best move per action type (the 1-ply candidate set). Used both by
 /// `choose_action` and by the 2-ply lookahead in search_ai.
-pub fn candidate_actions(state: &mut GameState<impl Rng>) -> Vec<Decision> {
+pub fn candidate_actions<R: Rng>(state: &mut GameState<R>) -> Vec<Decision> {
     candidate_actions_k(state, 1)
 }
 
 /// Top-K candidates per action type, for MCTS to get a wider prior.
 /// Build and Network get up to `k` candidates each; other action types keep
 /// their single best (develop/sell/loan/scout/pass).
-pub fn candidate_actions_k(state: &mut GameState<impl Rng>, k: usize) -> Vec<Decision> {
+pub fn candidate_actions_k<R: Rng>(state: &mut GameState<R>, k: usize) -> Vec<Decision> {
     let pid = state.current_player_id();
     let mut out = Vec::new();
 

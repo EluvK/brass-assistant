@@ -36,7 +36,9 @@ fn main() {
             }
             let m = choose_random_move(&mut state);
             if let Some(mv) = m {
-                let _ = rules::apply_move(&mut state, &mv);
+                if rules::apply_move(&mut state, &mv).is_err() {
+                    break;
+                }
             }
             match advance_turn(&mut state) {
                 TurnResult::Continue => {}

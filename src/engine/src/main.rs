@@ -107,7 +107,10 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
                 Move::Pass { .. } => passes += 1,
                 Move::Scout { .. } => {}
             }
-            let _ = brass_engine::rules::apply_move(&mut state, &mv);
+            if brass_engine::rules::apply_move(&mut state, &mv).is_err() {
+                stuck = true;
+                break;
+            }
         }
 
         match advance_turn(&mut state) {
@@ -317,4 +320,3 @@ fn main() {
         }
     }
 }
-

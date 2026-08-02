@@ -246,9 +246,11 @@ pub fn end_canal_era(state: &mut GameState<impl Rng>) {
     }
 
     // Rebuild deck, deal new hands.
+    // User rulebook ruling: the Rail Era does NOT repeat the per-player
+    // face-down seeded discard done during initial setup, so all 64 cards enter
+    // the action loop in 4p Rail (full 8 rounds).
     state.init_deck();
     state.deal_cards();
-    state.seed_discard_piles();
 }
 
 pub fn end_game(state: &mut GameState<impl Rng>) {

@@ -26,7 +26,9 @@ fn main() {
             if let Move::Sell { .. } = &mv {
                 sell_actions += 1;
             }
-            let _ = apply_move(&mut state, &mv);
+            if apply_move(&mut state, &mv).is_err() {
+                break;
+            }
             match advance_turn(&mut state) {
                 TurnResult::Continue => {}
                 TurnResult::EndCanalEra => end_canal_era(&mut state),

@@ -287,17 +287,22 @@ fn main() {
         println!("    结果: {status}");
         println!("    之后: {after}");
 
-        match advance_turn(&mut state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => {
-                end_canal_era(&mut state);
-                println!(
-                    "\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---"
-                );
+        if res.is_ok() {
+            match advance_turn(&mut state) {
+                TurnResult::Continue => {}
+                TurnResult::EndCanalEra => {
+                    end_canal_era(&mut state);
+                    println!(
+                        "\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---"
+                    );
+                }
+                TurnResult::EndGame => {
+                    end_game(&mut state);
+                }
             }
-            TurnResult::EndGame => {
-                end_game(&mut state);
-            }
+        } else {
+            println!("[!] 非法动作，终止回放以避免污染轮次/手牌状态");
+            break;
         }
     }
 

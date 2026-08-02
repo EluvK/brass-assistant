@@ -91,7 +91,10 @@ fn main() {
             Move::Pass { .. } => target.pass += 1,
             Move::Scout { .. } => target.scout += 1,
         }
-        let _ = brass_engine::rules::apply_move(&mut state, &mv);
+        if let Err(err) = brass_engine::rules::apply_move(&mut state, &mv) {
+            println!("[!] 非法动作: {err}");
+            break;
+        }
         match advance_turn(&mut state) {
             TurnResult::Continue => {}
             TurnResult::EndCanalEra => {

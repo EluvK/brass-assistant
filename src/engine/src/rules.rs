@@ -677,25 +677,55 @@ pub fn get_valid_second_rail_links(
         Some(c) => c,
         None => return Vec::new(),
     };
-    let _ = first;
+    let has_no_presence = !player_has_presence(state, pid);
+    if !has_no_presence && !is_in_network(state, pid, first.a) && !is_in_network(state, pid, first.b) {
+        return Vec::new();
+    }
 
-    // Temporarily place the first link to evaluate second-link adjacency.
-    let had = state.links[first_conn].take();
+    let coal1 = match cheapest_coal_for_connection(state, first) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let mut budget_left = state.players[pid].money - RAIL_DOUBLE_LINK_COST;
+    if !coal1.free {
+        budget_left -= coal1.price as i32;
+    }
+    if budget_left < 0 {
+        return Vec::new();
+    }
+
+    // Place the first link and dry-run its coal consumption so second-link
+    // generation matches the real execution order.
+    state.links[first_conn] = Some(crate::state::Link { player: pid, is_canal: false });
+    let mut consumed_coal1 = None;
+    let mut flipped_coal1 = None;
+    let mut income_space_before = None;
+    let mut coal1_owner = None;
+    if coal1.kind == CoalSourceKind::Mine {
+        if let Some(tile) = state.city_tiles[coal1.key].as_ref() {
+            consumed_coal1 = Some(tile.resource_cubes);
+            flipped_coal1 = Some(tile.flipped);
+            coal1_owner = Some(tile.player);
+            income_space_before = Some(state.players[tile.player].income_space);
+        }
+        state.consume_from_city(coal1.key);
+    }
+
     let mut out = Vec::new();
     for conn in connections() {
-        if conn.id == first_conn || !conn.rail {
+        if conn.id == first_conn || !conn.rail || state.links[conn.id].is_some() {
             continue;
         }
-        if state.links[conn.id].is_some() {
+
+        if !is_in_network(state, pid, conn.a) && !is_in_network(state, pid, conn.b) {
             continue;
         }
-        let e1 = is_in_network(state, pid, conn.a);
-        let e2 = is_in_network(state, pid, conn.b);
-        if !e1 && !e2 {
-            continue;
-        }
-        let coal = cheapest_coal_for_connection(state, conn);
-        if coal.is_none() {
+        let coal2 = match cheapest_coal_for_connection(state, conn) {
+            Some(c) => c,
+            None => continue,
+        };
+        let total_cost = if coal2.free { 0 } else { coal2.price as i32 };
+        if total_cost > budget_left {
             continue;
         }
         if find_beer_for_link(state, pid, conn).is_none() {
@@ -703,7 +733,19 @@ pub fn get_valid_second_rail_links(
         }
         out.push(conn.id);
     }
-    state.links[first_conn] = had;
+
+    if let Some(prev_cubes) = consumed_coal1 {
+        if let Some(tile) = state.city_tiles[coal1.key].as_mut() {
+            tile.resource_cubes = prev_cubes;
+            if let Some(prev_flipped) = flipped_coal1 {
+                tile.flipped = prev_flipped;
+            }
+        }
+    }
+    if let (Some(owner), Some(income_space)) = (coal1_owner, income_space_before) {
+        state.players[owner].income_space = income_space;
+    }
+    state.links[first_conn] = None;
     out
 }
 
@@ -914,15 +956,20 @@ pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<Se
             continue;
         }
         let beer_needed = t.def.beers_to_sell.unwrap_or(0);
-        if beer_needed > 0 {
-            let beer = find_beer_sources(state, loc, pid, &merchant_indices);
-            if beer.len() < beer_needed as usize {
+        let merchant_beer_available = if beer_needed > 0 {
+            let total_beer = find_beer_sources(state, loc, pid, &merchant_indices);
+            if total_beer.len() < beer_needed as usize {
                 continue;
             }
-        }
-        let merchant_beer_available = merchant_indices
-            .iter()
-            .any(|&i| state.merchants[i].has_beer);
+
+            let brewery_beer = find_beer_sources(state, loc, pid, &[]);
+            merchant_indices.iter().any(|&i| {
+                state.merchants[i].has_beer
+                    && brewery_beer.len() + 1 >= beer_needed as usize
+            })
+        } else {
+            merchant_indices.iter().any(|&i| state.merchants[i].has_beer)
+        };
         out.push(SellTarget {
             key: k,
             merchant_indices,

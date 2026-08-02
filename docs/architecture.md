@@ -39,10 +39,10 @@
 - `action_gen`：合法动作生成器（动作空间可能上百）
 - `graph`：城市网络连通性（**静态邻接表 + u32 位掩码 BFS，零堆分配**）
 - `rules`：7 种行动的资源结算与合法性校验
-- `heuristic_ai`：启发式 AI（Baseline，参考 npow `aiPlayer.js`）
+- `heuristic_ai`：启发式 AI（Baseline，可参考 npow `aiPlayer.js` 的评估思路，但不直接照抄）
 - `search_ai`：2-ply 确定性前瞻（同回合两动 Combo，`score(first) + α·score(best second)`）
 - `mcts_ai`：ISMCTS + Determinization（隐藏牌池采样对手手牌，PUCT，1-ply Prior/叶评估）
-- 数据对齐：`reference/npow-brass-birmingham/js/gameData.js`
+- 数据录入：可初始对照 `reference/npow-brass-birmingham/js/gameData.js`，但需由本仓库实现与测试锁定
 
 ### 2. TTS 隐蔽数据抽取 (Lua) — 阶段 2
 - 个人 Saved Objects 小物件脚本，快捷键触发
@@ -66,9 +66,9 @@
 
 1. **性能热路径**（simulation / self-play）一律走 Rust，Python 只做胶水
 2. **状态必须可序列化**：便于确定化采样（Determinization）、存档、调试
-3. **数据单一事实来源**：地图/卡牌/数值以 reference 数据文件为准，避免各模块重复维护
+3. **数据单一事实来源**：最终以本仓库已验证的数据/实现为准；reference 只用于初始化录入与排查，不作为绝对真源
 
 ## 一致性校验
 
-- JS（npow）与 Rust 引擎对同一盘面跑随机对弈，比对动作合法性结果
-- TTS Mod（ikegami）作为边界规则的二次交叉验证
+- 对高风险规则写最小复现与测试，避免把 reference 的 bug 当成真规则
+- npow / ikegami 可作为差异比对样本，但冲突时优先检查规则书结论与用户裁决
