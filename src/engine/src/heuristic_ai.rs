@@ -19,7 +19,7 @@ use rand::Rng;
 
 // Scoring weights (from aiPlayer.js).
 const VP_WEIGHT: f64 = 1.0;
-const MONEY_WEIGHT: f64 = 0.12;
+const BASE_MONEY_WEIGHT: f64 = 0.12;
 const BASE_INCOME_WEIGHT: f64 = 0.35;
 const FLEX_WEIGHT: f64 = 0.8;
 
@@ -185,7 +185,7 @@ pub(crate) fn evaluate_position(state: &GameState<impl Rng>, pid: usize) -> f64 
     let mut value = 0.0;
 
     value += p.vp as f64 * VP_WEIGHT;
-    value += p.money as f64 * MONEY_WEIGHT;
+    value += p.money as f64 * money_weight(state);
     value += p.income_level() as f64 * income_weight(state) * 3.0;
 
     // Own tiles: flipped score full VP; unflipped a small fraction.
@@ -236,8 +236,33 @@ pub(crate) fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
     (total / actions_per_round).clamp(1.0, 8.0)
 }
 
+fn is_late_rail_half(state: &GameState<impl Rng>) -> bool {
+    state.era == Era::Rail && estimate_rounds_remaining(state) <= 4.0
+}
+
+fn money_weight(state: &GameState<impl Rng>) -> f64 {
+    if is_late_rail_half(state) {
+        0.2
+    } else if state.era == Era::Canal {
+        BASE_MONEY_WEIGHT * 0.55
+    } else {
+        BASE_MONEY_WEIGHT * 0.8
+    }
+}
+
 pub(crate) fn income_weight(state: &GameState<impl Rng>) -> f64 {
-    BASE_INCOME_WEIGHT * (estimate_rounds_remaining(state) / 5.0)
+    if is_late_rail_half(state) {
+        return 0.0;
+    }
+    let rounds = estimate_rounds_remaining(state);
+    if state.era == Era::Canal {
+        // Canal economy is income-driven: recovery runway is long and powers
+        // the whole rail transition.
+        BASE_INCOME_WEIGHT * (2.2 + 0.6 * (rounds / 8.0).clamp(0.0, 1.0))
+    } else {
+        // Rail first half: still meaningful, but less than canal.
+        BASE_INCOME_WEIGHT * (1.2 + 0.5 * (rounds / 8.0).clamp(0.0, 1.0))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -248,7 +273,7 @@ pub(crate) fn vp_equivalent(
     money: f64,
     flex: f64,
 ) -> f64 {
-    vp * VP_WEIGHT + income * income_weight(state) + money * MONEY_WEIGHT + flex * FLEX_WEIGHT
+    vp * VP_WEIGHT + income * income_weight(state) + money * money_weight(state) + flex * FLEX_WEIGHT
 }
 
 // ---------------------------------------------------------------------------
@@ -327,12 +352,17 @@ fn estimate_flip_probability(
         // neighbor's, or wild-city teleport in). Island coal is a bad move.
         if is_coal && !can_sell {
             if state.era == Era::Canal {
-                // Near-worthless: no merchant reach, tiles vanish at era end.
-                0.12
+                // Canal coal that cannot sell on placement is still weak, but
+                // less so when market coal is very expensive (6/7/8): demand
+                // pressure means table consumption is likely soon.
+                let heat = ((state.coal_price() as f64 - 5.0) / 3.0).clamp(0.0, 1.0);
+                (0.12 + 0.18 * heat).min(0.4)
             } else {
-                // Rail era: links DO get built out (double-rail spam), so the
-                // tile still has a real chance to be consumed. Lower but alive.
-                0.45
+                // Rail era: even without merchant auto-sell, coal demand is
+                // table-wide and urgent; isolated mines are consumed quickly
+                // once the rail graph densifies.
+                let heat = ((state.coal_price() as f64 - 4.0) / 4.0).clamp(0.0, 1.0);
+                (0.6 + 0.25 * heat).min(0.9)
             }
         } else {
             let sale = simulate_market_sale(state, is_coal, cubes);
@@ -410,6 +440,28 @@ fn count_new_unbuilt_neighbor_connections(state: &GameState<impl Rng>, city_id: 
         .iter()
         .filter(|c| state.links[c.id].is_none() && (c.a == city_id || c.b == city_id))
         .count()
+}
+
+fn own_brewery_stats(state: &GameState<impl Rng>, pid: usize) -> (usize, usize) {
+    let mut barrels = 0usize;
+    let mut flipped = 0usize;
+    for tile in state.city_tiles.iter().flatten() {
+        if tile.player == pid && tile.ind == IndustryType::Brewery {
+            barrels += tile.resource_cubes as usize;
+            if tile.flipped {
+                flipped += 1;
+            }
+        }
+    }
+    for tile in state.farm_tiles.iter().flatten() {
+        if tile.player == pid {
+            barrels += tile.resource_cubes as usize;
+            if tile.flipped {
+                flipped += 1;
+            }
+        }
+    }
+    (barrels, flipped)
 }
 
 /// Can `pid` reach a merchant barrel (any accepted industry) from `loc`?
@@ -537,9 +589,21 @@ fn score_build_candidate(
         };
         if market_ok {
             let sale = simulate_market_sale(state, is_coal, tile.resource_cubes);
-            let sell_value = sale.cash * MONEY_WEIGHT;
+            let sell_value = sale.cash * money_weight(state);
             let cash_back_bonus = if sale.cash > 0.0 {
                 sale.cash * 0.11 + if sale.flips { 0.6 } else { 0.0 }
+            } else {
+                0.0
+            };
+            // Coal market spike prior: when buy price is 6/7/8, placing a
+            // connected coal mine that can auto-sell is typically a top-tier
+            // tempo play (cash now + flip income + future board demand).
+            let coal_spike_bonus = if is_coal && sale.sold > 0 {
+                let buy_price = state.coal_price() as f64;
+                let heat = ((buy_price - 5.0) / 3.0).clamp(0.0, 1.0);
+                let sold_factor = sale.sold as f64;
+                let era_mult = if state.era == Era::Canal { 1.25 } else { 1.0 };
+                heat * sold_factor * 1.9 * era_mult
             } else {
                 0.0
             };
@@ -552,7 +616,7 @@ fn score_build_candidate(
             } else {
                 (sale.total - sale.sold) as f64 * 0.5
             };
-            sell_value + cash_back_bonus + scarcity_value - leftover_penalty
+            sell_value + cash_back_bonus + coal_spike_bonus + scarcity_value - leftover_penalty
         } else {
             // Not merchant-connected: cubes can't be sold today. For an
             // ISLAND COAL MINE this is a strongly negative move in the canal
@@ -563,7 +627,10 @@ fn score_build_candidate(
                 if state.era == Era::Canal {
                     -0.5
                 } else {
-                    scarcity * 0.6
+                    // Rail coal without merchant reach is still a strong play
+                    // under scarcity: it backfills the table's fuel demand,
+                    // gets consumed fast, and often flips for income soon.
+                    scarcity * (1.2 + 0.25 * tile.resource_cubes as f64)
                 }
             } else {
                 scarcity * 1.2
@@ -574,6 +641,19 @@ fn score_build_candidate(
     };
     let network_expansion =
         0.1 * count_new_unbuilt_neighbor_connections(state, cand.loc) as f64;
+
+    // Emergency coal supply prior (rail): if coal market is near empty, any
+    // legal coal mine is strategically premium because the whole table must pay
+    // expensive market coal otherwise. This is independent of immediate
+    // merchant auto-sell.
+    let rail_coal_shortage_bonus = if cand.ind == IndustryType::CoalMine && state.era == Era::Rail {
+        let shortage = (1.0 - (state.coal_market as f64 / 14.0)).clamp(0.0, 1.0);
+        let level_factor = 1.0 + 0.2 * (tile.level.saturating_sub(1)) as f64;
+        let cubes_factor = 0.7 + 0.15 * tile.resource_cubes as f64;
+        shortage * level_factor * cubes_factor * 3.0
+    } else {
+        0.0
+    };
 
     // Cost efficiency: the build must be worth its price tag. Cheap builds
     // (coal £5, iron £7, brewery £5) get a relative edge early.
@@ -672,7 +752,7 @@ fn score_build_candidate(
     let resource_ratio = resource_source_ratio(state, cand);
     let interaction_bonus = (resource_ratio - 0.5).max(0.0) * 0.8;
 
-    vp_equivalent(
+    let mut score = vp_equivalent(
         state,
         tile.vp as f64 * flip_prob * double_vp + link_self_value,
         tile.income as f64 * flip_prob,
@@ -680,11 +760,24 @@ fn score_build_candidate(
         0.0,
     ) + resource_self_sufficiency
         + network_expansion
+        + rail_coal_shortage_bonus
         + beer_bonus
         + cost_efficiency
         + market_adjust
         + level_adjust
-        + interaction_bonus
+        + interaction_bonus;
+
+    if state.era == Era::Canal {
+        if tile.level >= 2 {
+            score *= 2.0;
+        } else {
+            // Canal level-1 board presence is often disposable tempo only; keep
+            // it legal but clearly behind develop->level-2 lines.
+            score -= 1.8;
+        }
+    }
+
+    score
 }
 
 fn pick_build_card(state: &GameState<impl Rng>, pid: usize, cand: &BuildTarget) -> Option<usize> {
@@ -767,6 +860,27 @@ fn connects_to_new_merchant(_state: &GameState<impl Rng>, cand_cities: &[Loc; 2]
     cand_cities.iter().any(|c| c.is_merchant())
 }
 
+fn coal_effective_price(src: &crate::graph::CoalSource) -> i32 {
+    if src.free { 0 } else { src.price as i32 }
+}
+
+fn cheapest_connection_coal_source(
+    state: &GameState<impl Rng>,
+    conn_id: usize,
+) -> Option<crate::graph::CoalSource> {
+    let conn = &connections()[conn_id];
+    crate::rules::coal_options_for_connection(state, conn, 1)
+        .into_iter()
+        .flatten()
+        .min_by_key(coal_effective_price)
+}
+
+fn estimated_connection_coal_cost(state: &GameState<impl Rng>, conn_id: usize) -> i32 {
+    cheapest_connection_coal_source(state, conn_id)
+        .map(|s| coal_effective_price(&s))
+        .unwrap_or(crate::map::COAL_EMPTY_PRICE as i32)
+}
+
 /// Rail-era link VP potential: sum the top flipped VP a player could still
 /// land in the two cities this link connects (vacant slots + remaining tiles),
 /// weighted by whether they can actually place there. Dense industrial hubs
@@ -802,10 +916,85 @@ fn link_vp_potential(state: &GameState<impl Rng>, pid: usize, cities: &[Loc; 2])
     total
 }
 
+fn immediate_link_icons_at(state: &GameState<impl Rng>, loc: Loc) -> f64 {
+    if loc.is_merchant() {
+        return 2.0;
+    }
+    if loc.is_city() {
+        let mut v = 0.0;
+        for slot in 0..city_slots(loc).len() {
+            if let Some(k) = state.city_slot_key(loc, slot) {
+                if let Some(t) = &state.city_tiles[k] {
+                    if t.flipped {
+                        v += t.def.link_vp as f64;
+                    }
+                }
+            }
+        }
+        return v;
+    }
+    if let Some(t) = state.farm_tile(loc) {
+        if t.flipped {
+            return t.def.link_vp as f64;
+        }
+    }
+    0.0
+}
+
+fn future_link_node_potential(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> f64 {
+    if !loc.is_city() {
+        return 0.0;
+    }
+    let mut total = 0.0;
+    for (slot_idx, slot_types) in city_slots(loc).iter().enumerate() {
+        if let Some(k) = state.city_slot_key(loc, slot_idx) {
+            if state.city_tiles[k].is_some() {
+                continue;
+            }
+        }
+        let mut best = 0.0;
+        for t in *slot_types {
+            if let Some(tile) = state.players[pid].next_tile(*t) {
+                // Approximate future node value for link scoring around this hub.
+                let mut v = tile.link_vp as f64 + tile.vp as f64 * 0.2;
+                if tile.level >= 2 && state.era == Era::Canal {
+                    v += 0.6;
+                }
+                if player_has_buildable_card(state, pid, *t) {
+                    v += 0.25;
+                }
+                if v > best {
+                    best = v;
+                }
+            }
+        }
+        total += best;
+    }
+    total
+}
+
+fn potential_link_vps(
+    state: &GameState<impl Rng>,
+    pid: usize,
+    conn_id: usize,
+    cities: &[Loc; 2],
+) -> f64 {
+    let mut immediate = 0.0;
+    let mut future = 0.0;
+    for loc in cities {
+        immediate += immediate_link_icons_at(state, *loc);
+        future += future_link_node_potential(state, pid, *loc);
+    }
+    if let Some(via) = connections()[conn_id].via_farm {
+        immediate += immediate_link_icons_at(state, via);
+    }
+    immediate + 0.7 * future
+}
+
 fn score_network_candidate(
     state: &GameState<impl Rng>,
     pid: usize,
-    _conn_id: usize,
+    conn_id: usize,
     cost: i32,
     cities: &[Loc; 2],
     is_canal: bool,
@@ -820,10 +1009,11 @@ fn score_network_candidate(
     // highest-value plays once the rail era starts. Weight by the VP potential
     // of the cities they open up, scaled down to VP-equivalent units.
     let vp_potential = link_vp_potential(state, pid, cities);
+    let potential_link_vp = potential_link_vps(state, pid, conn_id, cities);
     let hub_bonus = if state.era == Era::Rail {
-        vp_potential * 0.08
+        vp_potential * 0.08 + potential_link_vp * 0.28
     } else {
-        vp_potential * 0.03
+        vp_potential * 0.03 + potential_link_vp * 0.20
     };
     let has_industry = state
         .city_tiles
@@ -872,11 +1062,16 @@ pub(crate) fn score_top_networks(state: &mut GameState<impl Rng>, pid: usize, k:
     let mut scored: Vec<(usize, f64)> = Vec::new();
     for conn_id in targets {
         let conn = &connections()[conn_id];
-        let cost = if state.era == Era::Canal {
+        let mut cost = if state.era == Era::Canal {
             crate::map::CANAL_LINK_COST
         } else {
             crate::map::RAIL_LINK_COST
         };
+        if state.era == Era::Rail {
+            // Rail links consume 1 coal; charging only base link cost massively
+            // overvalues network spam and undervalues coal supply actions.
+            cost += estimated_connection_coal_cost(state, conn_id);
+        }
         let s = score_network_candidate(
             state,
             pid,
@@ -894,11 +1089,7 @@ pub(crate) fn score_top_networks(state: &mut GameState<impl Rng>, pid: usize, k:
         .filter_map(|(conn_id, score)| {
             let card_index = pick_any_card(state, pid)?;
             let coal = if state.era == Era::Rail {
-                let conn = &connections()[conn_id];
-                crate::rules::coal_options_for_connection(state, conn, 1)
-                    .into_iter()
-                    .next()
-                    .and_then(|opt| opt.into_iter().next())
+                cheapest_connection_coal_source(state, conn_id)
             } else {
                 None
             };
@@ -926,16 +1117,31 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
     let mut best: Option<(usize, usize, f64)> = None;
     for conn1 in singles {
         for conn2 in get_valid_second_rail_links(state, pid, conn1) {
-            // Value double-rail similarly; cost flat 15 + coal (approx).
+            // Value both links and charge realistic resource cost:
+            // total = £15 base + 2 coal (explicitly estimated from legal sources).
+            let c1 = &connections()[conn1];
             let c2 = &connections()[conn2];
-            let s = score_network_candidate(
+            let cost1 = crate::map::RAIL_LINK_COST + estimated_connection_coal_cost(state, conn1);
+            let cost2 = crate::map::RAIL_LINK_COST + estimated_connection_coal_cost(state, conn2);
+            let s1 = score_network_candidate(
+                state,
+                pid,
+                conn1,
+                cost1,
+                &[c1.a, c1.b],
+                false,
+            );
+            let s2 = score_network_candidate(
                 state,
                 pid,
                 conn2,
-                crate::map::RAIL_DOUBLE_LINK_COST,
+                cost2,
                 &[c2.a, c2.b],
                 false,
             );
+            let extra_base = (crate::map::RAIL_DOUBLE_LINK_COST
+                - 2 * crate::map::RAIL_LINK_COST) as f64;
+            let s = s1 + s2 - extra_base * money_weight(state);
             let better = match &best {
                 Some((_, _, bs)) => s > *bs,
                 None => true,
@@ -1066,13 +1272,24 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
     let iron_scarcity = if iron[0].free { 0.0 } else { 0.6 };
     let second_value = if let Some(_) = second { scored[1].1 * 0.4 } else { 0.0 };
 
-    let score = vp_equivalent(
+    let mut score = vp_equivalent(
         state,
         first.1 + second_value,
         0.0,
         -(iron_cost as f64),
         0.0,
     ) - iron_scarcity;
+
+    if state.era == Era::Canal {
+        score *= 2.0;
+        // In canal, spending a Develop action for only one tile is usually
+        // tempo-inefficient; prefer two-tile develops when legal/affordable.
+        if second.is_none() {
+            score -= 2.0;
+        } else {
+            score += 0.5;
+        }
+    }
 
     let iron_needed = if second.is_some() { 2 } else { 1 };
     let iron_choice = crate::rules::iron_source_options(state, iron_needed)
@@ -1117,7 +1334,7 @@ fn merchant_bonus_value(state: &GameState<impl Rng>, loc: Loc) -> f64 {
         if def.loc == loc {
             return match def.bonus {
                 crate::map::MerchantBonus::Vp(v) => v as f64 * VP_WEIGHT,
-                crate::map::MerchantBonus::Money(m) => m as f64 * MONEY_WEIGHT,
+                crate::map::MerchantBonus::Money(m) => m as f64 * money_weight(state),
                 crate::map::MerchantBonus::Income(spaces) => {
                     spaces as f64 * income_weight(state)
                 }
@@ -1262,6 +1479,32 @@ fn score_sell_plan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<D
     let urgent = canal_end || rail_end;
     let urgency_bonus = if urgent { 3.0 } else { 0.0 };
 
+    // Canal late-game tactical prior: deplete beer and flip breweries before
+    // level-1 cleanup, or the barrels evaporate with no value.
+    let mut canal_beer_drain_bonus = 0.0;
+    if state.era == Era::Canal && rounds_left <= 2.5 {
+        let (before_barrels, before_flipped) = own_brewery_stats(state, pid);
+        let mut sim = state.clone();
+        if execute_sell(
+            &mut sim,
+            pid,
+            &keys,
+            &merchant_indices,
+            &use_merchant,
+            card_index,
+        )
+        .is_ok()
+        {
+            let (after_barrels, after_flipped) = own_brewery_stats(&sim, pid);
+            let consumed = before_barrels.saturating_sub(after_barrels) as f64;
+            let flipped_gain = after_flipped.saturating_sub(before_flipped) as f64;
+            canal_beer_drain_bonus = consumed * 0.9 + flipped_gain * 2.2;
+            if before_barrels > 0 && after_barrels == 0 {
+                canal_beer_drain_bonus += 3.8;
+            }
+        }
+    }
+
     // Flipping a sellable advances income: that's a recurring cash stream,
     // not just a one-time VP. Add the income value explicitly.
     let income_stream = total_income * income_weight(state) * 0.5;
@@ -1269,7 +1512,8 @@ fn score_sell_plan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<D
     let score = vp_equivalent(state, total_vp, total_income, 0.0, 0.0)
         + total_bonus
         + urgency_bonus
-        + income_stream;
+        + income_stream
+        + canal_beer_drain_bonus;
 
     Some(Decision {
         mv: Move::Sell {
@@ -1359,7 +1603,20 @@ fn score_loan_result<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option
         0.0
     };
 
-    let score = gain + combo_gain + idle_bonus + unlock_bonus - income_cost - floor_penalty - rich_penalty - late_era_penalty;
+    // Slight tactical nudge: early canal loans are often the cleanest way to
+    // unlock the engine (loan -> build/develop) before tempo stalls.
+    let canal_early_loan_bonus = if state.era == Era::Canal && rounds_left >= 5.5 {
+        if cash < 18.0 {
+            0.9
+        } else {
+            0.4
+        }
+    } else {
+        0.0
+    };
+
+    let score = gain + combo_gain + idle_bonus + unlock_bonus + canal_early_loan_bonus
+        - income_cost - floor_penalty - rich_penalty - late_era_penalty;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::Loan { card_index },
@@ -1521,7 +1778,7 @@ pub fn debug_market_adjust(
     };
     if market_ok {
         let sale = simulate_market_sale(state, is_coal, cubes);
-        let sell_value = sale.cash * MONEY_WEIGHT;
+        let sell_value = sale.cash * money_weight(state);
         let scarcity_value = scarcity * (1.0 + sale.sold as f64) * 0.6;
         let leftover_penalty = (sale.total - sale.sold) as f64 * 0.5;
         sell_value + scarcity_value - leftover_penalty

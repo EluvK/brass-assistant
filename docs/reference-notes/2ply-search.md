@@ -2,6 +2,7 @@
 
 > 历史里程碑。本文中的强度数字来自较早版本引擎；在后续修复规则/回合流程后，
 > 这些数值只保留"当时相对趋势"参考，不应视为当前有效基准。
+> 当前可执行基线与命令请优先看 `docs/current-baseline.md`。
 
 ## 动机
 
@@ -41,6 +42,8 @@ value(first) = score(first) + ALPHA * score(best second action after first)
 - 2-ply：`建网→建厂`、`建厂→卖货` 等 combo 更稳定出现，建厂更积极，卖货与翻面更充分
 
 ## 命令
+
+> 以下命令用于复现本文所述实验口径；若仅需查看当前现状，请改用 `docs/current-baseline.md` 的命令集。
 
 ```
 cargo run --release --bin brass-engine -- 500 4 heuristic   # 1-ply 基线
