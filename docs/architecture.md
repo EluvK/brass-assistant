@@ -131,3 +131,41 @@ NetworkDouble 对数动态计算（`develop_offset()` 等函数）。
   `coal2[0]` 越界。修复：`SecondRailOption` 携带在首铁路就位状态下枚举的
   `coal2_opts`（含预算过滤），`legal_moves` 与 heuristic 直接复用，不再重算。
 
+### 已知遗留（规则裁决挂起）
+
+- **双铁路是否要求共享端点**：引擎与 npow 参考实现一致允许「两条铁路只需都在
+  玩家网络内、不要求共享端点」。因此 policy 表把双铁路域扩为**全部无序铁路对**
+  （38 选 2 = 703，表总量 715 → **1316**）。若物理规则书要求共享端点，需用户裁决
+  后再收紧引擎 `get_second_rail_options`（表保持超集、无害）。
+- **双铁路煤源枚举不一致**：`get_second_rail_options` 按「内部最便宜 coal1 已消耗」
+  的状态算 `coal2_opts`，而 canonical 实际用的 outer coal1 可能不同 → `legal_moves`
+  会产出少量执行必失败的 NetDouble。Rust MCTS 靠捕获 apply 错误跳过；Python MCTS
+  对每个 slot 保留全部 canonical 逐个尝试（`mcts.py _make_child`）。待后续修引擎。
+
+---
+
+## 阶段 E：AI 层（Python MCTS + Policy-Value 网络，`src/ai/`）
+
+### 模块
+
+| 模块 | 职责 |
+| --- | --- |
+| `build_input.py` | `state_to_tensor` → torch 张量（支持批量 + 任意玩家视角） |
+| `net.py` | Policy-Value 双头网络：cell-encoder(共享 MLP) → concat(global/hands) → trunk → policy(1316) + value(tanh) |
+| `mcts.py` | ISMCTS：单次根确定性 + PUCT + MaxN 价值向量 + 网络先验；slot 为树标识 |
+| `selfplay.py` | 自对弈：每步记录 (state, visit 分布 policy 目标, 归一化最终 VP 价值目标) |
+| `train.py` | AlphaZero 训练循环（policy CE + value MSE + L2，AMP 预留） |
+| `evaluate.py` | MCTS vs heuristic/2ply 席位轮换对局评估 |
+
+### 关键设计
+
+- **价值目标**（用户已裁决）：`z_p = (vp_p - mean) / max(std, eps)`，样本携带视角玩家的 z。
+- **MaxN**：叶子对 4 个玩家视角批量编码一次前向 → 价值向量；选择时该节点行动者
+  最大化自己的 Q+PUCT（非零和，对手不会结盟）。
+- **树标识 = policy slot**：资源源/卡牌选择折叠；slot 的 canonical 逐个尝试直到可执行。
+- **确定化**：每次 `search` 对根状态 `determinize()` 一次（单世界树）。Rust `mcts_ai`
+  每模拟重采样；Python 版为简化起见先用单世界，训练闭环验证后再对齐。
+- 运行：`PYTHONPATH=src/ai .venv/Scripts/python.exe -m pytest src/ai/tests -q`（CPU 版，
+  9 项测试）。CUDA 训练：把 `TrainConfig.device` 设为 `"cuda"` 并安装 cu12x torch。
+
+

@@ -80,9 +80,8 @@ fn hand_bag(state: &GameState<impl Rng>, pid: usize) -> Vec<f32> {
     bag
 }
 
-fn global_vec(state: &GameState<impl Rng>) -> Vec<f32> {
+fn global_vec(state: &GameState<impl Rng>, pid: usize) -> Vec<f32> {
     let mut g = vec![0.0f32; GLOBAL_LEN];
-    let pid = state.current_player_id();
 
     g[0] = if state.era == Era::Rail { 1.0 } else { 0.0 };
     g[1] = (state.round as f32 / 8.0).min(1.0);
@@ -173,14 +172,14 @@ fn links_vec(state: &GameState<impl Rng>) -> Vec<f32> {
     l
 }
 
-/// Encode a full game state from the current player's perspective. Opponent
-/// hands are read from whatever is in the state (caller decides determinized
-/// vs belief); this encoder is agnostic to their origin.
-pub fn state_to_tensor(state: &GameState<impl Rng>) -> EncodedTensor {
-    let pid = state.current_player_id();
+/// Encode a full game state from an explicit perspective player `pid` (the
+/// caller decides whether it equals the current player). Opponent hands are
+/// read from whatever is in the state (caller decides determinized vs belief);
+/// this encoder is agnostic to their origin.
+pub fn state_to_tensor(state: &GameState<impl Rng>, pid: usize) -> EncodedTensor {
     let board = board_vec(state);
     let links = links_vec(state);
-    let global = global_vec(state);
+    let global = global_vec(state, pid);
     let own_hand = hand_bag(state, pid);
 
     let mut opp_hands = Vec::with_capacity(MAX_OPPONENTS * HAND_LEN);

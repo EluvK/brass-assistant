@@ -10,7 +10,7 @@
 //!   Build (city)       20 cities x 4 slots x 6 industries  = 480
 //!   Build (farm)       2 farm breweries                     =   2
 //!   Network (single)   39 connections
-//!   Network (double)   static unordered pairs of rail links sharing a node
+//!   Network (double)   all unordered rail-link pairs (703; superset)
 //!   Develop            6 singles + 36 doubles (ind1, ind2 incl. same)
 //!   Sell               47 city slot keys (one per tile)
 //!   Loan / Scout / Pass 1 each
@@ -62,8 +62,11 @@ pub fn pass_offset() -> usize {
     loan_offset() + 2
 }
 
-/// Static list of unordered rail-link pairs sharing an endpoint (the space of
-/// possible double-rail actions). Legality is enforced separately by the mask.
+/// Static list of unordered rail-link pairs. Double-rail legality in the
+/// engine does NOT require the two links to share a node (both only need to be
+/// in the player's network after the first is placed — matching the npow
+/// reference), so the policy table must cover every unordered rail pair as a
+/// superset. The legality mask decides what is actually reachable.
 fn double_rail_pairs() -> &'static Vec<(usize, usize)> {
     static PAIRS: OnceLock<Vec<(usize, usize)>> = OnceLock::new();
     PAIRS.get_or_init(|| {
@@ -74,10 +77,7 @@ fn double_rail_pairs() -> &'static Vec<(usize, usize)> {
                 continue;
             }
             for j in (i + 1)..conns.len() {
-                if !conns[j].rail {
-                    continue;
-                }
-                if conns_share_node(&conns[i], &conns[j]) {
+                if conns[j].rail {
                     pairs.push((conns[i].id, conns[j].id));
                 }
             }
@@ -88,12 +88,6 @@ fn double_rail_pairs() -> &'static Vec<(usize, usize)> {
 
 pub fn network_double_cells() -> usize {
     double_rail_pairs().len()
-}
-
-fn conns_share_node(a: &crate::map::Connection, b: &crate::map::Connection) -> bool {
-    let ea = [a.a, a.b, a.via_farm.unwrap_or(a.a)];
-    let eb = [b.a, b.b, b.via_farm.unwrap_or(b.b)];
-    ea.iter().any(|x| eb.contains(x))
 }
 
 fn double_rail_index(conn1: usize, conn2: usize) -> Option<usize> {

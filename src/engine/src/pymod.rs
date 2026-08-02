@@ -86,6 +86,13 @@ impl PyGame {
         self.state.pending_bonus.is_some()
     }
 
+    /// Independent deep clone of the game state (for MCTS child nodes).
+    fn clone(&self) -> Self {
+        PyGame {
+            state: self.state.clone(),
+        }
+    }
+
     /// List of legal moves as (policy_slot, canonical, describe) triples.
     fn legal_moves(&self) -> Vec<(usize, String, String)> {
         let mut state = self.state.clone();
@@ -137,10 +144,13 @@ impl PyGame {
 
     /// Encode the state into numpy arrays:
     /// board (17,49), links (6,39), global (50,), own_hand (35,), opp_hands (105,).
-    #[pyo3(signature = ())]
+    /// `perspective` defaults to the current player; pass another player id to
+    /// encode from that player's viewpoint (used for MaxN value evaluation).
+    #[pyo3(signature = (perspective=None))]
     fn state_to_tensor<'py>(
         &self,
         py: Python<'py>,
+        perspective: Option<usize>,
     ) -> PyResult<(
         Bound<'py, PyArray2<f32>>,
         Bound<'py, PyArray2<f32>>,
@@ -148,7 +158,14 @@ impl PyGame {
         Bound<'py, PyArray1<f32>>,
         Bound<'py, PyArray1<f32>>,
     )> {
-        let t = encode::state_to_tensor(&self.state);
+        let pid = perspective.unwrap_or_else(|| self.state.current_player_id());
+        if pid >= self.state.player_count() {
+            return Err(PyValueError::new_err(format!(
+                "perspective {pid} out of range (players={})",
+                self.state.player_count()
+            )));
+        }
+        let t = encode::state_to_tensor(&self.state, pid);
 
         let board = reshape2(py, &t.board, encode::BOARD_PLANES, encode::BOARD_CELLS)?;
         let links = reshape2(py, &t.links, encode::LINK_PLANES, encode::LINK_CELLS)?;
@@ -157,6 +174,20 @@ impl PyGame {
         let opp_hands = PyArray1::from_vec(py, t.opp_hands);
 
         Ok((board, links, global, own_hand, opp_hands))
+    }
+
+    /// Final VP per player (index order), for value targets & evaluation.
+    fn player_vps(&self) -> Vec<i32> {
+        self.state
+            .players
+            .iter()
+            .map(|p| p.vp as i32)
+            .collect()
+    }
+
+    /// Player ids ranked by final standing (best first, tiebreaks applied).
+    fn final_ranking(&self) -> Vec<usize> {
+        crate::scoring::final_ranking(&self.state)
     }
 
     /// Heuristic (1-ply) choice: returns (canonical, describe, score).
