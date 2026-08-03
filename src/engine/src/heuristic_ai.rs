@@ -797,12 +797,13 @@ fn score_build_candidate(
         }
     }
 
-    // Rail-era tiles score their flipped VP at BOTH era ends (canal survives
+    // Level-2+ tiles score their flipped VP at BOTH era ends (they survive
     // into rail). In the rail era the double-count is fully earned (2x); in the
     // canal era it's potential — only realized if the tile survives — so weight
     // it lightly (1.2x) to avoid pushing expensive rail tiles into the cash-
-    // strapped canal economy.
-    let double_vp = if tile.rail_era {
+    // strapped canal economy. Level-1 tiles (incl. Pottery I) are removed at
+    // the canal-era end, so they never double-score.
+    let double_vp = if tile.level >= 2 {
         if state.era == Era::Rail { 2.0 } else { 1.1 }
     } else {
         1.0
@@ -864,14 +865,14 @@ fn score_build_candidate(
         }
     }
 
-    // Doomed-build guardrail: a canal-only (level-1) tile built so late in the
-    // canal era that it cannot flip before era end is removed at the
+    // Doomed-build guardrail: a level-1 tile (incl. Pottery I) built so late in
+    // the canal era that it cannot flip before era end is removed at the
     // transition without ever scoring — a pure cash sink (e.g. a £21 pottery
     // built in round 7-8 that nobody can sell in time). Heavily penalize
     // unless it can be sold immediately this turn. This also propagates into
     // the loan scorer's `best_affordable_build_score`, so it stops loaning
     // just to fund such a build.
-    if state.era == Era::Canal && !tile.rail_era {
+    if state.era == Era::Canal && tile.level == 1 {
         let rounds_left = estimate_rounds_remaining(state);
         if rounds_left <= 2.0 && !immediate_sellable(state, pid, cand.ind, cand.loc) {
             let urgency = (2.0 - rounds_left).max(0.0);
@@ -1005,7 +1006,9 @@ fn link_vp_potential(state: &GameState<impl Rng>, pid: usize, cities: &[Loc; 2])
             let mut best = 0.0f64;
             for t in *slot_types {
                 if let Some(tile) = state.players[pid].next_tile(*t) {
-                    let dvp = if tile.rail_era { 1.4 } else { 1.0 };
+                    // Only level-2+ tiles survive the canal→rail transition and
+                    // double-score their flipped VP.
+                    let dvp = if tile.level >= 2 { 1.4 } else { 1.0 };
                     let v = tile.vp as f64 * dvp;
                     if v > best {
                         best = v;

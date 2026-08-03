@@ -206,14 +206,14 @@ pub fn end_canal_era(state: &mut GameState<impl Rng>) {
 
     for t in state.city_tiles.iter_mut() {
         if let Some(tile) = t {
-            if !tile.def.rail_era {
+            if tile.def.level == 1 {
                 *t = None;
             }
         }
     }
     for t in state.farm_tiles.iter_mut() {
         if let Some(tile) = t {
-            if !tile.def.rail_era {
+            if tile.def.level == 1 {
                 *t = None;
             }
         }

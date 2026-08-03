@@ -1,5 +1,5 @@
 use brass_engine::data::{industry_tiles, Era, IndustryType};
-use brass_engine::engine::advance_turn;
+use brass_engine::engine::{advance_turn, end_canal_era};
 use brass_engine::map::*;
 use brass_engine::rules::{
     execute_build, execute_network, execute_network_double, execute_sell, get_valid_build_targets,
@@ -328,6 +328,292 @@ fn link_scoring_ignores_unflipped_tiles_until_they_flip() {
     let scores = scoring::score_era(&mut state);
     let mine = scores.iter().find(|s| s.player_id == pid).unwrap();
     assert_eq!(mine.link_vp, 4, "after Belper flips, both endpoint tiles should contribute link icons");
+}
+
+#[test]
+fn canal_era_end_removes_all_level1_tiles_including_pottery() {
+    let mut state = setup(2);
+
+    // Pottery I is the one level-1 tile that is also buildable in the rail era
+    // (rail_era = true), but it must STILL be removed at the canal-era end:
+    // cleanup is ruled by `level == 1`, not by the build-eligibility flags.
+    let pottery_def = industry_tiles(IndustryType::Pottery)[0];
+    assert_eq!(pottery_def.level, 1);
+    assert!(pottery_def.rail_era, "Pottery I is a two-era build tile");
+
+    state.place_tile(
+        Loc::Birmingham,
+        0,
+        BoardTile {
+            player: 0,
+            ind: IndustryType::Pottery,
+            def: pottery_def,
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    state.place_tile(
+        Loc::Derby,
+        0,
+        BoardTile {
+            player: 0,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    // Level-2+ tiles survive into the rail era.
+    state.place_tile(
+        Loc::Belper,
+        0,
+        BoardTile {
+            player: 0,
+            ind: IndustryType::Brewery,
+            def: industry_tiles(IndustryType::Brewery)[1],
+            flipped: false,
+            resource_cubes: 1,
+        },
+    );
+
+    end_canal_era(&mut state);
+
+    let bham = state.city_slot_key(Loc::Birmingham, 0).unwrap();
+    assert!(
+        state.city_tiles[bham].is_none(),
+        "Pottery I (level 1, rail_era=true) must be removed at canal-era end"
+    );
+    let derby = state.city_slot_key(Loc::Derby, 0).unwrap();
+    assert!(
+        state.city_tiles[derby].is_none(),
+        "Cotton Mill I must be removed at canal-era end"
+    );
+    let belper = state.city_slot_key(Loc::Belper, 0).unwrap();
+    assert!(
+        state.city_tiles[belper].is_some(),
+        "Brewery II (level 2) must survive into the rail era"
+    );
+    assert_eq!(state.city_tiles[belper].as_ref().unwrap().def.level, 2);
+}
+
+#[test]
+fn canal_era_rejects_brewery4_and_pottery5() {
+    let mut state = setup(2);
+    let pid = 0;
+
+    // Advance both stacks to their top (rail-only) tile.
+    let b_stack = brass_engine::state::player_industry_stack(IndustryType::Brewery);
+    let p_stack = brass_engine::state::player_industry_stack(IndustryType::Pottery);
+    state.players[pid].industry_next[IndustryType::Brewery as usize] = (b_stack.len() - 1) as u8;
+    state.players[pid].industry_next[IndustryType::Pottery as usize] = (p_stack.len() - 1) as u8;
+
+    let b4 = industry_tiles(IndustryType::Brewery)[3];
+    let p5 = industry_tiles(IndustryType::Pottery)[4];
+    assert_eq!(b4.level, 4);
+    assert_eq!(p5.level, 5);
+    assert!(!b4.canal_era && b4.rail_era, "Brewery IV is a rail-era-only build");
+    assert!(!p5.canal_era && p5.rail_era, "Pottery V is a rail-era-only build");
+
+    // 1) Move generation must exclude them in the canal era.
+    let targets = get_valid_build_targets(&state, pid);
+    assert!(
+        !targets.iter().any(|t| t.ind == IndustryType::Brewery),
+        "Brewery IV must not be a canal-era build target"
+    );
+    assert!(
+        !targets.iter().any(|t| t.ind == IndustryType::Pottery),
+        "Pottery V must not be a canal-era build target"
+    );
+
+    // 2) Raw execution must also reject them (defense in depth).
+    let iron = brass_engine::rules::iron_source_options(&state, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let res = execute_build(&mut state, pid, Loc::BreweryNorth, 0, IndustryType::Brewery, &[], &iron, 0);
+    assert!(
+        res.is_err(),
+        "raw Brewery IV build must fail in the canal era: {res:?}"
+    );
+
+    // 3) In the rail era the same tiles ARE valid build targets.
+    state.era = Era::Rail;
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::WildIndustry];
+    // Give the player a network so industry-card builds are legal: a coal mine
+    // at Cannock plus links to the northern brewery farm (conn 16) and to
+    // Stafford (conn 15), whose second slot is a pure Pottery slot. The
+    // Cannock mine also supplies the 2 coal Pottery V needs.
+    state.place_tile(
+        Loc::Cannock,
+        0,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CoalMine,
+            def: industry_tiles(IndustryType::CoalMine)[0],
+            flipped: false,
+            resource_cubes: 2,
+        },
+    );
+    state.links[16] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
+    state.links[15] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
+
+    let targets = get_valid_build_targets(&state, pid);
+    assert!(
+        targets.iter().any(|t| t.ind == IndustryType::Brewery),
+        "Brewery IV must be a rail-era build target"
+    );
+    assert!(
+        targets.iter().any(|t| t.ind == IndustryType::Pottery),
+        "Pottery V must be a rail-era build target"
+    );
+}
+
+#[test]
+fn canal_era_one_build_per_city_per_player() {
+    let mut state = setup(2);
+    let pid = 0;
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::WildLocation, Card::WildIndustry];
+
+    // First canal-era build: Cotton Mill I at Derby slot 0 (no resources).
+    let res = execute_build(
+        &mut state,
+        pid,
+        Loc::Derby,
+        0,
+        IndustryType::CottonMill,
+        &[],
+        &[],
+        0,
+    );
+    assert!(res.is_ok(), "first Derby build failed: {res:?}");
+    let derby0 = state.city_slot_key(Loc::Derby, 0).unwrap();
+    assert!(state.city_tiles[derby0].is_some());
+
+    // Canal era: no further build target may exist in Derby for this player.
+    let targets = get_valid_build_targets(&state, pid);
+    assert!(
+        !targets.iter().any(|t| t.loc == Loc::Derby),
+        "canal era: a second build in the same city must not be a valid target"
+    );
+
+    // Raw execution must also reject the second Derby build.
+    let res = execute_build(
+        &mut state,
+        pid,
+        Loc::Derby,
+        1,
+        IndustryType::Manufacturer,
+        &[],
+        &[],
+        0,
+    );
+    assert!(
+        res.is_err(),
+        "canal era: raw second Derby build must be rejected: {res:?}"
+    );
+
+    // Rail era: the restriction is lifted — a second tile in Derby is legal.
+    state.era = Era::Rail;
+    state.players[pid].industry_next[IndustryType::Manufacturer as usize] = 1; // Mfg II
+    let iron = brass_engine::rules::iron_source_options(&state, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let res = execute_build(
+        &mut state,
+        pid,
+        Loc::Derby,
+        1,
+        IndustryType::Manufacturer,
+        &[],
+        &iron,
+        0,
+    );
+    assert!(res.is_ok(), "rail era: second Derby build failed: {res:?}");
+    let derby1 = state.city_slot_key(Loc::Derby, 1).unwrap();
+    let tile = state.city_tiles[derby1].as_ref().expect("second Derby tile placed");
+    assert_eq!(tile.def.level, 2, "Mfg II built at Derby slot 1 in the rail era");
+}
+
+#[test]
+fn industry_card_build_requires_network() {
+    let mut state = setup(2);
+    let pid = 0;
+    state.players[pid].money = 100;
+    // Presence + network = only Derby. Hand: a CottonMill industry card and a
+    // wild location card.
+    state.place_tile(
+        Loc::Derby,
+        0,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    state.players[pid].hand = vec![
+        Card::Industry {
+            industries: [IndustryType::CottonMill, IndustryType::CottonMill],
+            n: 1,
+        },
+        Card::WildLocation,
+    ];
+
+    // The industry card must NOT permit a build in Birmingham (not in network).
+    let valid = brass_engine::rules::valid_build_cards(
+        &state,
+        &state.players[pid],
+        pid,
+        Loc::Birmingham,
+        IndustryType::CottonMill,
+    );
+    assert!(
+        !valid.contains(&0),
+        "industry card must be rejected for a city outside the network"
+    );
+    assert!(
+        valid.contains(&1),
+        "wild location card must be allowed anywhere"
+    );
+    let res = execute_build(
+        &mut state,
+        pid,
+        Loc::Birmingham,
+        0,
+        IndustryType::CottonMill,
+        &[],
+        &[],
+        0,
+    );
+    assert!(
+        res.is_err(),
+        "industry-card build outside the network must be rejected: {res:?}"
+    );
+
+    // The same build is legal when discarding the wild LOCATION card.
+    let res = execute_build(
+        &mut state,
+        pid,
+        Loc::Birmingham,
+        0,
+        IndustryType::CottonMill,
+        &[],
+        &[],
+        1,
+    );
+    assert!(res.is_ok(), "location-card build outside the network failed: {res:?}");
+    let bham0 = state.city_slot_key(Loc::Birmingham, 0).unwrap();
+    assert!(state.city_tiles[bham0].is_some(), "Birmingham tile placed");
 }
 
 #[test]

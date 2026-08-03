@@ -683,6 +683,43 @@ pub fn execute_build(
 ) -> Result<String, String> {
     // Determine how much coal/iron this tile needs and validate the chosen set.
     let tile_def = state.players[pid].next_tile(ind).ok_or("No tile available")?;
+
+    // Era restrictions (defense in depth: `get_valid_build_targets` already
+    // enforces these, but raw Move::Build from Python / move_codec must also be
+    // rejected). E.g. Brewery IV and Pottery V are canal_era=false.
+    if state.era == Era::Canal && !tile_def.canal_era {
+        return Err(format!("{} Lv{} cannot be built in the canal era", ind.name(), tile_def.level));
+    }
+    if state.era == Era::Rail && !tile_def.rail_era {
+        return Err(format!("{} Lv{} cannot be built in the rail era", ind.name(), tile_def.level));
+    }
+
+    // Canal era: only one tile per location per player (defense in depth;
+    // `get_valid_build_targets` already enforces it).
+    if state.era == Era::Canal && loc.is_city() {
+        let slots = city_slots(loc);
+        for (i, _) in slots.iter().enumerate() {
+            if i == slot_index {
+                continue;
+            }
+            let Some(k) = state.city_slot_key(loc, i) else { continue };
+            if let Some(t) = &state.city_tiles[k] {
+                if t.player == pid {
+                    return Err("Canal era: only one build per city per player".into());
+                }
+            }
+        }
+    }
+
+    // Card validity (defense in depth): the discarded card must actually allow
+    // this build. In particular an industry/wild-industry card requires the
+    // location to be in the player's network (unless they have no presence),
+    // while a location card targets its city regardless of network.
+    let valid_cards = valid_build_cards(state, &state.players[pid], pid, loc, ind);
+    if !valid_cards.contains(&card_index) {
+        return Err("Discarded card does not allow this build".into());
+    }
+
     let coal_needed = tile_def.cost_coal as usize;
     let iron_needed = tile_def.cost_iron as usize;
     validate_coal_choice(state, loc, coal_needed, coal)?;

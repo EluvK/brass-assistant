@@ -398,7 +398,7 @@ pub fn canal_cleanup_detail(state: &GameState<impl Rng>) -> String {
     for loc in ALL_LOCATIONS[..CITY_COUNT].iter() {
         for slot_index in 0..city_slots(*loc).len() {
             if let Some(tile) = state.tile_at(*loc, slot_index) {
-                if !tile.def.rail_era {
+                if tile.def.level == 1 {
                     removed_tiles.push(format!("玩家{}:{}", tile.player, tile_label(*loc, slot_index, tile)));
                 }
             }
@@ -406,7 +406,7 @@ pub fn canal_cleanup_detail(state: &GameState<impl Rng>) -> String {
     }
     for farm_loc in [Loc::BreweryNorth, Loc::BrewerySouth] {
         if let Some(tile) = state.farm_tile(farm_loc) {
-            if !tile.def.rail_era {
+            if tile.def.level == 1 {
                 removed_tiles.push(format!(
                     "玩家{}:{} Lv{} @ {}",
                     tile.player,
