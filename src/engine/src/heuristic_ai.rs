@@ -1262,8 +1262,14 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
     }
     let (conn1, conn2, score) = best?;
     // Prefer consuming our own beer (advances our own income when it flips) over
-    // an opponent's beer (which would advance theirs).
-    let opt = crate::rules::get_second_rail_options(state, pid, conn1)
+    // an opponent's beer (which would advance theirs). The coal2 options must be
+    // enumerated against the SAME coal1 we actually use (not an internally
+    // cheapest one), otherwise the emitted move may fail to execute.
+    let coal1 = crate::rules::coal_options_for_connection(state, &connections()[conn1], 1)
+        .into_iter()
+        .next()
+        .and_then(|o| o.into_iter().next())?;
+    let opt = crate::rules::get_second_rail_options(state, pid, conn1, coal1)
         .into_iter()
         .find(|o| o.conn == conn2)?;
     let beer = opt
@@ -1272,10 +1278,6 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
         .copied()
         .find(|b| b.kind == crate::graph::BeerSourceKind::Own)
         .or_else(|| opt.beers.first().copied())?;
-    let coal1 = crate::rules::coal_options_for_connection(state, &connections()[conn1], 1)
-        .into_iter()
-        .next()
-        .and_then(|o| o.into_iter().next())?;
     let coal2 = opt
         .coal2_opts
         .first()

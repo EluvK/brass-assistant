@@ -32,6 +32,9 @@ from brass_ai.train import TrainConfig, Trainer
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iters", type=int, default=8)
+    ap.add_argument("--start_iter", type=int, default=0,
+                    help="iteration index to start at (with --resume, continues "
+                         "training from a mid-run checkpoint instead of replaying)")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--games_per_worker", type=int, default=2)
     ap.add_argument("--sims", type=int, default=200)
@@ -101,7 +104,7 @@ def main():
     print(f"{'iter':>4} {'samples':>7} {'pol':>6} {'val':>6} {'lr':>8} "
           f"{'sp_sec':>7} {'games':>5} | {'vs_heur':>16} {'rolling':>8}")
     with SelfPlayPool(n_workers=args.workers, device="cpu") as pool:
-        for it in range(args.iters):
+        for it in range(args.start_iter, args.iters):
             t0 = time.time()
             samples, counts = pool.generate(
                 net, args.games_per_worker, args.sims,

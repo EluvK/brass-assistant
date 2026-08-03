@@ -193,13 +193,13 @@ class ISMCTS:
         groups = self._group_legal(node.state)
         node.legal = []
         children = []
-        for slot, (describe, canonicals) in groups.items():
+        for slot, (_, canonicals) in groups.items():
             child = Node(state=None, n_players=node.n_players)
             child._parent_state = node.state
             child._canonicals = canonicals
             child.value_sum = np.zeros(node.n_players, dtype=np.float64)
             children.append(child)
-            node.legal.append((slot, canonicals[0], describe))
+            node.legal.append((slot, canonicals[0], ""))
 
         if not children:
             return self._eval_value(node)
@@ -225,10 +225,13 @@ class ISMCTS:
     @staticmethod
     def _group_legal(state):
         """Group legal moves by policy slot, keeping all canonicals per slot
-        (some are not executable; we try them in order at child creation)."""
+        (some are not executable; we try them in order at child creation).
+
+        Uses the lean `legal_moves_slots` binding (skips the unused `describe`
+        string) to keep the expand hot path fast."""
         groups: dict = {}
-        for slot, canonical, describe in state.legal_moves():
-            groups.setdefault(slot, (describe, []))[1].append(canonical)
+        for slot, canonical in state.legal_moves_slots():
+            groups.setdefault(slot, ([], []))[1].append(canonical)
         return groups
 
     @staticmethod

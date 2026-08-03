@@ -765,3 +765,151 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
     let res = brass_engine::rules::execute_sell(&mut sim, pid, &sell.0, &sell.1, &sell.2, sell.3);
     assert!(res.is_ok(), "generated sell plan must execute successfully: {res:?}");
 }
+
+// ---------------------------------------------------------------------------
+// A1: slot-level legal generation, multi-tile sell, double-rail executability
+// ---------------------------------------------------------------------------
+
+#[test]
+fn legal_slot_moves_cover_same_slots_as_legal_moves() {
+    use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+    use brass_engine::policy;
+    use brass_engine::random_ai;
+    use brass_engine::rules::{legal_slot_moves, legal_moves};
+
+    let mut state = setup(4);
+    let mut checked = 0;
+    for _ in 0..60 {
+        let raw: Vec<usize> = {
+            let mut slots: Vec<usize> = Vec::new();
+            for mv in legal_moves(&mut state) {
+                slots.extend(policy::move_slots(&mv));
+            }
+            slots.sort_unstable();
+            slots.dedup();
+            slots
+        };
+        let slotwise: Vec<usize> = {
+            let mut slots: Vec<usize> =
+                legal_slot_moves(&mut state).iter().map(|s| s.slot).collect();
+            slots.sort_unstable();
+            slots.dedup();
+            slots
+        };
+        assert_eq!(raw, slotwise, "slot coverage mismatch at step {checked}");
+        let mask: Vec<usize> = policy::legal_mask(&mut state);
+        assert_eq!(raw, mask, "legal_mask must match slot-level coverage at step {checked}");
+        checked += 1;
+
+        // Advance with a random legal move.
+        match random_ai::choose_random_move(&mut state) {
+            Some(mv) => {
+                let _ = brass_engine::rules::apply_move(&mut state, &mv);
+                let tr = advance_turn(&mut state);
+                match tr {
+                    TurnResult::Continue => {}
+                    TurnResult::EndCanalEra => end_canal_era(&mut state),
+                    TurnResult::EndGame => {
+                        end_game(&mut state);
+                        break;
+                    }
+                }
+            }
+            None => break,
+        }
+    }
+    assert!(checked > 0, "the exploration should visit at least one state");
+}
+
+#[test]
+fn every_double_rail_move_from_legal_slots_executes() {
+    use brass_engine::rules::{apply_move, legal_moves, legal_slot_moves, Move};
+    let mut state = setup_clean_rail_state(2);
+    let pid = 0;
+    place_test_presence_tile(&mut state, Loc::Stafford, pid);
+    place_test_coal_mine(&mut state, 1);
+    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
+
+    let doubles: Vec<_> = legal_slot_moves(&mut state)
+        .into_iter()
+        .filter(|sm| matches!(sm.mv, Move::NetworkDouble { .. }))
+        .collect();
+    assert!(!doubles.is_empty(), "expected double-rail slot moves in this setup");
+    for sm in &doubles {
+        let mut sim = state.clone();
+        let res = apply_move(&mut sim, &sm.mv);
+        assert!(
+            res.is_ok(),
+            "slot-level double-rail move must execute (Task B): {} -> {res:?}",
+            sm.mv.describe(&state)
+        );
+    }
+
+    // Every RAW NetworkDouble enumerated by legal_moves must also execute:
+    // this is the regression guard for the coal1/coal2 enumeration fix.
+    for mv in legal_moves(&mut state) {
+        if let Move::NetworkDouble { .. } = &mv {
+            let mut sim = state.clone();
+            let res = apply_move(&mut sim, &mv);
+            assert!(
+                res.is_ok(),
+                "raw double-rail move must execute (Task B): {} -> {res:?}",
+                mv.describe(&state)
+            );
+        }
+    }
+}
+
+#[test]
+fn legal_moves_include_executable_multi_tile_sell() {
+    use brass_engine::rules::{apply_move, legal_moves, legal_slot_moves, Move};
+    let mut state = setup_clean_rail_state(3);
+    let pid = 0;
+    state.players[pid].hand = vec![Card::WildLocation];
+
+    // Two unflipped cotton mills, both connected to the Warrington cotton
+    // merchant via Stone–Stoke (34) + Stoke–Warrington (35).
+    let cotton = BoardTile {
+        player: pid,
+        ind: IndustryType::CottonMill,
+        def: industry_tiles(IndustryType::CottonMill)[0],
+        flipped: false,
+        resource_cubes: 0,
+    };
+    state.place_tile(Loc::Stone, 0, cotton.clone());
+    state.place_tile(Loc::StokeOnTrent, 0, cotton);
+    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 2);
+    state.links[34] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[35] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.merchants = vec![brass_engine::state::MerchantTile {
+        loc: Loc::Warrington,
+        buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+        has_beer: true,
+    }];
+
+    let moves = legal_moves(&mut state);
+    let multi: Vec<&Move> = moves
+        .iter()
+        .filter(|mv| matches!(mv, Move::Sell { keys, .. } if keys.len() >= 2))
+        .collect();
+    assert!(!multi.is_empty(), "a multi-tile sell should be generated");
+
+    let multi_mv = multi[0].clone();
+    let mut sim = state.clone();
+    let res = apply_move(&mut sim, &multi_mv);
+    assert!(res.is_ok(), "multi-tile sell must execute: {res:?}");
+    let stone_key = state.city_slot_key(Loc::Stone, 0).expect("stone slot");
+    let stoke_key = state.city_slot_key(Loc::StokeOnTrent, 0).expect("stoke slot");
+    assert!(
+        sim.city_tiles[stone_key].as_ref().map(|t| t.flipped).unwrap_or(false)
+            && sim.city_tiles[stoke_key].as_ref().map(|t| t.flipped).unwrap_or(false),
+        "a multi-tile sell must flip BOTH tiles"
+    );
+
+    // Slot-level generation must also carry the multi-sell plans.
+    let slot_multi = legal_slot_moves(&mut state)
+        .iter()
+        .filter(|sm| matches!(&sm.mv, Move::Sell { keys, .. } if keys.len() >= 2))
+        .count();
+    assert!(slot_multi > 0, "slot-level generation must include multi-tile sell plans");
+}

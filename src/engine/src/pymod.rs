@@ -107,6 +107,18 @@ impl PyGame {
             .collect()
     }
 
+    /// Lean variant of `legal_moves` for the MCTS hot path: returns only
+    /// (policy_slot, canonical) pairs, skipping the human-readable `describe`
+    /// string that the search never reads. Uses the slot-level generator, so
+    /// it is also several times faster than `legal_moves`.
+    fn legal_moves_slots(&self) -> Vec<(usize, String)> {
+        let mut state = self.state.clone();
+        crate::rules::legal_slot_moves(&mut state)
+            .into_iter()
+            .map(|sm| (sm.slot, move_codec::encode(&sm.mv)))
+            .collect()
+    }
+
     /// Apply a canonical move string; returns a human-readable summary.
     /// The full game step is performed: move + turn advance + era/game end
     /// transitions (mirrors `engine::step` plus the era handlers used by
