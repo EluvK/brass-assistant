@@ -11,6 +11,7 @@ pub mod nn_mcts;
 pub mod policy;
 pub mod pymod;
 pub mod random_ai;
+pub mod replay_fmt;
 pub mod rules;
 pub mod scoring;
 pub mod search_ai;

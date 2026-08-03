@@ -19,7 +19,6 @@ use crate::engine::{advance_turn, end_canal_era, end_game, TurnResult};
 use crate::move_codec;
 use crate::rules::{legal_slot_moves, Move};
 use crate::state::GameState;
-use numpy::PyArray1;
 use numpy::PyArray2;
 use numpy::PyArrayMethods;
 use pyo3::prelude::*;

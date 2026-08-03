@@ -72,6 +72,11 @@ impl PyGame {
     }
 
     #[getter]
+    fn turn_order(&self) -> Vec<usize> {
+        self.state.turn_order.clone()
+    }
+
+    #[getter]
     fn game_over(&self) -> bool {
         self.state.game_over
     }
@@ -167,6 +172,159 @@ impl PyGame {
             TurnResult::EndGame => end_game(&mut self.state),
         }
         Ok(summary)
+    }
+
+    // ------------------------------------------------------- replay (stepwise)
+    // The replay driver needs fine-grained control that `apply_move` (action +
+    // turn advance + era end in one call) does not give: it must print the
+    // canal-era score detail BEFORE the era-end cleanup erases the tiles/links.
+    // These stepwise methods make the game loop explicit, mirroring `bin/replay.rs`.
+
+    /// Apply a move WITHOUT advancing the turn or running era-end scoring.
+    /// Returns (summary, ok). Caller must then call `advance_turn_raw()`.
+    fn apply_move_raw(&mut self, canonical: &str) -> PyResult<(String, bool)> {
+        let mv = move_codec::decode(canonical)
+            .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
+        match apply_move(&mut self.state, &mv) {
+            Ok(summary) => Ok((summary, true)),
+            Err(e) => Ok((format!("!!失败: {e}"), false)),
+        }
+    }
+
+    /// Advance the turn after a raw move. Returns
+    /// "continue" | "end_canal_era" | "end_game" WITHOUT running the era
+    /// transition (the caller decides when to call finish_canal_era/finish_game).
+    fn advance_turn_raw(&mut self) -> PyResult<String> {
+        use crate::engine::TurnResult;
+        Ok(match crate::engine::advance_turn(&mut self.state) {
+            TurnResult::Continue => "continue".to_string(),
+            TurnResult::EndCanalEra => "end_canal_era".to_string(),
+            TurnResult::EndGame => "end_game".to_string(),
+        })
+    }
+
+    /// Run the canal-era score + cleanup + reshuffle (the driver calls this
+    /// AFTER printing the era score detail / cleanup log).
+    fn finish_canal_era(&mut self) {
+        crate::engine::end_canal_era(&mut self.state);
+    }
+
+    /// Run the end-of-game scoring (the driver calls this after the final move).
+    fn finish_game(&mut self) {
+        crate::engine::end_game(&mut self.state);
+    }
+
+    // ------------------------------------------------------- replay (logging)
+
+    /// Opening metadata + per-player state/hand + merchants + board.
+    fn replay_header(&self) -> String {
+        use crate::replay_fmt;
+        let n = self.state.player_count();
+        let mut out = format!(
+            "Replay: {}players seed-less | 起始顺位: {:?}\n",
+            n, self.state.turn_order
+        );
+        for pid in 0..n {
+            out.push_str(&format!(
+                "开局 玩家{pid}: {} | 手牌: {}\n",
+                replay_fmt::player_state(&self.state, pid),
+                replay_fmt::hand_display(&self.state, pid)
+            ));
+        }
+        out.push_str(&format!("商家: {}\n", replay_fmt::merchant_state(&self.state)));
+        out.push_str(&format!("{}\n", replay_fmt::board_state(&self.state)));
+        out
+    }
+
+    /// Human-readable detail of a move (call BEFORE applying it).
+    fn replay_move_detail(&self, canonical: &str) -> PyResult<String> {
+        let mv = move_codec::decode(canonical)
+            .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
+        Ok(crate::replay_fmt::move_detail(&self.state, &mv))
+    }
+
+    /// Action-class + industry-index for tallying per-player action stats.
+    fn replay_action_type(&self, canonical: &str) -> PyResult<(String, usize)> {
+        let mv = move_codec::decode(canonical)
+            .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
+        Ok(match &mv {
+            crate::rules::Move::Build { ind, .. } => ("build".to_string(), *ind as usize),
+            crate::rules::Move::Network { .. } => ("network".to_string(), 0),
+            crate::rules::Move::NetworkDouble { .. } => ("network_double".to_string(), 0),
+            crate::rules::Move::Develop { .. } | crate::rules::Move::ResolveFreeDevelop { .. } => {
+                ("develop".to_string(), 0)
+            }
+            crate::rules::Move::Sell { .. } => ("sell".to_string(), 0),
+            crate::rules::Move::Loan { .. } => ("loan".to_string(), 0),
+            crate::rules::Move::Pass { .. } => ("pass".to_string(), 0),
+            crate::rules::Move::Scout { .. } => ("scout".to_string(), 0),
+        })
+    }
+
+    /// Era score detail for one player (links VP + flipped-tile VP sources).
+    fn replay_era_score(&self, pid: usize) -> String {
+        crate::replay_fmt::era_score_detail(&self.state, pid)
+    }
+
+    /// Per-player tiles on board (or only flipped ones).
+    #[pyo3(signature = (pid, flipped_only=false))]
+    fn replay_tiles(&self, pid: usize, flipped_only: bool) -> String {
+        crate::replay_fmt::player_tiles_detail(&self.state, pid, flipped_only)
+    }
+
+    /// Canal-era cleanup detail (links/tiles that get removed).
+    fn replay_cleanup(&self) -> String {
+        crate::replay_fmt::canal_cleanup_detail(&self.state)
+    }
+
+    /// Player state line (money/income/hand/VP/links) for the log.
+    fn replay_player_state(&self, pid: usize) -> String {
+        crate::replay_fmt::player_state(&self.state, pid)
+    }
+
+    /// Board market/tile/link summary for the log.
+    fn replay_board(&self) -> String {
+        crate::replay_fmt::board_state(&self.state)
+    }
+
+    /// Merchant tile summary for the log.
+    fn replay_merchants(&self) -> String {
+        crate::replay_fmt::merchant_state(&self.state)
+    }
+
+    /// Full hand of a player for the log.
+    fn replay_hand(&self, pid: usize) -> String {
+        crate::replay_fmt::hand_display(&self.state, pid)
+    }
+
+    /// Compose the per-era action-statistics line (Python tallies the counts
+    /// via `replay_action_type`; this formats them the same way as replay.rs).
+    #[allow(clippy::too_many_arguments)]
+    fn replay_stats_line(
+        &self,
+        build: Vec<u32>,
+        network: u32,
+        dbl_rail: u32,
+        develop: u32,
+        sell: u32,
+        loan: u32,
+        pass_: u32,
+        scout: u32,
+    ) -> String {
+        let mut stats = crate::replay_fmt::PStats {
+            build: [0; 6],
+            network,
+            dbl_rail,
+            develop,
+            sell,
+            loan,
+            pass: pass_,
+            scout,
+        };
+        for (i, v) in build.iter().take(6).enumerate() {
+            stats.build[i] = *v;
+        }
+        crate::replay_fmt::fmt_stats_line(&stats)
     }
 
     /// Determinize: sample opponent hands from the hidden card pool. The
