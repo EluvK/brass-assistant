@@ -54,7 +54,7 @@ def train_value(net, samples, device, lr, epochs, batch_size, freeze_trunk, labe
             chunk = [samples[i] for i in idx[start:start + batch_size]]
             batch = _to_batch(chunk)
             tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
-            _, value = net(tensors)
+            _, _, value, _ = net(tensors)
             loss = F.mse_loss(value, tensors["value"])
             opt.zero_grad(set_to_none=True)
             loss.backward()

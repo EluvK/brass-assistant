@@ -87,10 +87,12 @@ class PolicyValueNet(nn.Module):
         self.type_head = nn.Linear(self.cfg.trunk, N_ACTIONS)
         self.goal_head = nn.Linear(self.cfg.trunk, self.cfg.policy_size)
         self.value_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
+        self.econ_head = nn.Linear(self.cfg.trunk, 2)  # (income_level, money)
 
     def forward(self, batch: dict):
         """batch keys: board (B,17,49), links (B,6,39), global/own_hand/opp_hands (B,*).
-        Returns (type_logits (B,7), goal_logits (B,P), value (B,4))."""
+        Returns (type_logits (B,7), goal_logits (B,P), value (B,4),
+                 econ (B,2) = current-perspective (income, money) estimate)."""
         # board: (B,17,49) -> (B,49,17) -> (B,49,H)
         b = batch["board"].transpose(1, 2)
         b = self.board_enc(b)
@@ -107,7 +109,8 @@ class PolicyValueNet(nn.Module):
         type_logits = self.type_head(x)
         goal_logits = self.goal_head(x)
         value = self.value_head(x)  # (B,4), no tanh
-        return type_logits, goal_logits, value
+        econ = self.econ_head(x)  # (B,2), no tanh
+        return type_logits, goal_logits, value, econ
 
     def merge_logits(self, type_logits, goal_logits) -> torch.Tensor:
         """logit(s) = type[t(s)] + goal[s] over the full policy table -> (B,P)."""
@@ -115,12 +118,15 @@ class PolicyValueNet(nn.Module):
         return goal_logits + type_logits.index_select(1, st)
 
     def policy_value(self, batch: dict):
-        """Convenience for MCTS: returns (type (B,7), goal (B,P), value (B,4))
-        under eval mode + no-grad, restoring the previous train/eval state."""
+        """Convenience for MCTS/search: returns (type (B,7), goal (B,P), value (B,4))
+        under eval mode + no-grad, restoring the previous train/eval state.
+        The econ head is a training-only auxiliary head and is NOT used by the
+        search (so its extra forward cost stays off the hot path)."""
         was_training = self.training
         self.eval()
         try:
             with torch.no_grad():
-                return self.forward(batch)
+                type_logits, goal_logits, value, _ = self.forward(batch)
+                return type_logits, goal_logits, value
         finally:
             self.train(was_training)

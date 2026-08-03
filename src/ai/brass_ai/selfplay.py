@@ -29,6 +29,8 @@ class Sample:
     policy: np.ndarray  # (1316,) dense over policy slots
     value: np.ndarray  # (4,) normalized final VP z-vector over all players
     legal: np.ndarray  # (1316,) bool mask of legal policy slots
+    era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)
+    econ: np.ndarray = None  # (2,) = (income_level, money) target for this sample
 
 
 def _legal_mask_bool(state, table_size: int) -> np.ndarray:
@@ -94,6 +96,11 @@ def play_game_with_roles(
     (used for matchmaking: opponent seats may run a different network).
     Samples are recorded for every move whose pid is in `collect` (default:
     all seats, matching the pure self-play path). Returns (samples, final_vps).
+
+    Economic-supervision targets (segmented by era, per the 2026-08 design):
+      * canal-era samples  -> that player's income/money at the CANAL-ERA END
+        (the crucial milestone: it banks the rail-era economy)
+      * rail-era samples   -> that player's FINAL income/money
     """
     cfg = cfg or SelfPlayConfig()
     seed = cfg.seed if cfg.seed is not None else np.random.randint(0, 2**31)
@@ -103,6 +110,7 @@ def play_game_with_roles(
     table_size = be.policy_table_size
     if collect is None:
         collect = set(range(cfg.players))
+    canal_samples: list[Sample] = []
     moves = 0
     while not state.game_over and moves < cfg.max_moves:
         moves += 1
@@ -113,29 +121,55 @@ def play_game_with_roles(
         if pid in collect:
             board, links, g, oh, op = state.state_to_tensor()
             policy = _dense_policy(result.visits, table_size)
-            samples.append(
-                Sample(pid=pid, board=board, links=links, global_vec=g,
+            s = Sample(pid=pid, board=board, links=links, global_vec=g,
                        own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                       legal=_legal_mask_bool(state, table_size))
-            )
+                       legal=_legal_mask_bool(state, table_size), era=state.era)
+            samples.append(s)
+            if state.era == 0:
+                canal_samples.append(s)
         chosen = _sample_move(result, cfg.temperature)
         try:
-            state.apply_move(chosen)
+            summary, ok = state.apply_move_raw(chosen)
         except ValueError:
+            summary, ok = ("", False)
+        if not ok:
             # Defensive: fall back to the search's best (executable) move, then
             # to the first legal move if needed.
             try:
-                state.apply_move(result.best)
+                summary, ok = state.apply_move_raw(result.best)
             except ValueError:
+                ok = False
+            if not ok:
                 legal = state.legal_moves()
                 if not legal:
                     break
-                state.apply_move(legal[0][1])
+                try:
+                    summary, ok = state.apply_move_raw(legal[0][1])
+                except ValueError:
+                    break
+        tr = state.advance_turn_raw()
+        if tr == "end_canal_era":
+            state.finish_canal_era()
+            # Stamp canal-era samples with the canal-end economy (income is
+            # unchanged by era-end, so this is the canal-era-final economy).
+            econ = {p: e for p, e in enumerate(state.canal_econ())}
+            for s in canal_samples:
+                s.econ = np.asarray(econ[s.pid], dtype=np.float32)
+        elif tr == "end_game":
+            state.finish_game()
+
+    if not state.game_over:
+        state.finish_game()
 
     vps = state.player_vps()
     z = _normalize(np.asarray(vps, dtype=np.float64))
+    # Rail-era samples (and any canal samples that never got a canal-econ stamp,
+    # e.g. a game that ended in the canal era) take the FINAL economy.
+    final_econ = {p: e for p, e in enumerate(state.final_econ())}
     for s in samples:
         s.value = z
+        if s.econ is None:
+            s.econ = np.asarray(final_econ[s.pid], dtype=np.float32)
     return samples, vps
 
 
@@ -150,7 +184,8 @@ def generate_imitation_samples(n_games: int, players: int = 4, max_moves: int = 
     """Heuristic-vs-heuristic games: one-hot imitation samples (cheap, no MCTS).
 
     Each move records the state + the heuristic's chosen policy slot (one-hot)
-    with the game's normalized VP as the value target. ~0.5s/game."""
+    with the game's normalized VP as the value target and the player's FINAL
+    (income, money) as the econ target. ~0.5s/game."""
     samples: list[Sample] = []
     table = be.policy_table_size
     for gi in range(n_games):
@@ -170,15 +205,17 @@ def generate_imitation_samples(n_games: int, players: int = 4, max_moves: int = 
             local.append(
                 Sample(pid=pid, board=board, links=links, global_vec=g,
                        own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                       legal=_legal_mask_bool(state, table))
+                       legal=_legal_mask_bool(state, table), era=state.era)
             )
             try:
                 state.apply_move(canon)
             except ValueError:
                 break
         z = _normalize(np.asarray(state.player_vps(), dtype=np.float64))
+        final_econ = {p: e for p, e in enumerate(state.final_econ())}
         for s in local:
             s.value = z
+            s.econ = np.asarray(final_econ[s.pid], dtype=np.float32)
         samples.extend(local)
     return samples
 

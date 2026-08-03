@@ -327,6 +327,26 @@ impl PyGame {
         crate::replay_fmt::fmt_stats_line(&stats)
     }
 
+    /// Final per-player (income_level, money) — economic-supervision targets.
+    fn final_econ(&self) -> Vec<(i32, i32)> {
+        self.state
+            .players
+            .iter()
+            .map(|p| (p.income_level() as i32, p.money))
+            .collect()
+    }
+
+    /// Per-player (income_level, money) at the moment the CANAL era ends
+    /// (i.e. right after `finish_canal_era`; income is unchanged by era-end,
+    /// so this equals the canal-era-final economy the driver reads there).
+    fn canal_econ(&self) -> Vec<(i32, i32)> {
+        self.state
+            .players
+            .iter()
+            .map(|p| (p.income_level() as i32, p.money))
+            .collect()
+    }
+
     /// Determinize: sample opponent hands from the hidden card pool. The
     /// resulting state's RNG is seeded from the sampling stream (same pattern
     /// as `mcts_ai`), so subsequent draws vary per determinization.

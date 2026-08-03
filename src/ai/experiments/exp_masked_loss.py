@@ -40,8 +40,8 @@ def greedy_policy(net):
         batch = build_input.encode_state(state)
         batch = {k: v.to(dev) for k, v in batch.items()}
         with torch.no_grad():
-            logits, _ = net(batch)
-        logits = logits[0].cpu().numpy()
+            type_logits, goal_logits, _ = net.policy_value(batch)
+        logits = net.merge_logits(type_logits, goal_logits)[0].cpu().numpy()
         mask = np.zeros(len(logits), dtype=bool)
         for s, _, _ in state.legal_moves():
             mask[s] = True

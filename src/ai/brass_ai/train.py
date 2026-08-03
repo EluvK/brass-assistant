@@ -41,6 +41,8 @@ class TrainConfig:
     t_max: int = 100         # CosineAnnealingLR period, in total epochs
     min_lr: float = 1e-5
     amp: bool = True         # fp16 autocast (no-op on CPU)
+    econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
+    econ_neg_weight: float = 3.0  # extra weight on samples with negative income
 
 
 class Trainer:
@@ -121,9 +123,10 @@ class Trainer:
         self.epoch_count = sd.get("epoch", 0)
 
 
-def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str):
+def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
+                 econ_lambda: float = 0.2, econ_neg_weight: float = 3.0):
     tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
-    type_logits, goal_logits, value = net(tensors)
+    type_logits, goal_logits, value, econ = net(tensors)
     # Merged policy: logit(s) = type[t(s)] + goal(s), then masked softmax over
     # LEGAL slots only. Without the mask, the ~700 always-illegal double-rail
     # slots pollute the softmax denominator and the net wastes capacity
@@ -136,8 +139,29 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str):
     log_probs = log_probs.masked_fill(~mask, 0.0)
     policy_loss = -(target * log_probs).sum(dim=1).mean()
     value_loss = F.mse_loss(value, tensors["value"])
+
+    # Economic-supervision auxiliary loss. Targets are raw (income_level -10..30,
+    # money); normalize income to ~0..1 and clamp money so the MSE is scale-
+    # comparable with the VP loss. Negative-income samples get extra weight
+    # (the "negative economy is a real problem" prior); no maximization target
+    # is imposed — the net just learns to predict the real economy, so it
+    # spontaneously avoids income collapse without chasing income maximization.
+    econ_target = tensors["econ"]  # (B,2): (income_level, money)
+    inc_t = ((econ_target[:, 0] + 10.0) / 40.0).clamp(0.0, 1.0)
+    money_t = (econ_target[:, 1] / 100.0).clamp(0.0, 1.0)
+    inc_pred = (econ[:, 0] + 10.0) / 40.0
+    money_pred = econ[:, 1] / 100.0
+    inc_loss = F.mse_loss(inc_pred, inc_t)
+    money_loss = F.mse_loss(money_pred, money_t)
+    # Extra weight on samples whose target income is negative.
+    neg_mask = (econ_target[:, 0] < 0).float()
+    inc_loss_neg = F.mse_loss(inc_pred, inc_t, reduction="none")
+    w = 1.0 + (econ_neg_weight - 1.0) * neg_mask
+    inc_loss = (inc_loss_neg * w).mean()
+    econ_loss = econ_lambda * (inc_loss + money_loss)
+
     l2_loss = sum(p.pow(2).sum() for p in net.parameters()) * l2
-    return policy_loss, value_loss, l2_loss
+    return policy_loss, value_loss, econ_loss, l2_loss
 
 
 def train_on_batch(net, batch, cfg: TrainConfig, optimizer) -> dict:
@@ -145,16 +169,19 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer) -> dict:
     optimizer.zero_grad(set_to_none=True)
     if cfg.amp and cfg.device != "cpu":
         with torch.autocast(device_type=cfg.device):
-            pl, vl, ll = compute_loss(batch, net, cfg.l2, cfg.device)
-        total = pl + vl + ll
+            pl, vl, el, ll = compute_loss(
+                batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
+        total = pl + vl + el + ll
         total.backward()
     else:
-        pl, vl, ll = compute_loss(batch, net, cfg.l2, cfg.device)
-        (pl + vl + ll).backward()
+        pl, vl, el, ll = compute_loss(
+            batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
+        (pl + vl + el + ll).backward()
     optimizer.step()
     return {
         "policy": pl.detach().item(),
         "value": vl.detach().item(),
+        "econ": el.detach().item(),
         "l2": ll.detach().item(),
     }
 
@@ -168,9 +195,12 @@ def _to_batch(samples: list[Sample]) -> dict:
     pol = np.stack([s.policy for s in samples]).astype(np.float32)
     val = np.stack([s.value for s in samples]).astype(np.float32)
     legal = np.stack([s.legal for s in samples]).astype(np.bool_)
+    econ = np.stack([s.econ for s in samples]).astype(np.float32)
+    era = np.asarray([s.era for s in samples], dtype=np.int64)
     return {
         "board": b, "links": l, "global": g,
         "own_hand": o, "opp_hands": p, "policy": pol, "value": val, "legal": legal,
+        "econ": econ, "era": era,
     }
 
 

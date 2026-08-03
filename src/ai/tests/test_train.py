@@ -28,12 +28,14 @@ def test_trainer_reduces_loss_and_is_persistent():
         "opp_hands": np.stack([s.opp_hands for s in samples]).astype("f4"),
         "policy": np.stack([s.policy for s in samples]).astype("f4"),
         "value": np.stack([s.value for s in samples]).astype("f4"),
+        "econ": np.stack([s.econ for s in samples]).astype("f4"),
+        "era": np.asarray([s.era for s in samples], dtype="i8"),
         "legal": np.stack([s.legal for s in samples]).astype(bool),
     }
 
     net.eval()
     with torch.no_grad():
-        pl_before, _, _ = compute_loss(b, net, 0.0, "cpu")
+        pl_before, _, _, _ = compute_loss(b, net, 0.0, "cpu")
 
     trainer.train_on_samples(samples[:])
 
@@ -46,7 +48,7 @@ def test_trainer_reduces_loss_and_is_persistent():
     # Loss on the training data should drop after fitting.
     net.eval()
     with torch.no_grad():
-        pl_after, _, _ = compute_loss(b, net, 0.0, "cpu")
+        pl_after, _, _, _ = compute_loss(b, net, 0.0, "cpu")
     assert pl_after.item() < pl_before.item(), \
         "policy loss should decrease after training"
     assert before_lr > 0.0
