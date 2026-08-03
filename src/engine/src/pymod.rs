@@ -119,6 +119,36 @@ impl PyGame {
             .collect()
     }
 
+    /// Network-guided ISMCTS search with the tree in Rust (`nn_mcts`).
+    ///
+    /// `net_fn(board, links, global, own_hand, opp_hands)` receives 2-D numpy
+    /// arrays with one row per (request x player) and must return
+    /// `(logits (rows, P), values (rows,))`. Returns (best_canonical,
+    /// root children as (slot, canonical, visits) best-first, legal_slots).
+    #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64))]
+    fn search_net(
+        &self,
+        py: Python<'_>,
+        net_fn: pyo3::Py<pyo3::types::PyAny>,
+        sims: usize,
+        c_puct: f64,
+        max_depth: usize,
+        dirichlet_alpha: f64,
+        dirichlet_weight: f64,
+        add_root_noise: bool,
+        batch_size: usize,
+    ) -> PyResult<(Option<String>, Vec<(usize, String, u32)>, Vec<usize>)> {
+        let cfg = crate::nn_mcts::NnMctsConfig {
+            c_puct,
+            max_depth,
+            dirichlet_alpha,
+            dirichlet_weight,
+            batch_size: batch_size.max(1),
+        };
+        let res = crate::nn_mcts::search_net(&self.state, &cfg, sims, add_root_noise, &net_fn, py)?;
+        Ok((res.best_canonical, res.children, res.legal_slots))
+    }
+
     /// Apply a canonical move string; returns a human-readable summary.
     /// The full game step is performed: move + turn advance + era/game end
     /// transitions (mirrors `engine::step` plus the era handlers used by

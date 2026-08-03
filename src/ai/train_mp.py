@@ -23,9 +23,9 @@ from collections import deque
 import torch
 
 from brass_ai.evaluate import evaluate_mcts_vs_baseline
-from brass_ai.mcts import ISMCTS, MCTSConfig
 from brass_ai.mp_selfplay import SelfPlayPool
 from brass_ai.net import PolicyValueNet
+from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.train import TrainConfig, Trainer
 
 
@@ -40,6 +40,12 @@ def main():
     ap.add_argument("--sims", type=int, default=200)
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--train_steps", type=int, default=60,
+                    help="gradient steps per iteration over the replay buffer")
+    ap.add_argument("--replay_size", type=int, default=6000,
+                    help="samples kept in the replay buffer (data reuse across iters)")
+    ap.add_argument("--worker_device", type=str, default="cuda",
+                    help="device for self-play workers (Rust MCTS batched inference)")
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--c_puct", type=float, default=2.5)
     ap.add_argument("--temp", type=float, default=0.7)
@@ -69,7 +75,7 @@ def main():
     net = PolicyValueNet()
     trainer = Trainer(net, TrainConfig(
         device=device, epochs=args.epochs, batch_size=args.batch, lr=args.lr,
-        t_max=max(args.iters * args.epochs, 1),
+        t_max=max(args.iters, 1),
     ))
 
     # Load checkpoint. Default: net weights only + fresh optimizer/scheduler
@@ -86,11 +92,11 @@ def main():
                   f"(epoch={trainer.epoch_count})")
         else:
             print(f"loaded weights from {args.ckpt} (fresh optimizer, "
-                  f"t_max={args.iters * args.epochs})")
+                  f"t_max={max(args.iters, 1)})")
     else:
         print(f"warning: {args.ckpt} not found; starting from random weights")
 
-    mcts = ISMCTS(net, MCTSConfig(c_puct=1.5, max_depth=8), device=device)
+    mcts = RustISMCTS(net, RustMCTSConfig(c_puct=args.c_puct, max_depth=10, device=device))
 
     mcts_cfg = {
         "c_puct": args.c_puct,
@@ -101,9 +107,10 @@ def main():
     rolling = deque(maxlen=args.eval_window)
     best_vp = float("-inf")
     best_state = None
+    replay = deque(maxlen=args.replay_size)
     print(f"{'iter':>4} {'samples':>7} {'pol':>6} {'val':>6} {'lr':>8} "
           f"{'sp_sec':>7} {'games':>5} | {'vs_heur':>16} {'rolling':>8}")
-    with SelfPlayPool(n_workers=args.workers, device="cpu") as pool:
+    with SelfPlayPool(n_workers=args.workers, device=args.worker_device) as pool:
         for it in range(args.start_iter, args.iters):
             t0 = time.time()
             samples, counts = pool.generate(
@@ -113,7 +120,9 @@ def main():
             sp_t = time.time() - t0
             n_games = len(counts)
 
-            losses = trainer.train_on_samples(samples)
+            replay.extend(samples)
+            losses = trainer.train_steps(list(replay), args.train_steps, args.batch)
+            trainer.step_lr()
             torch.save(trainer.state_dict(), args.out)
 
             line = (

@@ -78,6 +78,31 @@ class Trainer:
     def current_lr(self) -> float:
         return self.scheduler.get_last_lr()[0]
 
+    # ------------------------------------------------------------ replay path
+    def train_steps(self, samples: list[Sample], n_steps: int, batch_size: int | None = None) -> dict:
+        """`n_steps` gradient steps, each on a random minibatch drawn WITH
+        replacement from `samples` — supports a growing replay buffer that
+        reuses self-play data across iterations. Does NOT step the LR scheduler
+        (call `step_lr` once per iteration so the cosine schedule tracks the
+        iteration count, not the step count)."""
+        if not samples:
+            return {}
+        bs = batch_size or self.cfg.batch_size
+        losses = []
+        n = len(samples)
+        prog = Progress(n_steps, "train", every_s=10.0)
+        for s in range(n_steps):
+            idx = np.random.randint(0, n, size=bs)
+            chunk = [samples[i] for i in idx]
+            batch = _to_batch(chunk)
+            losses.append(train_on_batch(self.net, batch, self.cfg, self.optimizer))
+            prog.update(s + 1)
+        return _mean_losses(losses)
+
+    def step_lr(self) -> None:
+        self.scheduler.step()
+        self.epoch_count += 1
+
     # ------------------------------------------------------- persistence
     def state_dict(self) -> dict:
         return {

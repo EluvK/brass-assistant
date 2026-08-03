@@ -34,7 +34,7 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
     # Imports happen inside the child (spawn re-imports everything anyway).
     import brass_engine as be  # noqa: F401  (ensure the extension loads here)
     from .net import PolicyValueNet
-    from .mcts import ISMCTS, MCTSConfig
+    from .rust_mcts import RustISMCTS, RustMCTSConfig
 
     torch.set_num_threads(1)  # one core per worker
     while True:
@@ -45,7 +45,7 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
         net = PolicyValueNet()
         net.load_state_dict(weights)
         net.eval()
-        mcts = ISMCTS(net, MCTSConfig(**mcts_cfg), device=device)
+        mcts = RustISMCTS(net, RustMCTSConfig(**mcts_cfg, device=device))
         cfg = SelfPlayConfig(players=4, sims=sims, temperature=temperature, max_moves=600)
         for gi in range(games):
             cfg.seed = seed_base + worker_id * 100_000 + seed_offset + gi

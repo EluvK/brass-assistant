@@ -11,9 +11,9 @@ import time
 
 import torch
 
-from brass_ai.mcts import ISMCTS, MCTSConfig
 from brass_ai.mp_selfplay import SelfPlayPool
 from brass_ai.net import PolicyValueNet
+from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.selfplay import SelfPlayConfig, play_game
 
 
@@ -29,8 +29,8 @@ def main():
     torch.manual_seed(0)
     net = PolicyValueNet()
 
-    # single-process baseline: 1 game
-    mcts = ISMCTS(net, MCTSConfig(c_puct=1.5, max_depth=8), device="cpu")
+    # single-process baseline: 1 game (same Rust MCTS as the workers, CPU)
+    mcts = RustISMCTS(net, RustMCTSConfig(c_puct=2.5, max_depth=10, device="cpu"))
     t0 = time.time()
     samples, _ = play_game(mcts, SelfPlayConfig(sims=args.sims, max_moves=600))
     t_single = time.time() - t0

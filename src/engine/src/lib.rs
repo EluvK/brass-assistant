@@ -7,6 +7,7 @@ pub mod income;
 pub mod map;
 pub mod mcts_ai;
 pub mod move_codec;
+pub mod nn_mcts;
 pub mod policy;
 pub mod pymod;
 pub mod random_ai;

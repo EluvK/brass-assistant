@@ -65,7 +65,10 @@ def _sample_move(result: SearchResult, temperature: float):
         return result.canon_by_slot[slot]
     slots = list(result.visits)
     counts = np.asarray([result.visits[s] for s in slots], dtype=np.float64)
-    w = np.exp(counts / max(temperature, 1e-6))
+    # Numerically stable softmax-temperature: subtract the max before exp, or
+    # a concentrated visit distribution (one child with hundreds of visits)
+    # overflows exp(counts/temp) -> inf/inf -> NaN probabilities.
+    w = np.exp((counts - counts.max()) / max(temperature, 1e-6))
     probs = w / w.sum()
     slot = np.random.choice(slots, p=probs)
     return result.canon_by_slot[slot]
