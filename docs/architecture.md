@@ -265,6 +265,29 @@ autocast；`ISMCTS(device=...)` 把网络与 batch 搬到 GPU。`mcts.py` 已支
 为 `checkpoints/best_masked.pt`。这同时回答了「1316 维动作空间会不会有问题」——问题不在
 维度本身，而在 loss 未掩码；掩码后幽灵槽零梯度，维度开销可忽略。
 
+### 新 Schema 重设计（2026-08，分叉 policy + 4 玩家 value）
+
+**动机**：可靠基准（20 固定 seeds）显示旧 best_masked 胜率卡 50%，因每 20 局 3-5 局**灾难对局**
+（MCTS 得 20-48 VP）。诊断（`experiments/diagnose.py`）确认灾难 = value 头崩溃 → 晚期动作退化
+（seed 14 铁路时代 16 连 Pass、seed 11 建 10 不卖、seed 3 铁路 0 Build）。自对弈训练两次漂移退化
+（val_mse 0.5→0.74），确认 value 头是瓶颈。
+
+**新网络**（`brass_ai/net.py`，2026-08）：
+- 分叉 policy：`type_head Linear(256→7)` + `goal_head Linear(256→1316)`，`logit(s)=type[t(s)]+goal[s]`
+- value 头 `Linear(256→4)` 预测 4 玩家终局 z，去 tanh（encode global 已含每玩家统计）
+- Rust `nn_mcts::flush_net` 每 request 只发 1 行（当前玩家视角），Rust 合并分叉先验，MaxN 直接用 4 向量
+
+**效果**（`checkpoints/new_best.pt`，2000 局启发式 BC，20 固定 seeds）：
+| 指标 (sims=1000) | new_best（新架构） | best_masked（旧架构） |
+| --- | --- | --- |
+| 胜率 | **0.65** | 0.50 |
+| mean / median | **93.3 / 96.5** | 77.8 / 80.5 |
+| min | **57（零灾难）** | 20 |
+
+**训练门控**（`train_mp.py`）：放弃噪声 rolling-VP 门控，改 `benchmark_mcts_vs_heuristic`
+（固定 seeds 胜率 + median VP）作接受标准；配合 matchmaking（`--mm_prob`，对手座位用历史
+checkpoint 池）防漂移。短训冒烟验证通过。
+
 
 
 

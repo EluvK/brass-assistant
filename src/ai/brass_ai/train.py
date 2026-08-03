@@ -1,9 +1,11 @@
 """AlphaZero-style training loop with a persistent optimizer.
 
 Loss (per sample):
-  L = -sum_t p_t * log_softmax_masked(logits)_t   (policy CE over LEGAL slots;
-      the ~700 always-illegal double-rail slots are masked out of the softmax)
-    + (value - z)^2                               (MSE on normalized final VP)
+  L = -sum_t p_t * log_softmax_masked(merged)_t   (policy CE over LEGAL slots;
+      merged slot logit = type_head[t(s)] + goal_head[s]; the ~700
+      always-illegal double-rail slots are masked out of the softmax)
+    + ||value_4 - z_4||^2                         (MSE on the 4-player
+      normalized final-VP vector, no tanh on the value head)
     + l2 * ||theta||^2
 
 The `Trainer` class owns the network, a persistent AdamW optimizer and a
@@ -121,17 +123,15 @@ class Trainer:
 
 def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str):
     tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
-    logits, value = net(tensors)
-    # Masked policy loss: normalize ONLY over the legal slots. Without this,
-    # the ~700 always-illegal double-rail slots pollute the softmax denominator
-    # and the net wastes its capacity suppressing them (a large chunk of the
-    # initial probability mass sits on phantom slots).
+    type_logits, goal_logits, value = net(tensors)
+    # Merged policy: logit(s) = type[t(s)] + goal(s), then masked softmax over
+    # LEGAL slots only. Without the mask, the ~700 always-illegal double-rail
+    # slots pollute the softmax denominator and the net wastes capacity
+    # suppressing them.
+    merged = net.merge_logits(type_logits, goal_logits)
     target = tensors["policy"]
     mask = tensors["legal"].to(torch.bool)
-    # Normalize over legal slots only (phantom slots get -inf -> excluded from
-    # the softmax denominator), then zero the illegal log-probs so that
-    # `target * log_probs` never hits 0 * -inf = NaN.
-    masked_logits = logits.masked_fill(~mask, float("-inf"))
+    masked_logits = merged.masked_fill(~mask, float("-inf"))
     log_probs = F.log_softmax(masked_logits, dim=1)
     log_probs = log_probs.masked_fill(~mask, 0.0)
     policy_loss = -(target * log_probs).sum(dim=1).mean()
@@ -166,7 +166,7 @@ def _to_batch(samples: list[Sample]) -> dict:
     o = np.stack([s.own_hand for s in samples]).astype(np.float32)
     p = np.stack([s.opp_hands for s in samples]).astype(np.float32)
     pol = np.stack([s.policy for s in samples]).astype(np.float32)
-    val = np.asarray([s.value for s in samples], dtype=np.float32)
+    val = np.stack([s.value for s in samples]).astype(np.float32)
     legal = np.stack([s.legal for s in samples]).astype(np.bool_)
     return {
         "board": b, "links": l, "global": g,

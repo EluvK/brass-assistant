@@ -2,8 +2,9 @@
 training samples (state -> visit-distribution policy target, normalized final
 VP value target).
 
-Value target (user-approved): z_p = (vp_p - mean) / max(std, eps) over the
-players of that game; each sample carries the target of its perspective player.
+Value target (user-approved, 2026-08 redesign): z = (vp - mean) / max(std, eps)
+over the players of that game, as the FULL 4-player vector; each sample carries
+the same 4-vector (the value head predicts all players from one perspective).
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ class Sample:
     own_hand: np.ndarray  # (35,)
     opp_hands: np.ndarray  # (105,)
     policy: np.ndarray  # (1316,) dense over policy slots
-    value: float
+    value: np.ndarray  # (4,) normalized final VP z-vector over all players
     legal: np.ndarray  # (1316,) bool mask of legal policy slots
 
 
@@ -79,26 +80,44 @@ def play_game(
     cfg: SelfPlayConfig | None = None,
 ) -> tuple[list, list]:
     """Play one self-play game; returns (samples, final_vps)."""
+    return play_game_with_roles([mcts.search] * 4, cfg)
+
+
+def play_game_with_roles(
+    roles,
+    cfg: SelfPlayConfig | None = None,
+    collect: set | None = None,
+) -> tuple[list, list]:
+    """Play one game where each seat is driven by its own search role.
+
+    `roles[pid]` is a callable(state, sims, add_root_noise) -> SearchResult
+    (used for matchmaking: opponent seats may run a different network).
+    Samples are recorded for every move whose pid is in `collect` (default:
+    all seats, matching the pure self-play path). Returns (samples, final_vps).
+    """
     cfg = cfg or SelfPlayConfig()
     seed = cfg.seed if cfg.seed is not None else np.random.randint(0, 2**31)
     state = be.GameState(seed=seed, players=cfg.players)
 
     samples: list[Sample] = []
     table_size = be.policy_table_size
+    if collect is None:
+        collect = set(range(cfg.players))
     moves = 0
     while not state.game_over and moves < cfg.max_moves:
         moves += 1
-        result = mcts.search(state, cfg.sims, add_root_noise=True)
+        pid = state.current_player_id
+        result = roles[pid](state, cfg.sims, True)
         if result.best is None:
             break
-        pid = state.current_player_id
-        board, links, g, oh, op = state.state_to_tensor()
-        policy = _dense_policy(result.visits, table_size)
-        samples.append(
-            Sample(pid=pid, board=board, links=links, global_vec=g,
-                   own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                   legal=_legal_mask_bool(state, table_size))
-        )
+        if pid in collect:
+            board, links, g, oh, op = state.state_to_tensor()
+            policy = _dense_policy(result.visits, table_size)
+            samples.append(
+                Sample(pid=pid, board=board, links=links, global_vec=g,
+                       own_hand=oh, opp_hands=op, policy=policy, value=0.0,
+                       legal=_legal_mask_bool(state, table_size))
+            )
         chosen = _sample_move(result, cfg.temperature)
         try:
             state.apply_move(chosen)
@@ -116,7 +135,7 @@ def play_game(
     vps = state.player_vps()
     z = _normalize(np.asarray(vps, dtype=np.float64))
     for s in samples:
-        s.value = z[s.pid]
+        s.value = z
     return samples, vps
 
 
@@ -159,7 +178,7 @@ def generate_imitation_samples(n_games: int, players: int = 4, max_moves: int = 
                 break
         z = _normalize(np.asarray(state.player_vps(), dtype=np.float64))
         for s in local:
-            s.value = z[s.pid]
+            s.value = z
         samples.extend(local)
     return samples
 

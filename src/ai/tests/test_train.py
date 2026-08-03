@@ -27,7 +27,7 @@ def test_trainer_reduces_loss_and_is_persistent():
         "own_hand": np.stack([s.own_hand for s in samples]).astype("f4"),
         "opp_hands": np.stack([s.opp_hands for s in samples]).astype("f4"),
         "policy": np.stack([s.policy for s in samples]).astype("f4"),
-        "value": np.asarray([s.value for s in samples]).astype("f4"),
+        "value": np.stack([s.value for s in samples]).astype("f4"),
         "legal": np.stack([s.legal for s in samples]).astype(bool),
     }
 

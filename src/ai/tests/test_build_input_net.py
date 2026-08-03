@@ -41,7 +41,15 @@ def test_net_forward():
     net = PolicyValueNet()
     g = be.GameState(seed=5, players=4)
     batch = build_input.encode_states([g, g, g, g])
-    logits, value = net(batch)
-    assert logits.shape == (4, be.policy_table_size)
-    assert value.shape == (4,)
-    assert bool((value >= -1).all()) and bool((value <= 1).all())
+    type_logits, goal_logits, value = net(batch)
+    assert type_logits.shape == (4, 7)
+    assert goal_logits.shape == (4, be.policy_table_size)
+    assert value.shape == (4, 4)
+    assert bool(torch.isfinite(value).all())
+    # merge: logit(s) = type[t(s)] + goal[s] reproduces a full policy row
+    merged = net.merge_logits(type_logits, goal_logits)
+    assert merged.shape == (4, be.policy_table_size)
+    st = be.slot_types
+    assert len(st) == be.policy_table_size
+    for t in st:
+        assert 0 <= t < 7

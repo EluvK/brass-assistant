@@ -185,7 +185,12 @@ class ISMCTS:
     # --------------------------------------------------------------- expand
     def _expand(self, node: Node) -> np.ndarray:
         """Create lazy children for each legal slot; evaluate priors (to-move
-        player) and the MaxN value vector (all players) in one batched forward.
+        player) and the 4-player value vector in one batched forward.
+
+        The redesigned net predicts all four players' value from a SINGLE
+        perspective (global already carries every player's money/income/vp and
+        opp_hands every hand), so the MaxN vector needs only the to-move
+        player's row — matching the Rust `nn_mcts` contract.
 
         Child states are NOT materialized here (that was ~2.7k clone+apply per
         ~40 sims); each child stores a reference to the immutable parent state
@@ -205,22 +210,19 @@ class ISMCTS:
             return self._eval_value(node)
 
         slots = [s for s, _, _ in node.legal]
-
-        pids = list(range(node.n_players))
-        batch = self._encode_perspectives(node.state, pids)
-        logits, values = self.net.policy_value(batch)
-
         pid = node.state.current_player_id
-        logits_p = logits[pids.index(pid)]
+        batch = self._encode_perspectives(node.state, [pid])
+        type_logits, goal_logits, values = self.net.policy_value(batch)
+        merged = self.net.merge_logits(type_logits, goal_logits)[0]
 
-        mask = np.zeros(len(logits_p), dtype=bool)
+        mask = np.zeros(len(merged), dtype=bool)
         for s in slots:
             mask[s] = True
-        full = self._masked_softmax(logits_p.detach().cpu().numpy(), mask)
+        full = self._masked_softmax(merged.detach().cpu().numpy(), mask)
         # Per-child priors aligned with `legal`/`children` (only legal slots).
         node.prior = full[slots]
         node.children = children
-        return values.detach().cpu().numpy()
+        return values.detach().cpu().numpy()[0]
 
     @staticmethod
     def _group_legal(state):
@@ -252,10 +254,10 @@ class ISMCTS:
     def _eval_value(self, node: Node) -> np.ndarray:
         if node.state.game_over:
             return self._terminal_value(node)
-        pids = list(range(node.n_players))
-        batch = self._encode_perspectives(node.state, pids)
-        _, values = self.net.policy_value(batch)
-        return values.detach().cpu().numpy()
+        pid = node.state.current_player_id
+        batch = self._encode_perspectives(node.state, [pid])
+        _, _, values = self.net.policy_value(batch)
+        return values.detach().cpu().numpy()[0]
 
     @staticmethod
     def _terminal_value(node: Node) -> np.ndarray:

@@ -122,9 +122,10 @@ impl PyGame {
     /// Network-guided ISMCTS search with the tree in Rust (`nn_mcts`).
     ///
     /// `net_fn(board, links, global, own_hand, opp_hands)` receives 2-D numpy
-    /// arrays with one row per (request x player) and must return
-    /// `(logits (rows, P), values (rows,))`. Returns (best_canonical,
-    /// root children as (slot, canonical, visits) best-first, legal_slots).
+    /// arrays with one row per request (each encoded from that request state's
+    /// current player) and must return `(type_logits (rows,7), goal_logits
+    /// (rows,P), values (rows,4))`. Returns (best_canonical, root children as
+    /// (slot, canonical, visits) best-first, legal_slots).
     #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64))]
     fn search_net(
         &self,
@@ -270,6 +271,7 @@ fn brass_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("GLOBAL_LEN", encode::GLOBAL_LEN)?;
     m.add("HAND_LEN", encode::HAND_LEN)?;
     m.add("MAX_PLAYERS", encode::MAX_PLAYERS)?;
+    m.add("slot_types", policy::slot_types())?;
     m.add_function(wrap_pyfunction!(py_describe_slot, m)?)?;
     m.add_function(wrap_pyfunction!(py_moves_to_slots, m)?)?;
     Ok(())

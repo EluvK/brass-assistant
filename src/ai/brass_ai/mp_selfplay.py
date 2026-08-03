@@ -6,6 +6,11 @@ Only lightweight numpy arrays cross the process boundary — never Rust
 `GameState` handles, torch tensors or complex objects. The main process
 rebuilds `Sample` objects and trains.
 
+Matchmaking: with `mm_prob > 0`, each game has one rotating "learner" seat
+(current net, whose samples are collected) and opponent seats drawn from a pool
+of historical nets (plus the current net). This anchors training against a
+stable reference and prevents the drift/collapse seen in pure self-play.
+
 Workers default to CPU inference: the network is tiny and per-sim cost is
 dominated by Python/Rust bookkeeping, so many workers do not contend for the
 GPU, which is reserved for the main process's training.
@@ -25,7 +30,7 @@ import numpy as np
 import torch
 
 from .progress import Progress
-from .selfplay import Sample, SelfPlayConfig, play_game
+from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 
 _PACK_TIMEOUT_S = 1800  # per packet; a full game at sims=200 can take minutes
 
@@ -41,15 +46,36 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
         cmd = cmd_queue.get()
         if cmd is None:
             break  # shutdown
-        weights, games, sims, seed_offset, mcts_cfg, temperature = cmd
+        weights, pool_weights, games, sims, seed_offset, mcts_cfg, temperature, mm_prob = cmd
         net = PolicyValueNet()
         net.load_state_dict(weights)
         net.eval()
         mcts = RustISMCTS(net, RustMCTSConfig(**mcts_cfg, device=device))
+
+        pool = []
+        for pw in pool_weights:
+            pn = PolicyValueNet()
+            pn.load_state_dict(pw)
+            pn.eval()
+            pool.append(RustISMCTS(pn, RustMCTSConfig(**mcts_cfg, device=device)))
+
         cfg = SelfPlayConfig(players=4, sims=sims, temperature=temperature, max_moves=600)
         for gi in range(games):
             cfg.seed = seed_base + worker_id * 100_000 + seed_offset + gi
-            samples, _ = play_game(mcts, cfg)
+            if mm_prob > 0.0 and pool:
+                # Rotating learner seat; opponents = historical pool (with
+                # probability mm_prob) else the current net.
+                learner = gi % 4
+                roles = [mcts.search] * 4
+                for seat in range(4):
+                    if seat == learner:
+                        continue
+                    if np.random.rand() < mm_prob:
+                        opp = pool[np.random.randint(len(pool))]
+                        roles[seat] = opp.search
+                samples, _ = play_game_with_roles(roles, cfg, collect={learner})
+            else:
+                samples, _ = play_game_with_roles([mcts.search] * 4, cfg)
             result_queue.put(("SAMPLES", _pack_samples(samples)))
         result_queue.put(("DONE", worker_id))
 
@@ -67,7 +93,7 @@ def _pack_samples(samples: list[Sample]) -> dict:
             "own_hand": np.empty((0, 35), dtype=np.float32),
             "opp_hands": np.empty((0, 105), dtype=np.float32),
             "policy": np.empty((0, 1316), dtype=np.float32),
-            "value": np.empty(0, dtype=np.float32),
+            "value": np.empty((0, 4), dtype=np.float32),
             "legal": np.empty((0, 1316), dtype=np.bool_),
         }
     return {
@@ -78,7 +104,7 @@ def _pack_samples(samples: list[Sample]) -> dict:
         "own_hand": np.stack([s.own_hand for s in samples]).astype(np.float32),
         "opp_hands": np.stack([s.opp_hands for s in samples]).astype(np.float32),
         "policy": np.stack([s.policy for s in samples]).astype(np.float32),
-        "value": np.asarray([s.value for s in samples], dtype=np.float32),
+        "value": np.stack([s.value for s in samples]).astype(np.float32),
         "legal": np.stack([s.legal for s in samples]).astype(np.bool_),
         "count": n,
     }
@@ -97,7 +123,7 @@ def unpack_samples(packed: dict) -> list[Sample]:
                 own_hand=packed["own_hand"][i],
                 opp_hands=packed["opp_hands"][i],
                 policy=packed["policy"][i],
-                value=float(packed["value"][i]),
+                value=packed["value"][i].astype(np.float32),
                 legal=packed["legal"][i],
             )
         )
@@ -130,15 +156,25 @@ class SelfPlayPool:
         seed: int = 0,
         mcts_cfg: dict | None = None,
         temperature: float = 1.0,
+        mm_pool: list | None = None,
+        mm_prob: float = 0.0,
         verbose: bool = True,
     ):
-        """Broadcast the current weights and collect samples from all workers.
+        """Broadcast the current weights (plus matchmaking pool) and collect
+        samples from all workers.
 
+        `mm_pool` is a list of state-dicts of historical nets used as opponent
+        seats with probability `mm_prob` per game (learner seat = current net).
         Returns (samples, per_worker_sample_counts)."""
         weights = {k: v.detach().cpu() for k, v in net.state_dict().items()}
+        pool_weights = []  # empty -> workers build no opponent pool (pure self-play)
         cfg = mcts_cfg or {}
+        if mm_pool:
+            pool_weights = [{k: v.detach().cpu() for k, v in pw.items()} for pw in mm_pool]
         for _ in range(self.n_workers):
-            self.cmd_queue.put((weights, games_per_worker, sims, seed, cfg, temperature))
+            self.cmd_queue.put(
+                (weights, pool_weights, games_per_worker, sims, seed, cfg, temperature, mm_prob)
+            )
 
         # Packets and DONE markers arrive interleaved (workers finish at
         # different times); count DONEs until every worker has reported.

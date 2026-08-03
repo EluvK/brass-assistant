@@ -33,6 +33,46 @@ pub const DEVELOP_CELLS: usize = DEVELOP_SINGLE_CELLS + DEVELOP_DOUBLE_CELLS; //
 pub const SELL_CELLS: usize = 47; // == crate::state::total_city_slots()
 pub const NETWORK_OFFSET: usize = BUILD_CELLS; // 482
 
+/// Action-type bands used by the branched policy head. The policy table is laid
+/// out in type-contiguous bands, so a slot's action type is pure band arithmetic
+/// over the table offsets (see the layout comment at the top of this file):
+///   0 Build (city + farm) | 1 Network (single + double) | 2 Develop |
+///   3 Sell | 4 Loan | 5 Scout | 6 Pass
+pub const ACTION_TYPE_BUILD: usize = 0;
+pub const ACTION_TYPE_NETWORK: usize = 1;
+pub const ACTION_TYPE_DEVELOP: usize = 2;
+pub const ACTION_TYPE_SELL: usize = 3;
+pub const ACTION_TYPE_LOAN: usize = 4;
+pub const ACTION_TYPE_SCOUT: usize = 5;
+pub const ACTION_TYPE_PASS: usize = 6;
+pub const ACTION_TYPE_COUNT: usize = 7;
+
+/// Action type of a policy slot, via band arithmetic over the table layout.
+pub fn slot_type(slot: usize) -> usize {
+    if slot < BUILD_CELLS {
+        ACTION_TYPE_BUILD
+    } else if slot < develop_offset() {
+        // Network single band + NetworkDouble band are both "network" actions.
+        ACTION_TYPE_NETWORK
+    } else if slot < sell_offset() {
+        ACTION_TYPE_DEVELOP
+    } else if slot < loan_offset() {
+        ACTION_TYPE_SELL
+    } else {
+        match slot - loan_offset() {
+            0 => ACTION_TYPE_LOAN,
+            1 => ACTION_TYPE_SCOUT,
+            _ => ACTION_TYPE_PASS,
+        }
+    }
+}
+
+/// Per-slot action type for the whole policy table, as a dense array aligned
+/// with the goal head's output (index = policy slot).
+pub fn slot_types() -> Vec<usize> {
+    (0..policy_table_size()).map(slot_type).collect()
+}
+
 /// Runtime guard that the hard-coded cell counts match the actual map data.
 fn assert_layout() {
     debug_assert_eq!(SELL_CELLS, crate::state::total_city_slots());

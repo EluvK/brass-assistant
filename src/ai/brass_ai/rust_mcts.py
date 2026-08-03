@@ -6,13 +6,16 @@ callback. This class is a drop-in replacement for the pure-Python `ISMCTS`
 used by self-play / evaluation, with the same `search(...) -> SearchResult`
 contract (`.best`, `.visits`, `.canon_by_slot`).
 
-Callback contract (Rust side builds the arrays):
+Callback contract (Rust side builds the arrays, ONE row per request = the
+request's current-player perspective):
   board   (rows, BOARD_PLANES*BOARD_CELLS)   float32
   links   (rows, LINK_PLANES*LINK_CELLS)     float32
   global_ (rows, GLOBAL_LEN)                 float32
   own     (rows, HAND_LEN)                   float32
   opp     (rows, 3*HAND_LEN)                 float32
-returns (logits (rows, policy_table_size), values (rows,)).
+returns (type_logits (rows, 7), goal_logits (rows, policy_table_size),
+         values (rows, 4)). The Rust search merges the branched priors
+(logit(s) = type[t(s)] + goal[s]) and uses the 4-player value vector directly.
 """
 
 from __future__ import annotations
@@ -38,9 +41,10 @@ def make_net_fn(net: PolicyValueNet, device: str = "cuda"):
         }
         if device != "cpu":
             batch = {k: v.to(device) for k, v in batch.items()}
-        logits, values = net.policy_value(batch)
+        type_logits, goal_logits, values = net.policy_value(batch)
         return (
-            logits.detach().cpu().numpy(),
+            type_logits.detach().cpu().numpy(),
+            goal_logits.detach().cpu().numpy(),
             values.detach().cpu().numpy(),
         )
 

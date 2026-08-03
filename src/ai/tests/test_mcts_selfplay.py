@@ -1,5 +1,7 @@
 import torch
 
+import numpy as np
+
 import brass_engine as be
 
 from brass_ai.mcts import ISMCTS, MCTSConfig
@@ -65,5 +67,7 @@ def test_selfplay_produces_valid_samples():
     for s in samples:
         # policy target is a distribution over the full table
         assert abs(s.policy.sum() - 1.0) < 1e-3
-        assert -3 <= s.value <= 3
+        # value target is the 4-player normalized z-vector
+        assert s.value.shape == (4,)
+        assert bool(np.isfinite(s.value).all())
         assert s.board.shape == (17, 49)

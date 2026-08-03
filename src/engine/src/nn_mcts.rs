@@ -4,9 +4,11 @@
 //! choices already folded by `rules::legal_slot_moves`). Per simulation the
 //! root is determinized (opponent hands sampled, reusing `mcts_ai::determinize`).
 //!
-//! Priors come from the network policy head (masked softmax over the legal
-//! slots); leaf values from the network value head as a MaxN vector over all
-//! players (Brass is non-zero-sum — each player maximizes their own value).
+//! Priors come from the network's **branched policy head**: one row per request
+//! (the moving player's perspective) returning `type[7], goal[1316]`, and the
+//! prior logit for slot s is `type[slot_type(s)] + goal[s]`, then masked
+//! softmax over the legal slots. Leaf values come from the value head's
+//! 4-player vector directly (single perspective, no 4x encode).
 //!
 //! Network inference is BATCHED: simulations park at expand/leaf points, their
 //! states are encoded in Rust and handed to a Python callback in waves; results
@@ -112,13 +114,12 @@ impl Node {
 // ---------------------------------------------------------------------------
 
 enum RequestKind {
-    /// Need policy priors (masked over `legal_slots`) + MaxN value.
+    /// Need policy priors (masked over `legal_slots`) + the 4-player value.
     Expand {
         node_idx: usize,
-        policy_player: usize,
         legal_slots: Vec<usize>,
     },
-    /// Need the MaxN value only (depth cap / no legal moves).
+    /// Need the 4-player value only (depth cap / no legal moves).
     Leaf,
 }
 
@@ -181,7 +182,7 @@ pub fn search_net(
             false, // priming does not count as a simulation visit
         ) {
             ParkedOutcome::Net { .. } => {
-                let results = flush_net(py, net_fn, &root_reqs, n_players)?;
+                let results = flush_net(py, net_fn, &root_reqs)?;
                 for (req, res) in root_reqs.iter().zip(results.iter()) {
                     if let RequestKind::Expand { node_idx, .. } = req.kind {
                         if let Some(p) = &res.priors {
@@ -233,7 +234,7 @@ pub fn search_net(
 
         // Phase 2: flush the batch and apply priors.
         if !requests.is_empty() {
-            let results = flush_net(py, net_fn, &requests, n_players)?;
+            let results = flush_net(py, net_fn, &requests)?;
             for (req, res) in requests.iter().zip(results.iter()) {
                 if let RequestKind::Expand { node_idx, .. } = req.kind {
                     if let Some(p) = &res.priors {
@@ -346,11 +347,9 @@ fn descend(
                     RequestKind::Leaf
                 });
             }
-            let policy_player = arena[node_idx].player;
             return park(work, requests, request_by_node, path, move |node_idx| {
                 RequestKind::Expand {
                     node_idx,
-                    policy_player,
                     legal_slots: legal_slots.clone(),
                 }
             });
@@ -359,12 +358,10 @@ fn descend(
         if !node.ready_to_select() {
             // Expanded but priors are still pending (another sim parked here in
             // this wave): share its request.
-            let policy_player = arena[node_idx].player;
             let legal_slots = arena[node_idx].legal_slots.clone();
             return park(work, requests, request_by_node, path, move |node_idx| {
                 RequestKind::Expand {
                     node_idx,
-                    policy_player,
                     legal_slots,
                 }
             });
@@ -480,30 +477,28 @@ fn apply_dirichlet_noise(node: &mut Node, alpha: f64, weight: f64, rng: &mut imp
 // Batched network inference (Python callback)
 // ---------------------------------------------------------------------------
 
-/// Encode every pending request (n_players perspectives each) into numpy arrays
-/// and ask the Python `net_fn` for (logits (B,P), values (B,)); split results
-/// back per request.
+/// Encode every pending request (ONE row each, from the state's current player
+/// perspective) and ask the Python `net_fn` for (type (B,7), goal (B,P),
+/// value (B,4)); split results back per request.
 fn flush_net(
     py: Python<'_>,
     net_fn: &Py<PyAny>,
     requests: &[Request],
-    n_players: usize,
 ) -> PyResult<Vec<BatchResult>> {
-    let n_rows = requests.len() * n_players;
+    let n_rows = requests.len();
     let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
     let mut links: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
     let mut globals: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
     let mut own_hands: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
     let mut opp_hands: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
     for req in requests {
-        for p in 0..n_players {
-            let t = crate::encode::state_to_tensor(&req.state, p);
-            boards.push(t.board);
-            links.push(t.links);
-            globals.push(t.global);
-            own_hands.push(t.own_hand);
-            opp_hands.push(t.opp_hands);
-        }
+        let pid = req.state.current_player_id();
+        let t = crate::encode::state_to_tensor(&req.state, pid);
+        boards.push(t.board);
+        links.push(t.links);
+        globals.push(t.global);
+        own_hands.push(t.own_hand);
+        opp_hands.push(t.opp_hands);
     }
 
     let board_arr = PyArray2::from_vec2(py, &boards)?;
@@ -513,30 +508,42 @@ fn flush_net(
     let opp_arr = PyArray2::from_vec2(py, &opp_hands)?;
 
     let out = net_fn.call1(py, (board_arr, links_arr, global_arr, own_arr, opp_arr))?;
-    let (logits_arr, values_arr): (Bound<PyArray2<f32>>, Bound<PyArray1<f32>>) =
-        out.bind(py).extract()?;
-    let logits_ro = logits_arr.readonly();
-    let logits = logits_ro
+    let (type_arr, goal_arr, values_arr): (
+        Bound<PyArray2<f32>>,
+        Bound<PyArray2<f32>>,
+        Bound<PyArray2<f32>>,
+    ) = out.bind(py).extract()?;
+    let type_ro = type_arr.readonly();
+    let type_vals = type_ro
         .as_slice()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("logits array not contiguous"))?;
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("type array not contiguous"))?;
+    let goal_ro = goal_arr.readonly();
+    let goal_vals = goal_ro
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("goal array not contiguous"))?;
     let values_ro = values_arr.readonly();
     let values = values_ro
         .as_slice()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("values array not contiguous"))?;
 
-    let mut results = Vec::with_capacity(requests.len());
+    let n_type = crate::policy::ACTION_TYPE_COUNT; // 7
     let psize = crate::policy::policy_table_size();
+    let mut results = Vec::with_capacity(requests.len());
     for (ri, req) in requests.iter().enumerate() {
-        let r0 = ri * n_players;
-        let value: Vec<f64> = (0..n_players).map(|p| values[r0 + p] as f64).collect();
+        let r0 = ri * 4;
+        // Value head predicts the 4-player z vector directly from one perspective.
+        let value: Vec<f64> = (0..MAX_PLAYERS).map(|p| values[r0 + p] as f64).collect();
         let priors = match &req.kind {
-            RequestKind::Expand {
-                policy_player,
-                legal_slots,
-                ..
-            } => {
-                let row = &logits[(r0 + policy_player) * psize..(r0 + policy_player + 1) * psize];
-                Some(masked_softmax(row, legal_slots))
+            RequestKind::Expand { legal_slots, .. } => {
+                // Merged branched prior: logit(s) = type[t(s)] + goal(s).
+                let tr0 = ri * n_type;
+                let gr0 = ri * psize;
+                let mut merged: Vec<f32> = Vec::with_capacity(legal_slots.len());
+                for &s in legal_slots {
+                    let t = crate::policy::slot_type(s);
+                    merged.push(type_vals[tr0 + t] + goal_vals[gr0 + s]);
+                }
+                Some(softmax(&merged))
             }
             RequestKind::Leaf => None,
         };
@@ -545,16 +552,17 @@ fn flush_net(
     Ok(results)
 }
 
-/// Softmax over `slots` only (legal slots), matching the masked policy loss.
-fn masked_softmax(logits_row: &[f32], slots: &[usize]) -> Vec<f64> {
+/// Softmax over a pre-merged list of legal-slot logits (already masked by
+/// construction: only legal slots are in the vector).
+fn softmax(logits: &[f32]) -> Vec<f64> {
     let mut max = f32::NEG_INFINITY;
-    for &s in slots {
-        max = max.max(logits_row[s]);
+    for &l in logits {
+        max = max.max(l);
     }
-    let mut exps = Vec::with_capacity(slots.len());
+    let mut exps = Vec::with_capacity(logits.len());
     let mut sum = 0.0f32;
-    for &s in slots {
-        let e = (logits_row[s] - max).exp();
+    for &l in logits {
+        let e = (l - max).exp();
         exps.push(e);
         sum += e;
     }

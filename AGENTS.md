@@ -161,6 +161,8 @@ TTS 官方热门的《伯明翰》Mod 的 **Lua 脚本**，是 TTS 集成与数�
 - **煤/铁源选择必须显式建模**（与啤酒选择同原则）：`Move::Build/Network/NetworkDouble/Develop` 都携带显式的 `coal`/`iron` 源列表；执行时校验（a）数量匹配（b）所选源当前可用（c）**免费优先**：有免费源时不得用市场源（防玩家故意不翻对手建筑）。`rules.rs` 的 `source_options`/`validate_source_choice` 是唯一事实来源，AI/heuristic/MCTS 都必须从这里取合法源，禁止执行函数内再自动挑源（`cheapest_coal_for_connection` 仅用于候选生成的成本估算）
 - **Policy 头必须对合法槽位掩码后再算 CE loss（重要教训）**：策略表含 ~703 个 double-rail 幽灵槽（绝大多数状态非法）。若 loss 用全空间 `log_softmax`，幽灵槽仍进分母，初始约 53% 概率质量压在幽灵槽上，网络浪费梯度压制它们 → policy 极弱（贪心仅 ~7 VP）。修复见 `train.py compute_loss`：用每样本 `legal` 掩码 `masked_fill(~mask, -inf)`，并把非法槽 log_probs 清零避免 `0×-inf=NaN`。修复后贪心 7→50 VP、MCTS 反超启发式。MCTS 侧 `_masked_softmax` 一直是对的；只有训练侧曾漏掩码
 - **双铁路允许不共享端点（已裁决）**：引擎与 npow 参考实现一致，两条铁路只需都在玩家网络内。因此策略表双铁路域是全部无序铁路对（703），不能用"共享端点"缩小
+- **新 Schema（2026-08，已落地）**：分叉 policy（`type_head 7` + `goal_head 1316`，`logit(s)=type[t(s)]+goal[s]`，`t(s)` 来自 `policy.rs slot_type` 带算术）+ **4 玩家 value 头**（`Linear(256→4)` 去 tanh，单视角预测全部玩家终局 z，因 `encode.rs global` 已含每玩家 money/income/vp、`opp_hands` 含全部手牌）。Rust `nn_mcts::flush_net` 每 request 只发 **1 行**，Rust 侧合并分叉先验 + 直接用 4 向量（省 4× 视角编码）。**`net(batch)` 返回 3 元组 `(type, goal, value)`**；训练 loss 与单线程 `mcts.py` 用 `net.merge_logits` 合并。效果：BC 基线 `new_best.pt` @sims=1000 胜率 0.65/mean 93.3/**min 57（零灾难对局）**，优于旧 best_masked（0.50/77.8/20）
+- **消耗型翻面 ≠ 卖货**：煤/铁/酒被消耗即自动翻面推进收入（`state.rs auto_sell_to_market` 等），无需 Sell 操作。诊断时"翻面数"不等于"Sell 次数"，不要据此误判模型行为
 
 ## 9. 已裁决的规则分歧（以用户规则书为准）
 

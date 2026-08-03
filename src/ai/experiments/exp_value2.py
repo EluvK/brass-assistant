@@ -57,7 +57,7 @@ def main():
             idx = np.random.default_rng(0).choice(len(samples), size=min(4096, len(samples)), replace=False)
             batch = _to_batch([samples[i] for i in idx])
             tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
-            _, value = net(tensors)
+            _, _, value = net(tensors)
             return F.mse_loss(value, tensors["value"]).item()
 
     t0 = time.time()
@@ -84,7 +84,7 @@ def main():
             chunk = [samples[i] for i in idx[start:start + args.batch]]
             batch = _to_batch(chunk)
             tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
-            _, value = net(tensors)
+            _, _, value = net(tensors)
             loss = F.mse_loss(value, tensors["value"])
             opt.zero_grad(set_to_none=True)
             loss.backward()
