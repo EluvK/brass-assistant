@@ -27,6 +27,261 @@ const FLEX_WEIGHT: f64 = 0.8;
 const BAN_BUILD_LV1_BREWERY: bool = true;
 const BAN_DEVELOP_IRON_LV2_PLUS: bool = true;
 
+// ---------------------------------------------------------------------------
+// Era phase + per-phase strategy profile (single source of truth for era logic)
+// ---------------------------------------------------------------------------
+
+/// Four strategy phases: each era is split into an early half (round 1-4) and a
+/// late half (round 5-8), with distinct strategic weights.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Phase {
+    CanalEarly,
+    CanalLate,
+    RailEarly,
+    RailLate,
+}
+
+/// Per-phase evaluation weights. Every era-dependent decision in the AI reads
+/// these instead of scattering `if era == ...` branches.
+pub struct EraProfile {
+    pub phase: Phase,
+    /// Income level weight (canal economy driven; late rail zeroed).
+    pub income_w: f64,
+    /// Cash weight.
+    pub money_w: f64,
+    /// Network (rail/canal building) weight. Rail-Early is the network era.
+    pub network_w: f64,
+    /// 2-ply combo discount (full early, dampened late rail).
+    pub alpha: f64,
+}
+
+/// Phase of the current state, cut on `state.round` (fixed 4/4 per era).
+pub fn era_phase(state: &GameState<impl Rng>) -> Phase {
+    match state.era {
+        Era::Canal => {
+            if state.round <= 4 {
+                Phase::CanalEarly
+            } else {
+                Phase::CanalLate
+            }
+        }
+        Era::Rail => {
+            if state.round <= 4 {
+                Phase::RailEarly
+            } else {
+                Phase::RailLate
+            }
+        }
+    }
+}
+
+/// Strategy profile for the current state. Weight values reproduce the
+/// historical heuristic exactly (step 1a is behavior-preserving); strategy
+/// tuning happens in later steps by editing this table only.
+pub fn era_profile(state: &GameState<impl Rng>) -> EraProfile {
+    let phase = era_phase(state);
+    let rounds = estimate_rounds_remaining(state);
+    let frac = (rounds / 8.0).clamp(0.0, 1.0);
+    match phase {
+        Phase::CanalEarly | Phase::CanalLate => EraProfile {
+            phase,
+            // Canal economy is income-driven: high weight, recovery runway long.
+            income_w: BASE_INCOME_WEIGHT * (2.2 + 0.6 * frac),
+            money_w: BASE_MONEY_WEIGHT * 0.55,
+            network_w: 1.0,
+            alpha: 0.6,
+        },
+        Phase::RailEarly => EraProfile {
+            phase,
+            // Rail first half: still meaningful, less than canal. Network is
+            // the era's core — building the rail net that the whole late game
+            // scores through, so network_w is elevated here.
+            income_w: BASE_INCOME_WEIGHT * (1.2 + 0.5 * frac),
+            money_w: BASE_MONEY_WEIGHT * 0.8,
+            network_w: 1.35,
+            alpha: 0.6,
+        },
+        Phase::RailLate => EraProfile {
+            phase,
+            // Late rail: income recovery window too short, cash + VP dominate.
+            income_w: 0.0,
+            money_w: 0.2,
+            network_w: 1.0,
+            alpha: 0.35,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quantified production plan ("流派"): choose the primary sellable industry
+// and how many tiles of it we can realistically build AND flip.
+// ---------------------------------------------------------------------------
+
+/// The player's production plan: target industry X*, planned flippable count
+/// k*, and the beer needed to sell them all.
+#[derive(Clone, Copy, Debug)]
+pub struct Plan {
+    pub industry: IndustryType,
+    pub count: usize,
+    pub beer_needed: usize,
+}
+
+/// One pass over all cities: count, per industry, the vacant slots allowing it
+/// (board-wide potential, not limited to the current network — the player can
+/// always network first, so 流派 is about what they CAN build, not what is
+/// reachable right now).
+fn vacant_board_slots(state: &GameState<impl Rng>) -> [usize; 6] {
+    let mut counts = [0usize; 6];
+    for loc in ALL_LOCATIONS.iter().take(CITY_COUNT) {
+        let slots = city_slots(*loc);
+        for (slot_idx, allowed) in slots.iter().enumerate() {
+            let key = match state.city_slot_key(*loc, slot_idx) {
+                Some(k) => k,
+                None => continue,
+            };
+            if state.city_tiles[key].is_some() {
+                continue;
+            }
+            for ind in *allowed {
+                counts[*ind as usize] += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// How strongly the player's hand supports building `ind`: location cards for
+/// cities with a vacant slot allowing it, plus matching industry/wild cards.
+/// Capped at 3 to keep it a mild tiebreaker.
+fn hand_support(state: &GameState<impl Rng>, pid: usize, ind: IndustryType) -> usize {
+    let mut support = 0usize;
+    let player = &state.players[pid];
+    for card in &player.hand {
+        match card {
+            Card::Location(loc) => {
+                if loc.is_farm() {
+                    continue;
+                }
+                let slots = city_slots(*loc);
+                for (slot_idx, allowed) in slots.iter().enumerate() {
+                    if !allowed.contains(&ind) {
+                        continue;
+                    }
+                    if let Some(k) = state.city_slot_key(*loc, slot_idx) {
+                        if state.city_tiles[k].is_none() {
+                            support += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            Card::Industry { .. } => {
+                if card.is_industry(ind) {
+                    support += 1;
+                }
+            }
+            Card::WildIndustry => support += 1,
+            Card::WildLocation => {}
+        }
+    }
+    support.min(3)
+}
+
+/// Estimated flip probability of industry `ind` from a production-plan
+/// perspective (industry-level, not per-location): reachable merchant +
+/// available beer. Cheap; used only to rank industries for the plan.
+fn plan_flip_probability(state: &GameState<impl Rng>, pid: usize, ind: IndustryType) -> f64 {
+    if !ind.is_sellable() {
+        return 0.0;
+    }
+    // Any merchant accepting `ind` reachable from the player's network?
+    let has_merchant = state.merchants.iter().any(|mt| mt.accepts(ind));
+    if !has_merchant {
+        return 0.15;
+    }
+    // Beer available: own barrels + reachable merchant beer.
+    let beer_ok = owned_beer_barrels(state, pid) > 0
+        || state.merchants.iter().any(|mt| mt.has_beer && mt.accepts(ind));
+    if beer_ok {
+        0.7
+    } else {
+        0.3
+    }
+}
+
+/// Compute the quantified production plan for `pid`: the sellable industry
+/// with the best combination of remaining tiles, board-wide build capacity,
+/// hand support and flip potential, plus the beer needed to sell them.
+pub fn compute_plan(state: &GameState<impl Rng>, pid: usize) -> Plan {
+    let slots = vacant_board_slots(state);
+    let mut best_industry = IndustryType::CottonMill;
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_count = 0usize;
+
+    for ind in IndustryType::ALL {
+        if !ind.is_sellable() {
+            continue;
+        }
+        let remaining = state.players[pid].remaining_count(ind);
+        if remaining == 0 {
+            continue;
+        }
+        let avail = slots[ind as usize];
+        if avail == 0 {
+            continue;
+        }
+        let plan_count = remaining.min(avail);
+        let mut vp_sum = 0.0;
+        let mut beers = 0usize;
+        for off in 0..plan_count {
+            if let Some(t) = state.players[pid].tile_after(ind, off) {
+                vp_sum += t.vp as f64;
+                beers += t.beers_to_sell.unwrap_or(0) as usize;
+            }
+        }
+        let avg_vp = vp_sum / plan_count as f64;
+        let flip = plan_flip_probability(state, pid, ind);
+        let own_beer = owned_beer_barrels(state, pid);
+        let beer_factor = if own_beer >= beers {
+            1.0
+        } else {
+            (0.4 + 0.6 * (own_beer as f64 / beers.max(1) as f64)).min(1.0)
+        };
+        // Hand support is the key "流派" signal: humans pick the industry their
+        // cards point at. Weight it enough to break ties without overriding a
+        // clearly better market position.
+        let hand = hand_support(state, pid, ind) as f64;
+        let hand_factor = 0.5 + 0.25 * hand;
+        let score = plan_count as f64 * avg_vp * flip * beer_factor * hand_factor;
+        if score > best_score {
+            best_score = score;
+            best_industry = ind;
+            best_count = plan_count;
+        }
+    }
+
+    if best_score == f64::NEG_INFINITY {
+        // No sellable plan viable (e.g. every sellable stack is empty, or no
+        // board space). A degenerate plan: pick nothing meaningful. count=0
+        // disables all plan bonuses downstream.
+        return Plan {
+            industry: IndustryType::CottonMill,
+            count: 0,
+            beer_needed: 0,
+        };
+    }
+
+    let beer_needed = (0..best_count)
+        .filter_map(|off| state.players[pid].tile_after(best_industry, off))
+        .map(|t| t.beers_to_sell.unwrap_or(0) as usize)
+        .sum();
+    Plan {
+        industry: best_industry,
+        count: best_count,
+        beer_needed,
+    }
+}
+
 fn develop_guardrail_penalty(ind: IndustryType, level: u8) -> f64 {
     if level < 2 {
         return 0.0;
@@ -43,18 +298,12 @@ pub struct Decision {
     pub score: f64,
 }
 
+/// The single default AI entry point (the "teacher"). Currently delegates to the
+/// 2-ply lookahead, which is the strongest available policy; all external
+/// callers (Python BC teacher, `brass-engine` heuristic policy, replays) share
+/// this one implementation so there is no separate weaker heuristic variant.
 pub fn choose_action<R: Rng + Clone>(state: &mut GameState<R>) -> Decision {
-    let mut candidates = candidate_actions(state);
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-
-    for cand in candidates {
-        let mut sim = state.clone();
-        if crate::rules::apply_move(&mut sim, &cand.mv).is_ok() {
-            return cand;
-        }
-    }
-
-    pass_decision(state)
+    crate::search_ai::choose_action_2ply(state)
 }
 
 /// Best move per action type (the 1-ply candidate set). Used both by
@@ -79,17 +328,18 @@ pub fn candidate_actions_k<R: Rng + Clone>(state: &mut GameState<R>, k: usize) -
     }
 
     let mut out = Vec::new();
+    let plan = compute_plan(state, pid);
 
-    for d in score_top_builds(state, pid, k) {
+    for d in score_top_builds(state, pid, k, &plan) {
         if d.score != f64::NEG_INFINITY {
             out.push(d);
         }
     }
-    out.extend(score_top_networks(state, pid, k));
-    if let Some(d) = score_best_network_double(state, pid) {
+    out.extend(score_top_networks(state, pid, k, &plan));
+    if let Some(d) = score_best_network_double(state, pid, &plan) {
         out.push(d);
     }
-    if let Some(d) = score_develop_plan(state, pid) {
+    if let Some(d) = score_develop_plan(state, pid, &plan) {
         out.push(d);
     }
     if let Some(d) = score_sell_plan(state, pid) {
@@ -236,33 +486,12 @@ pub(crate) fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
     (total / actions_per_round).clamp(1.0, 8.0)
 }
 
-pub(crate) fn is_late_rail_half(state: &GameState<impl Rng>) -> bool {
-    state.era == Era::Rail && estimate_rounds_remaining(state) <= 4.0
-}
-
 fn money_weight(state: &GameState<impl Rng>) -> f64 {
-    if is_late_rail_half(state) {
-        0.2
-    } else if state.era == Era::Canal {
-        BASE_MONEY_WEIGHT * 0.55
-    } else {
-        BASE_MONEY_WEIGHT * 0.8
-    }
+    era_profile(state).money_w
 }
 
 pub(crate) fn income_weight(state: &GameState<impl Rng>) -> f64 {
-    if is_late_rail_half(state) {
-        return 0.0;
-    }
-    let rounds = estimate_rounds_remaining(state);
-    if state.era == Era::Canal {
-        // Canal economy is income-driven: recovery runway is long and powers
-        // the whole rail transition.
-        BASE_INCOME_WEIGHT * (2.2 + 0.6 * (rounds / 8.0).clamp(0.0, 1.0))
-    } else {
-        // Rail first half: still meaningful, but less than canal.
-        BASE_INCOME_WEIGHT * (1.2 + 0.5 * (rounds / 8.0).clamp(0.0, 1.0))
-    }
+    era_profile(state).income_w
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -604,6 +833,7 @@ fn score_build_candidate(
     state: &GameState<impl Rng>,
     pid: usize,
     cand: &BuildTarget,
+    plan: &Plan,
 ) -> f64 {
     let tile = state.players[pid].next_tile(cand.ind);
     let Some(tile) = tile else { return f64::NEG_INFINITY };
@@ -880,6 +1110,36 @@ fn score_build_candidate(
         }
     }
 
+    // Plan ("流派") soft bonus: building the target industry aligns with the
+    // player's production plan. Only applies from Canal-Late onward — in
+    // Canal-Early the priority is the coal/iron economy engine, not committing
+    // to the sellable line yet. Additive + small so it nudges, not overrides.
+    if plan.count > 0
+        && plan.industry == cand.ind
+        && era_phase(state) != Phase::CanalEarly
+    {
+        score += 0.5;
+    }
+
+    // Rail-Late beer-gated finish: the whole late game hinges on flipping
+    // sellables. A sellable tile is only worth building now if we have beer to
+    // sell it (own barrels to spare OR reachable merchant beer) — that's the
+    // "有酒才建产业" rule. When beer is genuinely available, reward the build
+    // (it's the finishing move); when not, `flip_prob` already keeps it low.
+    if era_phase(state) == Phase::RailLate && cand.ind.is_sellable() {
+        let beer_ok = {
+            let connected = connected_locations(state, cand.loc);
+            find_beer_sources(state, cand.loc, pid, &[]).len() > 0
+                || state
+                    .merchants
+                    .iter()
+                    .any(|mt| mt.has_beer && connected.contains(&mt.loc))
+        };
+        if beer_ok {
+            score += 1.2;
+        }
+    }
+
     score
 }
 
@@ -896,12 +1156,17 @@ fn pick_build_card(state: &GameState<impl Rng>, pid: usize, cand: &BuildTarget) 
 }
 
 /// Top-K build candidates by 1-ply score. Used by MCTS to get a wider prior.
-pub(crate) fn score_top_builds(state: &mut GameState<impl Rng>, pid: usize, k: usize) -> Vec<Decision> {
+pub(crate) fn score_top_builds(
+    state: &mut GameState<impl Rng>,
+    pid: usize,
+    k: usize,
+    plan: &Plan,
+) -> Vec<Decision> {
     let targets = get_valid_build_targets(state, pid);
     let mut scored: Vec<(BuildTarget, f64)> = targets
         .into_iter()
         .map(|t| {
-            let s = score_build_candidate(state, pid, &t);
+            let s = score_build_candidate(state, pid, &t, plan);
             (t, s)
         })
         .collect();
@@ -1103,6 +1368,7 @@ fn score_network_candidate(
     cost: i32,
     cities: &[Loc; 2],
     is_canal: bool,
+    plan: &Plan,
 ) -> f64 {
     let access_gain = count_hand_cards_newly_in_network(state, pid, cities);
     let merchant_gain = if connects_to_new_merchant(state, cities) {
@@ -1145,7 +1411,96 @@ fn score_network_candidate(
     };
     let exploration_bonus = (1.6 - links_built as f64 * 0.3).max(0.0);
 
-    vp_equivalent(
+    // Plan ("流派") network bonus: a link that touches a city where the plan
+    // industry still has a vacant slot (and we still hold tiles for it) opens
+    // up production capacity. Only from Canal-Late onward (Canal-Early builds
+    // the economy engine first). Small — a tiebreaker, not a driver.
+    let mut plan_bonus = 0.0;
+    if plan.count > 0
+        && era_phase(state) != Phase::CanalEarly
+        && state.players[pid].remaining_count(plan.industry) > 0
+    {
+        for loc in cities {
+            if !loc.is_city() {
+                continue;
+            }
+            let slots = city_slots(*loc);
+            for (slot_idx, allowed) in slots.iter().enumerate() {
+                if !allowed.contains(&plan.industry) {
+                    continue;
+                }
+                if let Some(k) = state.city_slot_key(*loc, slot_idx) {
+                    if state.city_tiles[k].is_none() {
+                        plan_bonus = 0.5;
+                    }
+                }
+            }
+            if plan_bonus > 0.0 {
+                break;
+            }
+        }
+    }
+
+    // Canal-Late "critical path only": extra actions must NOT be spent on a
+    // dead-end link that neither unlocks a build for the plan industry nor
+    // connects a reachable merchant (i.e. it doesn't help sell the goods we
+    // built). A link that fails every check is a pure cash sink this late.
+    let mut critical_penalty = 0.0;
+    if era_phase(state) == Phase::CanalLate {
+        let mut connects_useful = false;
+        for loc in cities {
+            if loc.is_merchant() || loc.is_farm() {
+                connects_useful = true;
+                break;
+            }
+            // Vacant slot for the plan industry (or any sellable we still hold).
+            let slots = city_slots(*loc);
+            for (slot_idx, allowed) in slots.iter().enumerate() {
+                if let Some(k) = state.city_slot_key(*loc, slot_idx) {
+                    if state.city_tiles[k].is_some() {
+                        continue;
+                    }
+                    for ind in *allowed {
+                        if state.players[pid].remaining_count(*ind) > 0 {
+                            connects_useful = true;
+                            break;
+                        }
+                    }
+                }
+                if connects_useful {
+                    break;
+                }
+            }
+            if connects_useful {
+                break;
+            }
+        }
+        if !connects_useful {
+            critical_penalty = 2.5;
+        }
+    }
+
+    // Rail-Early beer-farm lock: links touching a brewery farm lock down beer
+    // supply (double-rails and late-game sells depend on it). Strategic even if
+    // the immediate link score is low — the two farm links are prime real
+    // estate, so Rail-Early rewards grabbing them.
+    let mut beer_lock_bonus = 0.0;
+    if era_phase(state) == Phase::RailEarly {
+        let touches_farm = cities.iter().any(|l| l.is_farm())
+            || connections()[conn_id]
+                .via_farm
+                .map_or(false, |f| f.is_farm());
+        if touches_farm {
+            beer_lock_bonus = 1.2;
+        }
+    }
+
+    // Network-era weighting: scale the strategic (non-cash) value of the link
+    // by the phase's network_w. Rail-Early builds the net everything scores
+    // through, so its links are worth more.
+    let profile = era_profile(state);
+    let net_scale = profile.network_w;
+    let mut score = vp_equivalent(
         state,
         access_gain + merchant_gain,
         0.0,
@@ -1153,7 +1508,11 @@ fn score_network_candidate(
         0.0,
     ) + exploration_bonus
         - over_networking_penalty
-        + hub_bonus
+        + plan_bonus
+        - critical_penalty
+        + beer_lock_bonus;
+    score += hub_bonus * net_scale;
+    score
 }
 
 fn pick_any_card(state: &GameState<impl Rng>, pid: usize) -> Option<usize> {
@@ -1162,7 +1521,12 @@ fn pick_any_card(state: &GameState<impl Rng>, pid: usize) -> Option<usize> {
 }
 
 /// Top-K single network candidates by 1-ply score.
-pub(crate) fn score_top_networks(state: &mut GameState<impl Rng>, pid: usize, k: usize) -> Vec<Decision> {
+pub(crate) fn score_top_networks(
+    state: &mut GameState<impl Rng>,
+    pid: usize,
+    k: usize,
+    plan: &Plan,
+) -> Vec<Decision> {
     let player = &state.players[pid];
     if state.era == Era::Canal && player.canal_links == 0 {
         return Vec::new();
@@ -1191,6 +1555,7 @@ pub(crate) fn score_top_networks(state: &mut GameState<impl Rng>, pid: usize, k:
             cost,
             &[conn.a, conn.b],
             state.era == Era::Canal,
+            plan,
         );
         scored.push((conn_id, s));
     }
@@ -1217,7 +1582,11 @@ pub(crate) fn score_top_networks(state: &mut GameState<impl Rng>, pid: usize, k:
         .collect()
 }
 
-fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Option<Decision> {
+fn score_best_network_double(
+    state: &mut GameState<impl Rng>,
+    pid: usize,
+    plan: &Plan,
+) -> Option<Decision> {
     if state.era != Era::Rail {
         return None;
     }
@@ -1242,6 +1611,7 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
                 cost1,
                 &[c1.a, c1.b],
                 false,
+                plan,
             );
             let s2 = score_network_candidate(
                 state,
@@ -1250,10 +1620,32 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
                 cost2,
                 &[c2.a, c2.b],
                 false,
+                plan,
             );
             let extra_base = (crate::map::RAIL_DOUBLE_LINK_COST
                 - 2 * crate::map::RAIL_LINK_COST) as f64;
             let s = s1 + s2 - extra_base * money_weight(state);
+            // Double-rail synergy: one action builds two links (a tempo win vs
+            // two separate actions), and in Rail-Early the net is being laid
+            // out fast. Add a modest action-economy bonus so the combo is
+            // preferred when the two links are comparable.
+            let mut s = s + if era_phase(state) == Phase::RailEarly {
+                1.2
+            } else {
+                0.6
+            };
+            // Beer-lock synergy: a double-rail that grabs a brewery farm link
+            // locks beer while saving tempo — especially valuable.
+            let touches_farm = [&connections()[conn1], &connections()[conn2]]
+                .iter()
+                .any(|c| {
+                    c.a.is_farm()
+                        || c.b.is_farm()
+                        || c.via_farm.map_or(false, |f| f.is_farm())
+                });
+            if touches_farm {
+                s += 0.8;
+            }
             let better = match &best {
                 Some((_, _, bs)) => s > *bs,
                 None => true,
@@ -1304,7 +1696,7 @@ fn score_best_network_double(state: &mut GameState<impl Rng>, pid: usize) -> Opt
 // DEVELOP
 // ---------------------------------------------------------------------------
 
-fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> {
+fn score_develop_plan(state: &GameState<impl Rng>, pid: usize, plan: &Plan) -> Option<Decision> {
     if !can_develop(state, pid) {
         return None;
     }
@@ -1340,12 +1732,30 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decisio
                 }
             }
             // Breweries are the economic engine (develop 1 -> build 2/3/4).
+            // In Canal-Early, grabbing the beer spot early is almost a must —
+            // but it must stay rational: developing costs iron, so only develop
+            // the brewery when iron is cheap (£1-2). At £3+ the iron is better
+            // spent building/supplying iron first instead.
             if ind == IndustryType::Brewery {
                 v += 0.55;
+                if era_phase(state) == Phase::CanalEarly {
+                    let iron_price = state.iron_price();
+                    if iron_price <= 2 {
+                        v += 1.0;
+                    } else if iron_price >= 3 {
+                        v -= 1.5;
+                    }
+                }
             }
             // Canal-era develop wins the cross-era bonus; nudge it.
             if state.era == Era::Canal {
                 v += 0.15;
+            }
+            // Plan ("流派") soft bonus: developing toward the target industry
+            // aligns with the production plan (unlock higher-level tiles of the
+            // goods we intend to sell).
+            if plan.industry == ind {
+                v += 0.3;
             }
             // Only meaningful if we actually hold a card to build it next.
             if player_has_buildable_card(state, pid, ind) {
@@ -1604,11 +2014,16 @@ fn score_sell_plan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<D
     // End-of-era urgency: in the final round of the canal era, canal-only
     // (level-1) sellables vanish if unflipped — selling them now is essential
     // or the VP + income is permanently lost. Boost the sell action sharply.
+    // In Rail-Late the finish is selling your built goods for VP — selling is
+    // the whole point of the late game, so weight it across the entire phase.
     let rounds_left = estimate_rounds_remaining(state);
     let canal_end = state.era == Era::Canal && rounds_left <= 2.0;
     let rail_end = state.era == Era::Rail && rounds_left <= 1.0;
     let urgent = canal_end || rail_end;
-    let urgency_bonus = if urgent { 3.0 } else { 0.0 };
+    let mut urgency_bonus = if urgent { 3.0 } else { 0.0 };
+    if era_phase(state) == Phase::RailLate && !urgent {
+        urgency_bonus += 1.2;
+    }
 
     // Canal late-game tactical prior: deplete beer and flip breweries before
     // level-1 cleanup, or the barrels evaporate with no value.
@@ -1667,6 +2082,7 @@ fn score_loan_result<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option
     }
     let player = &state.players[pid];
     let income_level = player.income_level();
+    let plan = compute_plan(state, pid);
 
     // A loan is the engine of the early economy: it buys the income-recovery
     // build that keeps the turn engine running. It is worth taking when cash is
@@ -1678,8 +2094,8 @@ fn score_loan_result<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option
 
     // The post-loan budget opens up builds that buy back income fast.
     let cash = player.money as f64;
-    let after = best_affordable_build_score(state, pid, cash + crate::map::LOAN_AMOUNT as f64);
-    let now = best_affordable_build_score(state, pid, cash);
+    let after = best_affordable_build_score(state, pid, cash + crate::map::LOAN_AMOUNT as f64, &plan);
+    let now = best_affordable_build_score(state, pid, cash, &plan);
     let gain = (after - now).max(0.0);
 
     // Same-turn combo value: Loan is strongest when it immediately unlocks a
@@ -1734,20 +2150,44 @@ fn score_loan_result<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option
         0.0
     };
 
-    // Slight tactical nudge: early canal loans are often the cleanest way to
-    // unlock the engine (loan -> build/develop) before tempo stalls.
-    let canal_early_loan_bonus = if state.era == Era::Canal && rounds_left >= 5.5 {
+    // Startup-loan peak: Canal-Early round 1-2 with low cash — the loan funds
+    // the economy engine (build/develop) before tempo stalls.
+    let startup_loan_bonus = if era_phase(state) == Phase::CanalEarly && state.round <= 2 {
         if cash < 18.0 {
-            0.9
+            2.2
         } else {
-            0.4
+            1.0
         }
     } else {
         0.0
     };
 
-    let score = gain + combo_gain + idle_bonus + unlock_bonus + canal_early_loan_bonus
-        - income_cost - floor_penalty - rich_penalty - late_era_penalty;
+    // Canal-Late end-of-era loan: round 6-8, cash below £30 — borrow the rail-era
+    // startup capital. The -3 income is acceptable because the very next action
+    // (selling our built goods / flipping a sellable) recovers income fast.
+    // Only if there is a sellable tile we can realistically flip soon.
+    let canal_late_loan_bonus = if era_phase(state) == Phase::CanalLate && state.round >= 6 {
+        let can_flip_soon = get_valid_sell_targets(state, pid).len() > 0
+            || state
+                .city_tiles
+                .iter()
+                .flatten()
+                .any(|t| t.player == pid && !t.flipped && t.ind.is_sellable());
+        if can_flip_soon && cash < 30.0 {
+            if cash < 18.0 {
+                2.8
+            } else {
+                1.8
+            }
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    let score = gain + combo_gain + idle_bonus + unlock_bonus + startup_loan_bonus
+        + canal_late_loan_bonus - income_cost - floor_penalty - rich_penalty - late_era_penalty;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::Loan { card_index },
@@ -1780,13 +2220,14 @@ fn best_affordable_build_score(
     state: &GameState<impl Rng>,
     pid: usize,
     budget: f64,
+    plan: &Plan,
 ) -> f64 {
     let mut best = f64::NEG_INFINITY;
     for t in get_valid_build_targets(state, pid) {
         if (t.cost_total as f64) > budget {
             continue;
         }
-        let s = score_build_candidate(state, pid, &t);
+        let s = score_build_candidate(state, pid, &t, plan);
         if s > best {
             best = s;
         }

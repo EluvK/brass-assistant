@@ -28,10 +28,7 @@ use crate::state::GameState;
 use crate::data::Era;
 
 /// Discount applied to the look-ahead (best second action) score.
-const ALPHA: f64 = 0.6;
-/// ALPHA used once the rail era is past its halfway point: combo-induced
-/// overspending is the main driver of late-game broken boards.
-const LATE_RAIL_ALPHA: f64 = 0.35;
+/// (Values now live in `EraProfile::alpha`, defined in heuristic_ai.)
 /// Wider first-action candidate pool: helps uncover tactical combos such as
 /// Network -> Build and Loan -> Build that can be missed by a single
 /// representative candidate per action type.
@@ -102,11 +99,7 @@ pub fn choose_action_2ply<R: rand::Rng + Clone>(state: &mut GameState<R>) -> Dec
 
 /// Era-aware combo discount: full weight early, dampened in the late rail.
 fn combo_alpha<R: rand::Rng>(state: &GameState<R>) -> f64 {
-    if heuristic_ai::is_late_rail_half(state) {
-        LATE_RAIL_ALPHA
-    } else {
-        ALPHA
-    }
+    heuristic_ai::era_profile(state).alpha
 }
 
 /// Penalize lines that strand the player without cash at the end of their

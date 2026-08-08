@@ -6,7 +6,8 @@
 //! driver (`src/ai/experiments/replay_net.py`) uses, so both produce
 //! byte-identical log structure.
 //!
-//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims]
+//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only]
+//!   canal-only: "1"/"true" stops after the canal era (no rail era played).
 
 use brass_engine::data::Era;
 use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
@@ -43,6 +44,10 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| "heuristic".to_string());
     let sims: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(300);
+    let canal_only = args
+        .get(5)
+        .map(|s| matches!(s.as_str(), "1" | "true" | "canal"))
+        .unwrap_or(false);
 
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
@@ -192,6 +197,17 @@ fn main() {
                         println!("玩家{pid}: {}", replay_fmt::era_score_detail(&state, pid));
                     }
                     print_era_snapshot(&state, "运河", &canal_stats);
+                    if canal_only {
+                        // Canal-only mode: print the canal cleanup detail and
+                        // final standings, then stop without playing the rail era.
+                        println!("{}", replay_fmt::canal_cleanup_detail(&state));
+                        let ranking = scoring::final_ranking(&state);
+                        println!("运河末排名: {:?}", ranking);
+                        if let Some(&w) = ranking.first() {
+                            println!("运河末第一: 玩家{w}");
+                        }
+                        return;
+                    }
                     println!("{}", replay_fmt::canal_cleanup_detail(&state));
                     end_canal_era(&mut state);
                     println!(
