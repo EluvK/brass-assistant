@@ -219,7 +219,10 @@ pub fn move_detail(state: &GameState<impl Rng>, mv: &Move) -> String {
         Move::Sell { keys, merchant_indices, use_merchant_beer, .. } => {
             let mut parts = Vec::new();
             for (i, k) in keys.iter().enumerate() {
-                let (loc, slot) = loc_from_key(*k);
+                let (loc, slot) = match crate::state::loc_from_key(*k) {
+                    Some((l, s)) => (Some(l), s),
+                    None => (None, 0),
+                };
                 let ind = state.city_tiles[*k].as_ref().map(|t| t.ind);
                 let merchant = merchant_indices
                     .get(i)
@@ -270,18 +273,6 @@ fn crate_cost(
         Some(c) => format!("{}(+煤{}铁{})", c.cost_total, c.coal_cost, c.iron_cost),
         None => "?".to_string(),
     }
-}
-
-fn loc_from_key(key: usize) -> (Option<Loc>, usize) {
-    let offsets = city_slot_offsets();
-    for (i, loc) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
-        let off = offsets[i];
-        let n = city_slots(*loc).len();
-        if key >= off && key < off + n {
-            return (Some(*loc), key - off);
-        }
-    }
-    (None, 0)
 }
 
 // ---------------------------------------------------------------------------

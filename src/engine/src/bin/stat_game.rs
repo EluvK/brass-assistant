@@ -3,36 +3,22 @@
 use brass_engine::data::Era;
 use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
 use brass_engine::heuristic_ai;
-use brass_engine::map::{city_slots, Loc};
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::random_ai;
 use brass_engine::rules::Move;
 use brass_engine::search_ai;
-use brass_engine::state::{city_slot_offsets, GameState};
+use brass_engine::state::GameState;
 use rand::SeedableRng;
-
-fn key_loc(key: usize) -> (Option<Loc>, usize) {
-    let offsets = city_slot_offsets();
-    for (i, loc) in brass_engine::map::ALL_LOCATIONS
-        .iter()
-        .take(brass_engine::map::CITY_COUNT)
-        .enumerate()
-    {
-        let off = offsets[i];
-        let n = city_slots(*loc).len();
-        if key >= off && key < off + n {
-            return (Some(*loc), key - off);
-        }
-    }
-    (None, 0)
-}
 
 fn flipped_desc(state: &GameState<impl rand::Rng>) -> Vec<String> {
     let mut out = Vec::new();
     for (key, tile) in state.city_tiles.iter().enumerate() {
         if let Some(t) = tile {
             if t.flipped {
-                let (loc, slot) = key_loc(key);
+                let (loc, slot) = match brass_engine::state::loc_from_key(key) {
+                    Some((l, s)) => (Some(l), s),
+                    None => (None, 0),
+                };
                 out.push(format!(
                     "P{} {}Lv{}@{}槽{}",
                     t.player,

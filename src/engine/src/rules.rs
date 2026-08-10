@@ -13,7 +13,7 @@ use crate::graph::{
     player_has_presence, BeerSource, BeerSourceKind, CoalSourceKind,
 };
 use crate::map::*;
-use crate::state::{city_slot_offsets, BoardTile, Card, GameState, Player};
+use crate::state::{BoardTile, Card, GameState, Player};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -1139,7 +1139,9 @@ fn describe_coal_consumption(state: &GameState<impl Rng>, undo: &ResourceUndo) -
             owner,
             prev_income_space,
         } => {
-            let loc = loc_from_key(state, *key).unwrap_or(Loc::Birmingham);
+            let loc = crate::state::loc_from_key(*key)
+                .map(|(l, _)| l)
+                .unwrap_or(Loc::Birmingham);
             let now = state.city_tiles[*key].as_ref();
             let cubes_now = now.map_or(0, |t| t.resource_cubes);
             let flipped = now.map_or(false, |t| t.flipped);
@@ -1179,7 +1181,9 @@ fn describe_beer_before(state: &GameState<impl Rng>, src: &BeerSource) -> (Strin
                     info.map(|(o, c, i)| (o, c, i)),
                 )
             } else {
-                let loc = loc_from_key(state, src.key).unwrap_or(Loc::Birmingham);
+                let loc = crate::state::loc_from_key(src.key)
+                    .map(|(l, _)| l)
+                    .unwrap_or(Loc::Birmingham);
                 let info = state.city_tiles[src.key]
                     .as_ref()
                     .map(|t| (t.player, t.resource_cubes, t.def.income));
@@ -1464,11 +1468,9 @@ pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<Se
             continue;
         }
         // Loc from key
-        let loc = loc_from_key(state, k);
-        if loc.is_none() {
+        let Some(loc) = crate::state::loc_from_key(k).map(|(l, _)| l) else {
             continue;
-        }
-        let loc = loc.unwrap();
+        };
         let merchant_indices = sell_merchants_for(state, pid, loc, t.ind);
         let beer_needed = t.def.beers_to_sell.unwrap_or(0);
         let routes = sell_routes_for_target(state, pid, loc, &merchant_indices, beer_needed);
@@ -1503,18 +1505,6 @@ fn sell_merchants_for(
     out
 }
 
-fn loc_from_key(_state: &GameState<impl Rng>, key: usize) -> Option<Loc> {
-    let offsets = city_slot_offsets();
-    for (i, loc) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
-        let off = offsets[i];
-        let n = city_slots(*loc).len();
-        if key >= off && key < off + n {
-            return Some(*loc);
-        }
-    }
-    None
-}
-
 fn beer_source_label(state: &GameState<impl Rng>, src: &BeerSource) -> String {
     match src.kind {
         crate::graph::BeerSourceKind::Merchant => src
@@ -1531,7 +1521,8 @@ fn beer_source_label(state: &GameState<impl Rng>, src: &BeerSource) -> String {
                 };
                 format!("酒@{}", log_loc_label(loc))
             } else {
-                let loc = loc_from_key(state, src.key)
+                let loc = crate::state::loc_from_key(src.key)
+                    .map(|(l, _)| l)
                     .map(log_loc_label)
                     .unwrap_or_else(|| "?".to_string());
                 format!("酒@{loc}")
@@ -1562,8 +1553,8 @@ pub fn execute_sell(
             let Some(tile) = state.city_tiles[key].as_ref() else {
                 continue;
             };
-            let loc = match loc_from_key(state, key) {
-                Some(l) => l,
+            let loc = match crate::state::loc_from_key(key) {
+                Some((l, _)) => l,
                 None => continue,
             };
             (tile.player, tile.flipped, tile.ind, tile.def.beers_to_sell.unwrap_or(0), loc)

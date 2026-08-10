@@ -2,6 +2,7 @@ use crate::data::{industry_tiles, CardType, Era, IndustryType, TileDef};
 use crate::map::*;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // Cards
@@ -132,15 +133,27 @@ pub struct Player {
     pub has_wild_industry: bool,
 }
 
-// Expanded per-player industry stacks (identical for all players).
-pub fn player_industry_stack(ind: IndustryType) -> Vec<TileDef> {
-    let mut v = Vec::new();
-    for def in industry_tiles(ind) {
-        for _ in 0..def.count {
-            v.push(*def);
+/// Expanded per-player industry stacks (identical for all players), built once.
+fn player_industry_stacks() -> &'static [Vec<TileDef>] {
+    static STACKS: OnceLock<Vec<Vec<TileDef>>> = OnceLock::new();
+    STACKS.get_or_init(|| {
+        let mut stacks = Vec::with_capacity(6);
+        for ind in IndustryType::ALL {
+            let mut v = Vec::new();
+            for def in industry_tiles(ind) {
+                for _ in 0..def.count {
+                    v.push(*def);
+                }
+            }
+            stacks.push(v);
         }
-    }
-    v
+        stacks
+    })
+}
+
+/// Expanded per-player industry stack (index into `Player::industry_next`).
+pub fn player_industry_stack(ind: IndustryType) -> &'static [TileDef] {
+    &player_industry_stacks()[ind as usize]
 }
 
 impl Player {
@@ -245,20 +258,44 @@ pub struct GameState<R: Rng> {
 
 // City slot offsets: slot_offsets[loc as usize] = start index in city_tiles.
 pub fn city_slot_offsets() -> [usize; CITY_COUNT] {
-    let mut offsets = [0usize; CITY_COUNT];
-    let mut acc = 0;
-    for (i, loc) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
-        offsets[i] = acc;
-        acc += city_slots(*loc).len();
-    }
-    offsets
+    static OFFSETS: OnceLock<[usize; CITY_COUNT]> = OnceLock::new();
+    *OFFSETS.get_or_init(|| {
+        let mut offsets = [0usize; CITY_COUNT];
+        let mut acc = 0;
+        for (i, loc) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
+            offsets[i] = acc;
+            acc += city_slots(*loc).len();
+        }
+        offsets
+    })
 }
 
 pub fn total_city_slots() -> usize {
-    ALL_LOCATIONS[..CITY_COUNT]
-        .iter()
-        .map(|l| city_slots(*l).len())
-        .sum()
+    static TOTAL: OnceLock<usize> = OnceLock::new();
+    *TOTAL.get_or_init(|| {
+        ALL_LOCATIONS[..CITY_COUNT]
+            .iter()
+            .map(|l| city_slots(*l).len())
+            .sum()
+    })
+}
+
+/// Reverse map a flat city-slot key back to its (city, slot_index), O(1).
+pub fn loc_from_key(key: usize) -> Option<(Loc, usize)> {
+    loc_from_key_table().get(key).copied()
+}
+
+fn loc_from_key_table() -> &'static [(Loc, usize)] {
+    static TABLE: OnceLock<Vec<(Loc, usize)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = Vec::with_capacity(total_city_slots());
+        for loc in ALL_LOCATIONS[..CITY_COUNT].iter() {
+            for slot in 0..city_slots(*loc).len() {
+                table.push((*loc, slot));
+            }
+        }
+        table
+    })
 }
 
 // ---------------------------------------------------------------------------
