@@ -43,7 +43,7 @@ const END_TURN_PENALTY_SCALE: f64 = 6.5;
 
 /// Choose the current player's action by 2-ply lookahead over their two
 /// same-turn actions.
-pub fn choose_action_2ply<R: rand::Rng + Clone>(state: &mut GameState<R>) -> Decision {
+pub fn choose_action_2ply(state: &mut GameState) -> Decision {
     let pid = state.current_player_id();
     let first_candidates = heuristic_ai::candidate_actions_k(state, FIRST_ACTION_K);
     let income_before = state.players[pid].income_level();
@@ -98,15 +98,15 @@ pub fn choose_action_2ply<R: rand::Rng + Clone>(state: &mut GameState<R>) -> Dec
 }
 
 /// Era-aware combo discount: full weight early, dampened in the late rail.
-fn combo_alpha<R: rand::Rng>(state: &GameState<R>) -> f64 {
+fn combo_alpha(state: &GameState) -> f64 {
     heuristic_ai::era_profile(state).alpha
 }
 
 /// Penalize lines that strand the player without cash at the end of their
 /// turn, unless the turn bought a clear income jump (a good flip) which makes
 /// low cash acceptable.
-fn end_of_turn_penalty<R: rand::Rng>(
-    state: &GameState<R>,
+fn end_of_turn_penalty(
+    state: &GameState,
     pid: usize,
     income_before: i8,
 ) -> f64 {
@@ -132,7 +132,7 @@ fn end_of_turn_penalty<R: rand::Rng>(
 }
 
 /// Apply era-end / game-end transitions to a simulated state.
-fn handle_turn_result<R: rand::Rng>(state: &mut GameState<R>, tr: TurnResult) {
+fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
     match tr {
         TurnResult::Continue => {}
         TurnResult::EndCanalEra => end_canal_era(state),

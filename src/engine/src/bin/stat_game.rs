@@ -10,7 +10,7 @@ use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
 
-fn flipped_desc(state: &GameState<impl rand::Rng>) -> Vec<String> {
+fn flipped_desc(state: &GameState) -> Vec<String> {
     let mut out = Vec::new();
     for (key, tile) in state.city_tiles.iter().enumerate() {
         if let Some(t) = tile {
@@ -53,6 +53,8 @@ fn main() {
     let sims: usize = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(300);
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
+    // RNG for the random baseline (state.rng is setup-only).
+    let mut rand_rng = rand::rngs::StdRng::from_entropy();
 
     #[derive(Default, Clone)]
     struct PStats {
@@ -74,7 +76,7 @@ fn main() {
         let pid = state.current_player_id();
         let target = if state.era == Era::Canal { &mut canal[pid] } else { &mut rail[pid] };
         let mv = match policy.as_str() {
-            "random" => random_ai::choose_random_move(&mut state)
+            "random" => random_ai::choose_random_move(&mut state, &mut rand_rng)
                 .unwrap_or_else(|| heuristic_ai::pass_decision(&state).mv),
             "2ply" => search_ai::choose_action_2ply(&mut state).mv,
             "mcts" => {

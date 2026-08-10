@@ -17,7 +17,9 @@ use crate::heuristic_ai::{self, Decision};
 use crate::map::Loc;
 use crate::rules::{apply_move, Move};
 use crate::state::{deck_composition, Card, GameState};
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use rand::Rng;
 
 /// Leaf-evaluation strategy (pluggable, per project decision "1-ply first,
@@ -193,7 +195,7 @@ fn is_wild(c: &Card) -> bool {
 
 /// Sample opponent hands from the hidden pool, leaving our own hand intact.
 /// The pool is the full era deck minus our known (non-wild) hand cards.
-pub(crate) fn determinize<R: Rng + Clone>(state: &GameState<R>, rng: &mut R) -> GameState<R> {    let mut det = state.clone();
+pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {    let mut det = state.clone();
     let me = det.current_player_id();
 
     let mut pool = deck_composition(det.player_count());
@@ -238,7 +240,7 @@ pub(crate) fn determinize<R: Rng + Clone>(state: &GameState<R>, rng: &mut R) -> 
 
 /// Test-only wrapper around `determinize`.
 #[doc(hidden)]
-pub fn determinize_for_test<R: Rng + Clone>(state: &GameState<R>, rng: &mut R, _cfg: &MctsConfig) -> GameState<R> {
+pub fn determinize_for_test(state: &GameState, rng: &mut StdRng, _cfg: &MctsConfig) -> GameState {
     determinize(state, rng)
 }
 
@@ -267,7 +269,7 @@ struct Child {
 // ---------------------------------------------------------------------------
 
 /// Choose the current player's action by ISMCTS (determinized MCTS, MaxN).
-pub fn choose_action_mcts<R: Rng + Clone>(state: &mut GameState<R>, cfg: &MctsConfig) -> Decision {
+pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
     let root_pid = state.current_player_id();
     let n_players = state.player_count();
 
@@ -280,15 +282,14 @@ pub fn choose_action_mcts<R: Rng + Clone>(state: &mut GameState<R>, cfg: &MctsCo
         children: Vec::new(),
     });
 
-    // Independent simulation RNG derived from (but not consuming) state.rng.
-    let mut sim_rng = state.rng.clone();
+    // Independent simulation RNG (state.rng is setup-only and private).
+    let mut sim_rng = StdRng::from_entropy();
     let mut total_depth = 0u64;
     let mut apply_fail = 0u64;
     let mut empty_cand = 0u64;
     for _ in 0..cfg.simulations {
         let _ = sim_rng.r#gen::<u64>(); // vary determinization per simulation
         let mut work = determinize(state, &mut sim_rng);
-        work.rng = sim_rng.clone(); // future draws during the sim use this rng
 
         let mut node_idx = 0usize;
         let mut depth = 0usize;
@@ -489,7 +490,7 @@ pub fn choose_action_mcts<R: Rng + Clone>(state: &mut GameState<R>, cfg: &MctsCo
 }
 
 /// Apply era-end / game-end transitions to a simulated state.
-fn handle_turn_result<R: rand::Rng>(state: &mut GameState<R>, tr: TurnResult) {
+fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
     match tr {
         TurnResult::Continue => {}
         TurnResult::EndCanalEra => end_canal_era(state),

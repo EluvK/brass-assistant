@@ -14,7 +14,6 @@ use crate::graph::{
 };
 use crate::map::*;
 use crate::state::{BoardTile, Card, GameState, Player};
-use rand::Rng;
 use std::collections::HashMap;
 
 fn log_loc_label(loc: Loc) -> String {
@@ -101,7 +100,7 @@ impl Move {
         }
     }
 
-    pub fn describe(&self, _state: &GameState<impl Rng>) -> String {
+    pub fn describe(&self, _state: &GameState) -> String {
         match self {
             Move::Build { loc, ind, .. } => format!("Build {} at {}", ind.name(), loc.name()),
             Move::Network { conn_id, .. } => {
@@ -223,7 +222,7 @@ fn source_options<T: Copy + PartialEq>(
 
 /// All legal coal source selections for `needed` cubes at `loc`.
 pub fn coal_source_options(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     loc: Loc,
     needed: usize,
 ) -> Vec<Vec<CoalSource>> {
@@ -231,13 +230,13 @@ pub fn coal_source_options(
 }
 
 /// All legal iron source selections for `needed` cubes.
-pub fn iron_source_options(state: &GameState<impl Rng>, needed: usize) -> Vec<Vec<IronSource>> {
+pub fn iron_source_options(state: &GameState, needed: usize) -> Vec<Vec<IronSource>> {
     source_options(&find_iron_sources(state), needed, |s| s.free, |s| s.key)
 }
 
 /// Coal sources reachable from either endpoint of a connection (union, one
 /// entry per cube), used for single/double rail legality.
-fn coal_sources_for_connection(state: &GameState<impl Rng>, conn: &Connection) -> Vec<CoalSource> {
+fn coal_sources_for_connection(state: &GameState, conn: &Connection) -> Vec<CoalSource> {
     let mut out = find_coal_sources(state, conn.a);
     for s in find_coal_sources(state, conn.b) {
         if !out.contains(&s) {
@@ -249,7 +248,7 @@ fn coal_sources_for_connection(state: &GameState<impl Rng>, conn: &Connection) -
 
 /// All legal coal source selections for a single rail link on `conn`.
 pub fn coal_options_for_connection(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     conn: &Connection,
     needed: usize,
 ) -> Vec<Vec<CoalSource>> {
@@ -296,7 +295,7 @@ fn validate_source_choice<T: Copy + PartialEq>(
 }
 
 fn validate_coal_choice(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     loc: Loc,
     needed: usize,
     chosen: &[CoalSource],
@@ -311,7 +310,7 @@ fn validate_coal_choice(
 }
 
 fn validate_connection_coal_choice(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     conn: &Connection,
     chosen: &[CoalSource],
 ) -> Result<(), String> {
@@ -325,7 +324,7 @@ fn validate_connection_coal_choice(
 }
 
 fn validate_iron_choice(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     needed: usize,
     chosen: &[IronSource],
 ) -> Result<(), String> {
@@ -336,7 +335,7 @@ fn validate_iron_choice(
 // Card helpers
 // ---------------------------------------------------------------------------
 
-pub fn discard_card(state: &mut GameState<impl Rng>, player_id: usize, card_index: usize) {
+pub fn discard_card(state: &mut GameState, player_id: usize, card_index: usize) {
     let p = &mut state.players[player_id];
     if card_index >= p.hand.len() {
         return;
@@ -362,7 +361,7 @@ pub fn discard_card(state: &mut GameState<impl Rng>, player_id: usize, card_inde
 /// Indices of cards in `player`'s hand valid for a BUILD at `loc`/`ind`.
 /// `loc` being a farm restricts to industry/wild-industry cards.
 pub fn valid_build_cards(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     player: &Player,
     pid: usize,
     loc: Loc,
@@ -420,7 +419,7 @@ pub struct BuildTarget {
 }
 
 /// Is there a vacant single-icon slot anywhere for this industry type?
-fn vacant_single_icon_exists(state: &GameState<impl Rng>, ind: IndustryType) -> bool {
+fn vacant_single_icon_exists(state: &GameState, ind: IndustryType) -> bool {
     for loc in ALL_LOCATIONS.iter().take(CITY_COUNT) {
         let slots = city_slots(*loc);
         for (slot_idx, allowed) in slots.iter().enumerate() {
@@ -436,7 +435,7 @@ fn vacant_single_icon_exists(state: &GameState<impl Rng>, ind: IndustryType) -> 
     false
 }
 
-pub fn get_valid_build_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<BuildTarget> {
+pub fn get_valid_build_targets(state: &GameState, pid: usize) -> Vec<BuildTarget> {
     // Precompute once per call: which industries still have a vacant
     // single-icon slot somewhere (used to deprioritize multi-icon slots).
     let mut single_icon_available = [false; 6];
@@ -503,7 +502,7 @@ pub fn get_valid_build_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<B
 
 #[allow(clippy::too_many_arguments)]
 fn check_build_target(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     loc: Loc,
     slot_index: usize,
@@ -592,7 +591,7 @@ pub struct BuildCost {
 }
 
 pub fn calculate_build_cost(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     ind: IndustryType,
     loc: Loc,
@@ -605,7 +604,7 @@ pub fn calculate_build_cost(
 /// Cost computation with caller-provided resource sources (avoids recomputing
 /// the same BFS/full-table scans for every candidate build target).
 fn calculate_build_cost_with_sources(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     ind: IndustryType,
     coal_sources: &[CoalSource],
@@ -672,7 +671,7 @@ fn calculate_build_cost_with_sources(
 }
 
 pub fn execute_build(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     loc: Loc,
     slot_index: usize,
@@ -823,7 +822,7 @@ pub fn execute_build(
 // NETWORK
 // ---------------------------------------------------------------------------
 
-pub fn get_valid_network_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<usize> {
+pub fn get_valid_network_targets(state: &GameState, pid: usize) -> Vec<usize> {
     let player = &state.players[pid];
     let mut out = Vec::new();
     let has_no_presence = !player_has_presence(state, pid);
@@ -881,7 +880,7 @@ pub fn get_valid_network_targets(state: &GameState<impl Rng>, pid: usize) -> Vec
 }
 
 pub fn execute_network(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     conn_id: usize,
     coal: Option<CoalSource>,
@@ -946,7 +945,7 @@ pub struct SecondRailOption {
 /// anywhere, plus opponent breweries connected to either endpoint. Merchant beer
 /// is never usable for rail building.
 pub fn beer_sources_for_link(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     conn: &Connection,
 ) -> Vec<BeerSource> {
@@ -964,7 +963,7 @@ pub fn beer_sources_for_link(
 /// Uses the cheapest first-link coal as a representative dry-run (only the
 /// set of reachable second links matters here, not the coal pairing).
 pub fn get_valid_second_rail_links(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     first_conn: usize,
 ) -> Vec<usize> {
@@ -982,7 +981,7 @@ pub fn get_valid_second_rail_links(
 }
 
 pub fn get_second_rail_options(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     first_conn: usize,
     coal1: CoalSource,
@@ -1077,7 +1076,7 @@ enum ResourceUndo {
 }
 
 fn consume_coal_for_double_rail(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     coal: CoalSource,
 ) -> ResourceUndo {
     match coal.kind {
@@ -1105,7 +1104,7 @@ fn consume_coal_for_double_rail(
     }
 }
 
-fn rollback_double_rail_coal(state: &mut GameState<impl Rng>, undo: ResourceUndo) {
+fn rollback_double_rail_coal(state: &mut GameState, undo: ResourceUndo) {
     match undo {
         ResourceUndo::Market { prev_market } => state.coal_market = prev_market,
         ResourceUndo::City {
@@ -1125,7 +1124,7 @@ fn rollback_double_rail_coal(state: &mut GameState<impl Rng>, undo: ResourceUndo
 }
 
 /// Human-readable description of one coal consumption (source, owner, flip, income).
-fn describe_coal_consumption(state: &GameState<impl Rng>, undo: &ResourceUndo) -> String {
+fn describe_coal_consumption(state: &GameState, undo: &ResourceUndo) -> String {
     match undo {
         ResourceUndo::Market { prev_market } => format!(
             "市场煤 {}→{}",
@@ -1164,7 +1163,7 @@ fn describe_coal_consumption(state: &GameState<impl Rng>, undo: &ResourceUndo) -
 }
 
 /// Describe a beer source before consumption: label + (owner, cubes, income) if it has an owner.
-fn describe_beer_before(state: &GameState<impl Rng>, src: &BeerSource) -> (String, Option<(usize, u8, u8)>) {
+fn describe_beer_before(state: &GameState, src: &BeerSource) -> (String, Option<(usize, u8, u8)>) {
     match src.kind {
         BeerSourceKind::Merchant => {
             let loc = state.merchants[src.merchant_idx.unwrap_or(0)].loc;
@@ -1197,7 +1196,7 @@ fn describe_beer_before(state: &GameState<impl Rng>, src: &BeerSource) -> (Strin
 }
 
 /// Whether a beer source's tile is flipped (fully depleted) now.
-fn beer_source_flipped(state: &GameState<impl Rng>, src: &BeerSource) -> bool {
+fn beer_source_flipped(state: &GameState, src: &BeerSource) -> bool {
     match src.kind {
         BeerSourceKind::Merchant => false,
         _ => {
@@ -1211,7 +1210,7 @@ fn beer_source_flipped(state: &GameState<impl Rng>, src: &BeerSource) -> bool {
 }
 
 pub fn execute_network_double(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     conn1: usize,
     conn2: usize,
@@ -1327,11 +1326,11 @@ pub fn execute_network_double(
 // DEVELOP
 // ---------------------------------------------------------------------------
 
-pub fn can_develop(state: &GameState<impl Rng>, pid: usize) -> bool {
+pub fn can_develop(state: &GameState, pid: usize) -> bool {
     affordable_develop_iron_count(state, pid) >= 1 && !state.players[pid].developable_types().is_empty()
 }
 
-fn affordable_develop_iron_count(state: &GameState<impl Rng>, pid: usize) -> usize {
+fn affordable_develop_iron_count(state: &GameState, pid: usize) -> usize {
     let mut money = state.players[pid].money;
     let mut count = 0usize;
 
@@ -1350,7 +1349,7 @@ fn affordable_develop_iron_count(state: &GameState<impl Rng>, pid: usize) -> usi
 }
 
 pub fn execute_develop(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     ind1: IndustryType,
     ind2: Option<IndustryType>,
@@ -1416,7 +1415,7 @@ pub struct SellRoute {
 }
 
 fn sell_routes_for_target(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     loc: Loc,
     merchant_indices: &[usize],
@@ -1460,7 +1459,7 @@ fn sell_routes_for_target(
     routes
 }
 
-pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<SellTarget> {
+pub fn get_valid_sell_targets(state: &GameState, pid: usize) -> Vec<SellTarget> {
     let mut out = Vec::new();
     for (k, tile) in state.city_tiles.iter().enumerate() {
         let Some(t) = tile else { continue };
@@ -1487,7 +1486,7 @@ pub fn get_valid_sell_targets(state: &GameState<impl Rng>, pid: usize) -> Vec<Se
 }
 
 fn sell_merchants_for(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     _pid: usize,
     loc: Loc,
     ind: IndustryType,
@@ -1505,7 +1504,7 @@ fn sell_merchants_for(
     out
 }
 
-fn beer_source_label(state: &GameState<impl Rng>, src: &BeerSource) -> String {
+fn beer_source_label(state: &GameState, src: &BeerSource) -> String {
     match src.kind {
         crate::graph::BeerSourceKind::Merchant => src
             .merchant_idx
@@ -1532,7 +1531,7 @@ fn beer_source_label(state: &GameState<impl Rng>, src: &BeerSource) -> String {
 }
 
 pub fn execute_sell(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     keys: &[usize],
     merchant_indices: &[usize],
@@ -1667,7 +1666,7 @@ pub fn execute_sell(
     ))
 }
 
-fn merchant_bonus_for(_state: &GameState<impl Rng>, loc: Loc) -> MerchantBonus {
+fn merchant_bonus_for(_state: &GameState, loc: Loc) -> MerchantBonus {
     for def in merchant_defs() {
         if def.loc == loc {
             return def.bonus;
@@ -1677,7 +1676,7 @@ fn merchant_bonus_for(_state: &GameState<impl Rng>, loc: Loc) -> MerchantBonus {
 }
 
 fn apply_merchant_bonus(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     bonus: MerchantBonus,
 ) -> String {
@@ -1705,7 +1704,7 @@ fn apply_merchant_bonus(
 }
 
 pub fn execute_resolve_free_develop(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     ind1: IndustryType,
     ind2: Option<IndustryType>,
@@ -1767,7 +1766,7 @@ pub fn execute_resolve_free_develop(
 // ---------------------------------------------------------------------------
 
 pub fn execute_loan(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     card_index: usize,
 ) -> Result<String, String> {
@@ -1780,7 +1779,7 @@ pub fn execute_loan(
     Ok(format!("Took £{} loan (income -{} levels)", LOAN_AMOUNT, LOAN_INCOME_PENALTY))
 }
 
-pub fn can_scout(state: &GameState<impl Rng>, pid: usize) -> bool {
+pub fn can_scout(state: &GameState, pid: usize) -> bool {
     let p = &state.players[pid];
     if p.hand.len() < 3 {
         return false;
@@ -1792,7 +1791,7 @@ pub fn can_scout(state: &GameState<impl Rng>, pid: usize) -> bool {
 }
 
 pub fn execute_scout(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     card_indices: [usize; 3],
 ) -> Result<String, String> {
@@ -1829,7 +1828,7 @@ pub fn execute_scout(
 }
 
 pub fn execute_pass(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     card_index: usize,
 ) -> Result<String, String> {
@@ -1841,7 +1840,7 @@ pub fn execute_pass(
 // Legal move enumeration
 // ---------------------------------------------------------------------------
 
-pub fn legal_moves(state: &mut GameState<impl Rng + Clone>) -> Vec<Move> {
+pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
     let pid = state.current_player_id();
 
     if let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {
@@ -2089,7 +2088,7 @@ fn push_slot(out: &mut Vec<SlotMove>, mv: Move) {
 /// Legal actions at SLOT granularity: one executable representative per occupied
 /// policy slot, mirroring the slot coverage of `legal_moves`. Sell emits one
 /// entry per route (a slot may appear several times; callers group by slot).
-pub fn legal_slot_moves(state: &mut GameState<impl Rng + Clone>) -> Vec<SlotMove> {
+pub fn legal_slot_moves(state: &mut GameState) -> Vec<SlotMove> {
     let pid = state.current_player_id();
     let mut out: Vec<SlotMove> = Vec::new();
 
@@ -2295,8 +2294,8 @@ fn gen_combos(out: &mut Vec<Vec<usize>>, n: usize, k: usize, start: usize, cur: 
 /// to a compatible merchant route with distinct merchant-beer sources. Each
 /// plan is dry-run validated (must flip every planned tile). Returns
 /// (keys, merchant_indices, use_merchant_beer) triples.
-fn build_multi_sell_plans<R: Rng + Clone>(
-    state: &GameState<R>,
+fn build_multi_sell_plans(
+    state: &GameState,
     pid: usize,
     targets: &[SellTarget],
 ) -> Vec<(Vec<usize>, Vec<usize>, Vec<bool>)> {
@@ -2364,7 +2363,7 @@ fn build_multi_sell_plans<R: Rng + Clone>(
 }
 
 
-pub fn apply_move(state: &mut GameState<impl Rng>, mv: &Move) -> Result<String, String> {
+pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
     let pid = state.current_player_id();
     match mv {
         Move::Build { loc, slot_index, ind, coal, iron, card_index } => {

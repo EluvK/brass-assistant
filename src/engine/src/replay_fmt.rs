@@ -12,7 +12,6 @@ use crate::data::{CardType, Era, IndustryType};
 use crate::map::{city_slots, connections, ALL_LOCATIONS, Loc, CITY_COUNT};
 use crate::rules::{calculate_build_cost, Move};
 use crate::state::{city_slot_offsets, Card, GameState};
-use rand::Rng;
 
 // ---------------------------------------------------------------------------
 // Labels
@@ -63,7 +62,7 @@ pub fn card_label(card: &Card) -> String {
 // State displays
 // ---------------------------------------------------------------------------
 
-pub fn hand_display(state: &GameState<impl Rng>, pid: usize) -> String {
+pub fn hand_display(state: &GameState, pid: usize) -> String {
     let hand = &state.players[pid].hand;
     let mut parts = Vec::new();
     for (i, c) in hand.iter().enumerate() {
@@ -78,7 +77,7 @@ pub fn hand_display(state: &GameState<impl Rng>, pid: usize) -> String {
     parts.join(" ")
 }
 
-pub fn player_state(state: &GameState<impl Rng>, pid: usize) -> String {
+pub fn player_state(state: &GameState, pid: usize) -> String {
     let p = &state.players[pid];
     format!(
         "钱£{:<3} 收入{:>2} 手牌{} VP{} 运河{} 铁路{}",
@@ -91,7 +90,7 @@ pub fn player_state(state: &GameState<impl Rng>, pid: usize) -> String {
     )
 }
 
-pub fn board_state(state: &GameState<impl Rng>) -> String {
+pub fn board_state(state: &GameState) -> String {
     let built = state.city_tiles.iter().flatten().count()
         + state.farm_tiles.iter().flatten().count();
     let flipped = state.city_tiles.iter().flatten().filter(|t| t.flipped).count()
@@ -110,7 +109,7 @@ pub fn board_state(state: &GameState<impl Rng>) -> String {
     )
 }
 
-pub fn merchant_state(state: &GameState<impl Rng>) -> String {
+pub fn merchant_state(state: &GameState) -> String {
     state
         .merchants
         .iter()
@@ -144,7 +143,7 @@ pub fn mv_card_index(mv: &Move) -> usize {
     }
 }
 
-pub fn move_detail(state: &GameState<impl Rng>, mv: &Move) -> String {
+pub fn move_detail(state: &GameState, mv: &Move) -> String {
     let pid = state.current_player_id();
     let card = state.players[pid].hand.get(mv_card_index(mv));
     let card_name = card.map(card_label).unwrap_or_else(|| "?".to_string());
@@ -264,7 +263,7 @@ pub fn move_detail(state: &GameState<impl Rng>, mv: &Move) -> String {
 }
 
 fn crate_cost(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     ind: IndustryType,
     loc: Loc,
@@ -289,7 +288,7 @@ pub fn tile_label(loc: Loc, slot_index: usize, tile: &crate::state::BoardTile) -
     )
 }
 
-pub fn era_score_detail(state: &GameState<impl Rng>, pid: usize) -> String {
+pub fn era_score_detail(state: &GameState, pid: usize) -> String {
     let mut flipped_tiles = Vec::new();
     let mut industry_vp = 0u16;
     for (i, loc) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
@@ -375,7 +374,7 @@ pub fn era_score_detail(state: &GameState<impl Rng>, pid: usize) -> String {
     )
 }
 
-pub fn canal_cleanup_detail(state: &GameState<impl Rng>) -> String {
+pub fn canal_cleanup_detail(state: &GameState) -> String {
     let mut removed_links = Vec::new();
     for (id, link) in state.links.iter().enumerate() {
         let Some(link) = link else { continue };
@@ -474,7 +473,7 @@ pub fn fmt_stats_line(stats: &PStats) -> String {
     )
 }
 
-pub fn player_tiles_detail(state: &GameState<impl Rng>, pid: usize, flipped_only: bool) -> String {
+pub fn player_tiles_detail(state: &GameState, pid: usize, flipped_only: bool) -> String {
     let mut entries: Vec<String> = Vec::new();
     for (i, loc) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
         for slot_index in 0..city_slots(*loc).len() {

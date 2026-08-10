@@ -15,7 +15,6 @@ use crate::rules::{
     get_valid_second_rail_links, get_valid_sell_targets, valid_build_cards, BuildTarget, Move,
 };
 use crate::state::{city_slot_offsets, Card, GameState, PendingBonus};
-use rand::Rng;
 
 // Scoring weights (from aiPlayer.js).
 const VP_WEIGHT: f64 = 1.0;
@@ -56,7 +55,7 @@ pub struct EraProfile {
 }
 
 /// Phase of the current state, cut on `state.round` (fixed 4/4 per era).
-pub fn era_phase(state: &GameState<impl Rng>) -> Phase {
+pub fn era_phase(state: &GameState) -> Phase {
     match state.era {
         Era::Canal => {
             if state.round <= 4 {
@@ -78,7 +77,7 @@ pub fn era_phase(state: &GameState<impl Rng>) -> Phase {
 /// Strategy profile for the current state. Weight values reproduce the
 /// historical heuristic exactly (step 1a is behavior-preserving); strategy
 /// tuning happens in later steps by editing this table only.
-pub fn era_profile(state: &GameState<impl Rng>) -> EraProfile {
+pub fn era_profile(state: &GameState) -> EraProfile {
     let phase = era_phase(state);
     let rounds = estimate_rounds_remaining(state);
     let frac = (rounds / 8.0).clamp(0.0, 1.0);
@@ -130,7 +129,7 @@ pub struct Plan {
 /// (board-wide potential, not limited to the current network — the player can
 /// always network first, so 流派 is about what they CAN build, not what is
 /// reachable right now).
-fn vacant_board_slots(state: &GameState<impl Rng>) -> [usize; 6] {
+fn vacant_board_slots(state: &GameState) -> [usize; 6] {
     let mut counts = [0usize; 6];
     for loc in ALL_LOCATIONS.iter().take(CITY_COUNT) {
         let slots = city_slots(*loc);
@@ -153,7 +152,7 @@ fn vacant_board_slots(state: &GameState<impl Rng>) -> [usize; 6] {
 /// How strongly the player's hand supports building `ind`: location cards for
 /// cities with a vacant slot allowing it, plus matching industry/wild cards.
 /// Capped at 3 to keep it a mild tiebreaker.
-fn hand_support(state: &GameState<impl Rng>, pid: usize, ind: IndustryType) -> usize {
+fn hand_support(state: &GameState, pid: usize, ind: IndustryType) -> usize {
     let mut support = 0usize;
     let player = &state.players[pid];
     for card in &player.hand {
@@ -190,7 +189,7 @@ fn hand_support(state: &GameState<impl Rng>, pid: usize, ind: IndustryType) -> u
 /// Estimated flip probability of industry `ind` from a production-plan
 /// perspective (industry-level, not per-location): reachable merchant +
 /// available beer. Cheap; used only to rank industries for the plan.
-fn plan_flip_probability(state: &GameState<impl Rng>, pid: usize, ind: IndustryType) -> f64 {
+fn plan_flip_probability(state: &GameState, pid: usize, ind: IndustryType) -> f64 {
     if !ind.is_sellable() {
         return 0.0;
     }
@@ -212,7 +211,7 @@ fn plan_flip_probability(state: &GameState<impl Rng>, pid: usize, ind: IndustryT
 /// Compute the quantified production plan for `pid`: the sellable industry
 /// with the best combination of remaining tiles, board-wide build capacity,
 /// hand support and flip potential, plus the beer needed to sell them.
-pub fn compute_plan(state: &GameState<impl Rng>, pid: usize) -> Plan {
+pub fn compute_plan(state: &GameState, pid: usize) -> Plan {
     let slots = vacant_board_slots(state);
     let mut best_industry = IndustryType::CottonMill;
     let mut best_score = f64::NEG_INFINITY;
@@ -302,20 +301,20 @@ pub struct Decision {
 /// 2-ply lookahead, which is the strongest available policy; all external
 /// callers (Python BC teacher, `brass-engine` heuristic policy, replays) share
 /// this one implementation so there is no separate weaker heuristic variant.
-pub fn choose_action<R: Rng + Clone>(state: &mut GameState<R>) -> Decision {
+pub fn choose_action(state: &mut GameState) -> Decision {
     crate::search_ai::choose_action_2ply(state)
 }
 
 /// Best move per action type (the 1-ply candidate set). Used both by
 /// `choose_action` and by the 2-ply lookahead in search_ai.
-pub fn candidate_actions<R: Rng + Clone>(state: &mut GameState<R>) -> Vec<Decision> {
+pub fn candidate_actions(state: &mut GameState) -> Vec<Decision> {
     candidate_actions_k(state, 1)
 }
 
 /// Top-K candidates per action type, for MCTS to get a wider prior.
 /// Build and Network get up to `k` candidates each; other action types keep
 /// their single best (develop/sell/loan/scout/pass).
-pub fn candidate_actions_k<R: Rng + Clone>(state: &mut GameState<R>, k: usize) -> Vec<Decision> {
+pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     let pid = state.current_player_id();
 
     if let Some(PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {
@@ -359,7 +358,7 @@ pub fn candidate_actions_k<R: Rng + Clone>(state: &mut GameState<R>, k: usize) -
 }
 
 /// Fallback "pass" decision (safe even on an empty hand).
-pub fn pass_decision(state: &GameState<impl Rng>) -> Decision {
+pub fn pass_decision(state: &GameState) -> Decision {
     let card_index = pick_any_card(state, state.current_player_id()).unwrap_or(0);
     Decision {
         mv: Move::Pass { card_index },
@@ -367,7 +366,7 @@ pub fn pass_decision(state: &GameState<impl Rng>) -> Decision {
     }
 }
 
-fn score_pending_free_develop(state: &GameState<impl Rng>, pid: usize, count: u8) -> Option<Decision> {
+fn score_pending_free_develop(state: &GameState, pid: usize, count: u8) -> Option<Decision> {
     let mut types = state.players[pid].developable_types();
     if BAN_DEVELOP_IRON_LV2_PLUS {
         types.retain(|(ind, tile)| !(*ind == IndustryType::IronWorks && tile.level >= 2));
@@ -430,7 +429,7 @@ fn score_pending_free_develop(state: &GameState<impl Rng>, pid: usize, count: u8
 /// Combines accumulated VP + income stream + cash with the player's best
 /// available move score (1-ply), which reflects actionable potential better
 /// than a pure board snapshot.
-pub(crate) fn evaluate_position(state: &GameState<impl Rng>, pid: usize) -> f64 {
+pub(crate) fn evaluate_position(state: &GameState, pid: usize) -> f64 {
     let p = &state.players[pid];
     let mut value = 0.0;
 
@@ -474,7 +473,7 @@ pub(crate) fn evaluate_position(state: &GameState<impl Rng>, pid: usize) -> f64 
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
+pub(crate) fn estimate_rounds_remaining(state: &GameState) -> f64 {
     // Unplayed cards = deck + all hands. Each action spends one card, and a
     // round is actions_per_turn actions per player. The era ends only when the
     // deck AND every hand are exhausted, so using deck length alone badly
@@ -486,17 +485,17 @@ pub(crate) fn estimate_rounds_remaining(state: &GameState<impl Rng>) -> f64 {
     (total / actions_per_round).clamp(1.0, 8.0)
 }
 
-fn money_weight(state: &GameState<impl Rng>) -> f64 {
+fn money_weight(state: &GameState) -> f64 {
     era_profile(state).money_w
 }
 
-pub(crate) fn income_weight(state: &GameState<impl Rng>) -> f64 {
+pub(crate) fn income_weight(state: &GameState) -> f64 {
     era_profile(state).income_w
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn vp_equivalent(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     vp: f64,
     income: f64,
     money: f64,
@@ -520,7 +519,7 @@ struct MarketSale {
     flips: bool,
 }
 
-fn simulate_market_sale(state: &GameState<impl Rng>, is_coal: bool, cubes: u8) -> MarketSale {
+fn simulate_market_sale(state: &GameState, is_coal: bool, cubes: u8) -> MarketSale {
     let (prices, market) = if is_coal {
         (crate::map::COAL_MARKET_PRICES.as_slice(), state.coal_market)
     } else {
@@ -549,7 +548,7 @@ fn simulate_market_sale(state: &GameState<impl Rng>, is_coal: bool, cubes: u8) -
 /// already-unflipped sellable tiles in that pool take their share — the new
 /// tile is at the back of the queue. 1.0 = beer to spare; ~0 = every existing
 /// tile already claims the beer, so the marginal tile can't sell this era.
-fn sell_saturation(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> f64 {
+fn sell_saturation(state: &GameState, pid: usize, loc: Loc) -> f64 {
     let connected = connected_locations(state, loc);
     let supply = find_beer_sources(state, loc, pid, &[]).len() as f64
         + state
@@ -575,7 +574,7 @@ fn sell_saturation(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> f64 {
 }
 
 fn estimate_flip_probability(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     ind: IndustryType,
     city_id: Loc,
@@ -702,7 +701,7 @@ fn estimate_flip_probability(
 }
 
 /// True if the player holds a card that can build `ind` (industry or wild).
-fn player_has_buildable_card(state: &GameState<impl Rng>, pid: usize, ind: IndustryType) -> bool {
+fn player_has_buildable_card(state: &GameState, pid: usize, ind: IndustryType) -> bool {
     let player = &state.players[pid];
     player.hand.iter().any(|c| {
         matches!(c, Card::Industry { .. } if c.is_industry(ind))
@@ -710,7 +709,7 @@ fn player_has_buildable_card(state: &GameState<impl Rng>, pid: usize, ind: Indus
     })
 }
 
-fn player_owns_link_touching(state: &GameState<impl Rng>, pid: usize, city_id: Loc) -> bool {
+fn player_owns_link_touching(state: &GameState, pid: usize, city_id: Loc) -> bool {
     connections().iter().any(|c| {
         if let Some(l) = &state.links[c.id] {
             l.player == pid && (c.a == city_id || c.b == city_id)
@@ -720,14 +719,14 @@ fn player_owns_link_touching(state: &GameState<impl Rng>, pid: usize, city_id: L
     })
 }
 
-fn count_new_unbuilt_neighbor_connections(state: &GameState<impl Rng>, city_id: Loc) -> usize {
+fn count_new_unbuilt_neighbor_connections(state: &GameState, city_id: Loc) -> usize {
     connections()
         .iter()
         .filter(|c| state.links[c.id].is_none() && (c.a == city_id || c.b == city_id))
         .count()
 }
 
-fn own_brewery_stats(state: &GameState<impl Rng>, pid: usize) -> (usize, usize) {
+fn own_brewery_stats(state: &GameState, pid: usize) -> (usize, usize) {
     let mut barrels = 0usize;
     let mut flipped = 0usize;
     for tile in state.city_tiles.iter().flatten() {
@@ -750,7 +749,7 @@ fn own_brewery_stats(state: &GameState<impl Rng>, pid: usize) -> (usize, usize) 
 }
 
 /// Can `pid` reach a merchant barrel (any accepted industry) from `loc`?
-fn beer_barrels_reachable(state: &GameState<impl Rng>, loc: Loc) -> bool {    let connected = connected_locations(state, loc);
+fn beer_barrels_reachable(state: &GameState, loc: Loc) -> bool {    let connected = connected_locations(state, loc);
     state
         .merchants
         .iter()
@@ -758,7 +757,7 @@ fn beer_barrels_reachable(state: &GameState<impl Rng>, loc: Loc) -> bool {    le
 }
 
 /// Number of beer barrels the player currently holds (unflipped breweries).
-fn owned_beer_barrels(state: &GameState<impl Rng>, pid: usize) -> usize {
+fn owned_beer_barrels(state: &GameState, pid: usize) -> usize {
     state
         .city_tiles
         .iter()
@@ -770,7 +769,7 @@ fn owned_beer_barrels(state: &GameState<impl Rng>, pid: usize) -> usize {
 
 /// Total beer barrels needed to sell ALL of the player's unflipped sellable
 /// tiles. Extra barrels beyond this (plus a rail-network buffer) are wasted.
-fn sellable_beer_demand(state: &GameState<impl Rng>, pid: usize) -> usize {
+fn sellable_beer_demand(state: &GameState, pid: usize) -> usize {
     state
         .city_tiles
         .iter()
@@ -785,7 +784,7 @@ fn sellable_beer_demand(state: &GameState<impl Rng>, pid: usize) -> usize {
 /// opponent resources is "free riding": it costs nothing extra and flips their
 /// tile, keeping the shared resource pool cheap for everyone. A high ratio
 /// means the build is cheap to run; a low one forces paying market price.
-fn resource_source_ratio(state: &GameState<impl Rng>, cand: &BuildTarget) -> f64 {
+fn resource_source_ratio(state: &GameState, cand: &BuildTarget) -> f64 {
     let needed = cand.cost_coal as f64 + cand.cost_iron as f64;
     if needed <= 0.0 {
         return 1.0;
@@ -814,7 +813,7 @@ fn resource_source_ratio(state: &GameState<impl Rng>, cand: &BuildTarget) -> f64
 
 /// Can `pid` sell a tile of this industry at `loc` right now (reachable
 /// merchant accepting it + beer available to fuel the sale)?
-fn immediate_sellable(state: &GameState<impl Rng>, pid: usize, ind: IndustryType, loc: Loc) -> bool {
+fn immediate_sellable(state: &GameState, pid: usize, ind: IndustryType, loc: Loc) -> bool {
     if !ind.is_sellable() {
         return false;
     }
@@ -830,7 +829,7 @@ fn immediate_sellable(state: &GameState<impl Rng>, pid: usize, ind: IndustryType
 }
 
 fn score_build_candidate(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     cand: &BuildTarget,
     plan: &Plan,
@@ -1143,7 +1142,7 @@ fn score_build_candidate(
     score
 }
 
-fn pick_build_card(state: &GameState<impl Rng>, pid: usize, cand: &BuildTarget) -> Option<usize> {
+fn pick_build_card(state: &GameState, pid: usize, cand: &BuildTarget) -> Option<usize> {
     let player = &state.players[pid];
     let indices = valid_build_cards(state, player, pid, cand.loc, cand.ind);
     // Prefer a non-wild matching card over a wild one.
@@ -1157,7 +1156,7 @@ fn pick_build_card(state: &GameState<impl Rng>, pid: usize, cand: &BuildTarget) 
 
 /// Top-K build candidates by 1-ply score. Used by MCTS to get a wider prior.
 pub(crate) fn score_top_builds(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     k: usize,
     plan: &Plan,
@@ -1206,7 +1205,7 @@ pub(crate) fn score_top_builds(
 // ---------------------------------------------------------------------------
 
 fn count_hand_cards_newly_in_network(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     cand_cities: &[Loc; 2],
 ) -> f64 {
@@ -1224,7 +1223,7 @@ fn count_hand_cards_newly_in_network(
     count
 }
 
-fn connects_to_new_merchant(_state: &GameState<impl Rng>, cand_cities: &[Loc; 2]) -> bool {
+fn connects_to_new_merchant(_state: &GameState, cand_cities: &[Loc; 2]) -> bool {
     cand_cities.iter().any(|c| c.is_merchant())
 }
 
@@ -1233,7 +1232,7 @@ fn coal_effective_price(src: &crate::graph::CoalSource) -> i32 {
 }
 
 fn cheapest_connection_coal_source(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     conn_id: usize,
 ) -> Option<crate::graph::CoalSource> {
     let conn = &connections()[conn_id];
@@ -1243,7 +1242,7 @@ fn cheapest_connection_coal_source(
         .min_by_key(coal_effective_price)
 }
 
-fn estimated_connection_coal_cost(state: &GameState<impl Rng>, conn_id: usize) -> i32 {
+fn estimated_connection_coal_cost(state: &GameState, conn_id: usize) -> i32 {
     cheapest_connection_coal_source(state, conn_id)
         .map(|s| coal_effective_price(&s))
         .unwrap_or(crate::map::COAL_EMPTY_PRICE as i32)
@@ -1253,7 +1252,7 @@ fn estimated_connection_coal_cost(state: &GameState<impl Rng>, conn_id: usize) -
 /// land in the two cities this link connects (vacant slots + remaining tiles),
 /// weighted by whether they can actually place there. Dense industrial hubs
 /// are worth racing for in the rail era.
-fn link_vp_potential(state: &GameState<impl Rng>, pid: usize, cities: &[Loc; 2]) -> f64 {
+fn link_vp_potential(state: &GameState, pid: usize, cities: &[Loc; 2]) -> f64 {
     let mut total = 0.0f64;
     for loc in cities {
         if !loc.is_city() {
@@ -1286,7 +1285,7 @@ fn link_vp_potential(state: &GameState<impl Rng>, pid: usize, cities: &[Loc; 2])
     total
 }
 
-fn immediate_link_icons_at(state: &GameState<impl Rng>, loc: Loc) -> f64 {
+fn immediate_link_icons_at(state: &GameState, loc: Loc) -> f64 {
     if loc.is_merchant() {
         return 2.0;
     }
@@ -1311,7 +1310,7 @@ fn immediate_link_icons_at(state: &GameState<impl Rng>, loc: Loc) -> f64 {
     0.0
 }
 
-fn future_link_node_potential(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> f64 {
+fn future_link_node_potential(state: &GameState, pid: usize, loc: Loc) -> f64 {
     if !loc.is_city() {
         return 0.0;
     }
@@ -1344,7 +1343,7 @@ fn future_link_node_potential(state: &GameState<impl Rng>, pid: usize, loc: Loc)
 }
 
 fn potential_link_vps(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     conn_id: usize,
     cities: &[Loc; 2],
@@ -1362,7 +1361,7 @@ fn potential_link_vps(
 }
 
 fn score_network_candidate(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     conn_id: usize,
     cost: i32,
@@ -1515,14 +1514,14 @@ fn score_network_candidate(
     score
 }
 
-fn pick_any_card(state: &GameState<impl Rng>, pid: usize) -> Option<usize> {
+fn pick_any_card(state: &GameState, pid: usize) -> Option<usize> {
     let hand = &state.players[pid].hand;
     (0..hand.len()).find(|_| true)
 }
 
 /// Top-K single network candidates by 1-ply score.
 pub(crate) fn score_top_networks(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     k: usize,
     plan: &Plan,
@@ -1583,7 +1582,7 @@ pub(crate) fn score_top_networks(
 }
 
 fn score_best_network_double(
-    state: &mut GameState<impl Rng>,
+    state: &mut GameState,
     pid: usize,
     plan: &Plan,
 ) -> Option<Decision> {
@@ -1696,7 +1695,7 @@ fn score_best_network_double(
 // DEVELOP
 // ---------------------------------------------------------------------------
 
-fn score_develop_plan(state: &GameState<impl Rng>, pid: usize, plan: &Plan) -> Option<Decision> {
+fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Decision> {
     if !can_develop(state, pid) {
         return None;
     }
@@ -1853,7 +1852,7 @@ fn score_develop_plan(state: &GameState<impl Rng>, pid: usize, plan: &Plan) -> O
 // ---------------------------------------------------------------------------
 
 fn best_merchant_beer_bonus(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     merchant_indices: &[usize],
 ) -> f64 {
     let mut best = 0.0f64;
@@ -1870,7 +1869,7 @@ fn best_merchant_beer_bonus(
     best
 }
 
-fn merchant_bonus_value(state: &GameState<impl Rng>, loc: Loc) -> f64 {
+fn merchant_bonus_value(state: &GameState, loc: Loc) -> f64 {
     for def in crate::map::merchant_defs() {
         if def.loc == loc {
             return match def.bonus {
@@ -1886,7 +1885,7 @@ fn merchant_bonus_value(state: &GameState<impl Rng>, loc: Loc) -> f64 {
     0.0
 }
 
-fn sell_route_value(state: &GameState<impl Rng>, route: &crate::rules::SellRoute) -> f64 {
+fn sell_route_value(state: &GameState, route: &crate::rules::SellRoute) -> f64 {
     if route.use_merchant_beer {
         merchant_bonus_value(state, state.merchants[route.merchant_index].loc)
     } else {
@@ -1894,8 +1893,8 @@ fn sell_route_value(state: &GameState<impl Rng>, route: &crate::rules::SellRoute
     }
 }
 
-fn sell_plan_executes_all<R: Rng + Clone>(
-    state: &GameState<R>,
+fn sell_plan_executes_all(
+    state: &GameState,
     pid: usize,
     keys: &[usize],
     merchant_indices: &[usize],
@@ -1924,7 +1923,7 @@ fn sell_plan_executes_all<R: Rng + Clone>(
     })
 }
 
-fn score_sell_plan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<Decision> {
+fn score_sell_plan(state: &GameState, pid: usize) -> Option<Decision> {
     let targets = get_valid_sell_targets(state, pid);
     if targets.is_empty() {
         return None;
@@ -2076,7 +2075,7 @@ fn score_sell_plan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<D
 // LOAN
 // ---------------------------------------------------------------------------
 
-fn score_loan_result<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<Decision> {
+fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
     if !state.can_take_loan(pid) {
         return None;
     }
@@ -2195,7 +2194,7 @@ fn score_loan_result<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option
     })
 }
 
-fn best_same_turn_after_loan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -> Option<f64> {
+fn best_same_turn_after_loan(state: &GameState, pid: usize) -> Option<f64> {
     let card_index = pick_any_card(state, pid)?;
     let mut sim = state.clone();
     crate::rules::apply_move(&mut sim, &Move::Loan { card_index }).ok()?;
@@ -2217,7 +2216,7 @@ fn best_same_turn_after_loan<R: Rng + Clone>(state: &GameState<R>, pid: usize) -
 
 /// Best build score the player could afford within a cash budget.
 fn best_affordable_build_score(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     pid: usize,
     budget: f64,
     plan: &Plan,
@@ -2243,7 +2242,7 @@ fn best_affordable_build_score(
 // SCOUT
 // ---------------------------------------------------------------------------
 
-fn card_usefulness(state: &GameState<impl Rng>, pid: usize, card: &Card) -> f64 {
+fn card_usefulness(state: &GameState, pid: usize, card: &Card) -> f64 {
     match card {
         Card::WildLocation | Card::WildIndustry => 5.0,
         Card::Location(loc) => {
@@ -2278,7 +2277,7 @@ fn card_usefulness(state: &GameState<impl Rng>, pid: usize, card: &Card) -> f64 
     }
 }
 
-fn score_scout_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> {
+fn score_scout_plan(state: &GameState, pid: usize) -> Option<Decision> {
     if !can_scout(state, pid) {
         return None;
     }
@@ -2312,7 +2311,7 @@ fn score_scout_plan(state: &GameState<impl Rng>, pid: usize) -> Option<Decision>
 // PASS
 // ---------------------------------------------------------------------------
 
-fn score_pass_result(state: &GameState<impl Rng>, pid: usize) -> Option<Decision> {
+fn score_pass_result(state: &GameState, pid: usize) -> Option<Decision> {
     let card_index = pick_any_card(state, pid).unwrap_or(0);
     Some(Decision {
         mv: Move::Pass { card_index },
@@ -2322,7 +2321,7 @@ fn score_pass_result(state: &GameState<impl Rng>, pid: usize) -> Option<Decision
 
 // --- temporary debug helpers ------------------------------------------------
 pub fn debug_flip(
-    state: &GameState<impl rand::Rng>,
+    state: &GameState,
     pid: usize,
     ind: IndustryType,
     loc: Loc,
@@ -2331,7 +2330,7 @@ pub fn debug_flip(
 }
 
 pub fn debug_market_adjust(
-    state: &GameState<impl rand::Rng>,
+    state: &GameState,
     ind: IndustryType,
     loc: Loc,
     cubes: u8,

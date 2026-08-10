@@ -19,7 +19,6 @@ use crate::data::IndustryType;
 use crate::map::{connections, Loc, ALL_LOCATIONS, CITY_COUNT, MAX_SLOTS_PER_CITY};
 use crate::rules::{legal_slot_moves, Move};
 use crate::state::GameState;
-use rand::Rng;
 use std::sync::OnceLock;
 
 pub const INDUSTRY_COUNT: usize = 6;
@@ -199,7 +198,7 @@ pub fn move_slots(mv: &Move) -> Vec<usize> {
 /// The set of policy slots reachable by at least one legal move (the mask).
 /// Uses the slot-level generator (one representative per slot) — the same
 /// coverage as `legal_moves` de-duplicated, but far cheaper.
-pub fn legal_mask(state: &mut GameState<impl Rng + Clone>) -> Vec<usize> {
+pub fn legal_mask(state: &mut GameState) -> Vec<usize> {
     let mut seen = std::collections::HashSet::new();
     for sm in legal_slot_moves(state) {
         seen.insert(sm.slot);

@@ -3,7 +3,6 @@
 use crate::data::Era;
 use crate::map::*;
 use crate::state::GameState;
-use rand::Rng;
 
 pub struct ScoreBreakdown {
     pub player_id: usize,
@@ -12,7 +11,7 @@ pub struct ScoreBreakdown {
     pub total_vp: u16,
 }
 
-pub fn score_era(state: &mut GameState<impl Rng>) -> Vec<ScoreBreakdown> {
+pub fn score_era(state: &mut GameState) -> Vec<ScoreBreakdown> {
     let n = state.player_count();
     let mut scores: Vec<ScoreBreakdown> = (0..n)
         .map(|i| ScoreBreakdown {
@@ -88,7 +87,7 @@ pub fn score_era(state: &mut GameState<impl Rng>) -> Vec<ScoreBreakdown> {
 }
 
 /// Final result: ranks players by VP (ties broken by income level, then cash).
-pub fn final_ranking(state: &GameState<impl Rng>) -> Vec<usize> {
+pub fn final_ranking(state: &GameState) -> Vec<usize> {
     let mut order: Vec<usize> = (0..state.player_count()).collect();
     order.sort_by(|a, b| {
         let pa = &state.players[*a];

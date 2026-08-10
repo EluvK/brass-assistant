@@ -25,6 +25,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::Py;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 use rand::Rng;
 
 pub const MAX_PLAYERS: usize = 4;
@@ -124,7 +125,7 @@ enum RequestKind {
 
 struct Request {
     kind: RequestKind,
-    state: GameState<StdRng>,
+    state: GameState,
 }
 
 enum ParkedOutcome {
@@ -143,7 +144,7 @@ struct BatchResult {
 
 /// Run `sims` network-guided ISMCTS simulations from `state`.
 pub fn search_net(
-    state: &GameState<StdRng>,
+    state: &GameState,
     cfg: &NnMctsConfig,
     sims: usize,
     add_root_noise: bool,
@@ -155,8 +156,8 @@ pub fn search_net(
 
     let mut arena: Vec<Node> = vec![Node::new(root_pid)];
 
-    // Independent simulation RNG derived from (but not consuming) state.rng.
-    let mut sim_rng = state.rng.clone();
+    // Independent simulation RNG (state.rng is setup-only and private).
+    let mut sim_rng = StdRng::from_entropy();
     let mut sims_left = sims;
 
     let mut requests: Vec<Request> = Vec::new();
@@ -169,7 +170,6 @@ pub fn search_net(
     // be visited.
     {
         let mut work = crate::mcts_ai::determinize(state, &mut sim_rng);
-        work.rng = sim_rng.clone();
         let mut root_reqs = Vec::new();
         let mut root_by_node = std::collections::HashMap::new();
         match descend(
@@ -213,8 +213,6 @@ pub fn search_net(
             sims_left -= 1;
             let _ = sim_rng.r#gen::<u64>(); // vary determinization per simulation
             let mut work = crate::mcts_ai::determinize(state, &mut sim_rng);
-            work.rng = sim_rng.clone();
-
             match descend(
                 &mut work,
                 &mut arena,
@@ -292,7 +290,7 @@ pub fn search_net(
 /// prevents the whole wave from collapsing onto the max-prior child; values are
 /// exact once the wave flushes, so the final visit statistics are correct.
 fn descend(
-    work: &mut GameState<StdRng>,
+    work: &mut GameState,
     arena: &mut Vec<Node>,
     cfg: &NnMctsConfig,
     requests: &mut Vec<Request>,
@@ -400,7 +398,7 @@ fn descend(
 /// the value toward the first world; it is the standard batched-ISMCTS trade
 /// for avoiding one net call per sim.
 fn park(
-    work: &mut GameState<StdRng>,
+    work: &mut GameState,
     requests: &mut Vec<Request>,
     request_by_node: &mut std::collections::HashMap<usize, usize>,
     path: Vec<usize>,

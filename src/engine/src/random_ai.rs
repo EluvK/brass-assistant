@@ -3,20 +3,21 @@
 
 use crate::rules::{legal_moves, Move};
 use crate::state::GameState;
+use rand::rngs::StdRng;
 use rand::Rng;
 
-pub fn choose_random_move(state: &mut GameState<impl Rng + Clone>) -> Option<Move> {
+pub fn choose_random_move(state: &mut GameState, rng: &mut StdRng) -> Option<Move> {
     let moves = legal_moves(state);
     if moves.is_empty() {
         return None;
     }
-    let idx = state.rng.gen_range(0..moves.len());
+    let idx = rng.gen_range(0..moves.len());
     Some(moves[idx].clone())
 }
 
 /// Slightly-smart random: prefers non-Pass actions so games actually produce
 /// buildings/VPs. Useful as a sanity baseline (still essentially random).
-pub fn choose_random_action_first(state: &mut GameState<impl Rng + Clone>) -> Option<Move> {
+pub fn choose_random_action_first(state: &mut GameState, rng: &mut StdRng) -> Option<Move> {
     let moves = legal_moves(state);
     if moves.is_empty() {
         return None;
@@ -30,7 +31,6 @@ pub fn choose_random_action_first(state: &mut GameState<impl Rng + Clone>) -> Op
     } else {
         pass
     };
-    let idx = state.rng.gen_range(0..pool.len());
+    let idx = rng.gen_range(0..pool.len());
     Some(pool[idx].clone())
 }
-

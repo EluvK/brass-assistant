@@ -38,6 +38,8 @@ struct GameStats {
 fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameStats {
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
+    // RNG for the random baseline (state.rng is setup-only).
+    let mut rand_rng = rand::rngs::StdRng::from_entropy();
     let mut canal_events = 0u64;
     let mut stuck = false;
     let mut illegal_move = false;
@@ -82,11 +84,11 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
             } else if mcts_vs_heur {
                 Some(heuristic_ai::choose_action(&mut state).mv)
             } else {
-                choose_random_move(&mut state)
+                choose_random_move(&mut state, &mut rand_rng)
             }
         } else {
             match policy {
-                "random" => choose_random_move(&mut state),
+                "random" => choose_random_move(&mut state, &mut rand_rng),
                 "2ply" => Some(search_ai::choose_action_2ply(&mut state).mv),
                 "mcts" => {
                     let cfg = MctsConfig {

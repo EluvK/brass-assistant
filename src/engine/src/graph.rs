@@ -12,7 +12,6 @@
 use crate::data::IndustryType;
 use crate::map::{city_slots, connections, Loc};
 use crate::state::GameState;
-use rand::Rng;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -57,7 +56,7 @@ fn loc_connections() -> &'static [Vec<usize>] {
 
 /// Locations reachable from `start` by following ANY built link (regardless
 /// of owner). Includes `start` itself and brewery farms passed through.
-pub fn connected_locations(state: &GameState<impl Rng>, start: Loc) -> Vec<Loc> {
+pub fn connected_locations(state: &GameState, start: Loc) -> Vec<Loc> {
     let mut visited: Vec<Loc> = Vec::with_capacity(LOC_COUNT);
     let mut mask: u32 = 1u32 << (start as u8);
     let mut queue = [Loc::Belper; LOC_COUNT];
@@ -87,7 +86,7 @@ pub fn connected_locations(state: &GameState<impl Rng>, start: Loc) -> Vec<Loc> 
 }
 
 /// Is `loc` in player `pid`'s own network (own tile there, or own link touching)?
-pub fn is_in_network(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> bool {
+pub fn is_in_network(state: &GameState, pid: usize, loc: Loc) -> bool {
     // Own industry at the location
     if loc.is_city() {
         for slot in 0..city_slots(loc).len() {
@@ -117,7 +116,7 @@ pub fn is_in_network(state: &GameState<impl Rng>, pid: usize, loc: Loc) -> bool 
 }
 
 /// Does the player have any tile or link on the board?
-pub fn player_has_presence(state: &GameState<impl Rng>, pid: usize) -> bool {
+pub fn player_has_presence(state: &GameState, pid: usize) -> bool {
     if state
         .city_tiles
         .iter()
@@ -173,7 +172,7 @@ pub struct CoalSource {
 
 /// Find coal sources for `loc`, nearest mines first, then market (only if a
 /// merchant is reachable). One entry per cube.
-pub fn find_coal_sources(state: &GameState<impl Rng>, loc: Loc) -> Vec<CoalSource> {
+pub fn find_coal_sources(state: &GameState, loc: Loc) -> Vec<CoalSource> {
     let mut sources = Vec::new();
     let mut mask: u32 = 1u32 << (loc as u8);
     let mut queue = [Loc::Belper; LOC_COUNT];
@@ -257,7 +256,7 @@ pub struct IronSource {
 }
 
 /// Iron needs no connection: any unflipped iron works on the board, then market.
-pub fn find_iron_sources(state: &GameState<impl Rng>) -> Vec<IronSource> {
+pub fn find_iron_sources(state: &GameState) -> Vec<IronSource> {
     let mut sources = Vec::new();
     for (k, tile) in state.city_tiles.iter().enumerate() {
         if let Some(t) = tile {
@@ -307,7 +306,7 @@ pub struct BeerSource {
 /// Find beer for a sale at `loc`. Own breweries anywhere; opponent breweries
 /// connected to `loc`; merchant beer only from `allowed_merchants` indices.
 pub fn find_beer_sources(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     loc: Loc,
     player_id: usize,
     allowed_merchants: &[usize],
@@ -417,7 +416,7 @@ fn farm_index(loc: Loc) -> Option<usize> {
 
 /// Cheapest coal source reachable from either endpoint of a connection.
 pub fn cheapest_coal_for_connection(
-    state: &GameState<impl Rng>,
+    state: &GameState,
     conn: &crate::map::Connection,
 ) -> Option<CoalSource> {
     let mut best: Option<CoalSource> = None;
@@ -449,7 +448,7 @@ pub fn cheapest_coal_for_connection(
 
 /// Is the resource (coal or iron) fully depleted everywhere (board + market)?
 /// Only meaningful for coal mines / iron works (overbuilding condition).
-pub fn is_resource_depleted(state: &GameState<impl Rng>, ind: IndustryType) -> bool {
+pub fn is_resource_depleted(state: &GameState, ind: IndustryType) -> bool {
     match ind {
         IndustryType::CoalMine => {
             if state.coal_market > 0 {

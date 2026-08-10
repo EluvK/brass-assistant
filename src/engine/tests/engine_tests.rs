@@ -10,12 +10,12 @@ use brass_engine::state::{BoardTile, Card, GameState};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-fn setup(players: usize) -> GameState<StdRng> {
+fn setup(players: usize) -> GameState {
     let rng = StdRng::seed_from_u64(42);
     GameState::new(rng, players)
 }
 
-fn setup_clean_rail_state(players: usize) -> GameState<StdRng> {
+fn setup_clean_rail_state(players: usize) -> GameState {
     let mut state = setup(players);
     state.era = Era::Rail;
     state.round = 1;
@@ -39,7 +39,7 @@ fn setup_clean_rail_state(players: usize) -> GameState<StdRng> {
     state
 }
 
-fn place_test_coal_mine(state: &mut GameState<StdRng>, owner: usize) {
+fn place_test_coal_mine(state: &mut GameState, owner: usize) {
     state.place_tile(
         Loc::Cannock,
         0,
@@ -53,7 +53,7 @@ fn place_test_coal_mine(state: &mut GameState<StdRng>, owner: usize) {
     );
 }
 
-fn place_test_brewery(state: &mut GameState<StdRng>, loc: Loc, owner: usize, cubes: u8) {
+fn place_test_brewery(state: &mut GameState, loc: Loc, owner: usize, cubes: u8) {
     state.place_tile(
         loc,
         0,
@@ -67,7 +67,7 @@ fn place_test_brewery(state: &mut GameState<StdRng>, loc: Loc, owner: usize, cub
     );
 }
 
-fn test_coal_from_cannock(state: &GameState<StdRng>) -> brass_engine::graph::CoalSource {
+fn test_coal_from_cannock(state: &GameState) -> brass_engine::graph::CoalSource {
     let key = state.city_slot_key(Loc::Cannock, 0).expect("cannock coal slot");
     brass_engine::graph::CoalSource {
         kind: brass_engine::graph::CoalSourceKind::Mine,
@@ -77,7 +77,7 @@ fn test_coal_from_cannock(state: &GameState<StdRng>) -> brass_engine::graph::Coa
     }
 }
 
-fn place_test_presence_tile(state: &mut GameState<StdRng>, loc: Loc, owner: usize) {
+fn place_test_presence_tile(state: &mut GameState, loc: Loc, owner: usize) {
     state.place_tile(
         loc,
         0,
@@ -682,7 +682,7 @@ fn mcts_returns_a_legal_pass_fallback_on_empty_hand() {
 #[test]
 fn mcts_determinize_keeps_own_hand_and_hand_size() {
     use brass_engine::mcts_ai::MctsConfig;
-    let mut state = setup(4);
+    let state = setup(4);
     let pid = state.current_player_id();
     let own = state.players[pid].hand.clone();
     let mut rng = StdRng::seed_from_u64(123);
@@ -1088,7 +1088,7 @@ fn legal_slot_moves_cover_same_slots_as_legal_moves() {
         checked += 1;
 
         // Advance with a random legal move.
-        match random_ai::choose_random_move(&mut state) {
+        match random_ai::choose_random_move(&mut state, &mut StdRng::from_entropy()) {
             Some(mv) => {
                 let _ = brass_engine::rules::apply_move(&mut state, &mv);
                 let tr = advance_turn(&mut state);

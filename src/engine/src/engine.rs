@@ -7,7 +7,6 @@ use crate::data::Era;
 use crate::map::*;
 use crate::rules::Move;
 use crate::state::GameState;
-use rand::Rng;
 
 pub enum TurnResult {
     Continue,
@@ -15,7 +14,7 @@ pub enum TurnResult {
     EndGame,
 }
 
-pub fn advance_turn(state: &mut GameState<impl Rng>) -> TurnResult {
+pub fn advance_turn(state: &mut GameState) -> TurnResult {
     if state.pending_bonus.is_some() {
         return TurnResult::Continue;
     }
@@ -69,7 +68,7 @@ pub fn advance_turn(state: &mut GameState<impl Rng>) -> TurnResult {
     TurnResult::Continue
 }
 
-fn skip_empty_hand_players(state: &mut GameState<impl Rng>) -> Option<TurnResult> {
+fn skip_empty_hand_players(state: &mut GameState) -> Option<TurnResult> {
     let mut safety = 0;
     while {
         let pid = state.current_player_id();
@@ -89,7 +88,7 @@ fn skip_empty_hand_players(state: &mut GameState<impl Rng>) -> Option<TurnResult
     None
 }
 
-pub fn end_round(state: &mut GameState<impl Rng>) -> TurnResult {
+pub fn end_round(state: &mut GameState) -> TurnResult {
     let all_hands_empty = state.players.iter().all(|p| p.hand.is_empty());
     let era_ending = all_hands_empty && state.deck.is_empty();
     let is_final_round = era_ending && state.era == Era::Rail;
@@ -138,7 +137,7 @@ pub fn end_round(state: &mut GameState<impl Rng>) -> TurnResult {
     TurnResult::Continue
 }
 
-fn resolve_shortfall(state: &mut GameState<impl Rng>, pid: usize) {
+fn resolve_shortfall(state: &mut GameState, pid: usize) {
     // Give up unflipped low-VP tiles first.
     let mut candidates: Vec<(usize, bool)> = Vec::new(); // (key, is_farm)
     for (k, t) in state.city_tiles.iter().enumerate() {
@@ -191,7 +190,7 @@ fn resolve_shortfall(state: &mut GameState<impl Rng>, pid: usize) {
     }
 }
 
-pub fn end_canal_era(state: &mut GameState<impl Rng>) {
+pub fn end_canal_era(state: &mut GameState) {
     // Score canal era, remove canal links, remove Level I tiles, reshuffle.
     crate::scoring::score_era(state);
 
@@ -257,24 +256,24 @@ pub fn end_canal_era(state: &mut GameState<impl Rng>) {
     state.deal_cards();
 }
 
-pub fn end_game(state: &mut GameState<impl Rng>) {
+pub fn end_game(state: &mut GameState) {
     crate::scoring::score_era(state);
     state.game_over = true;
 }
 
 /// Apply a move to the current player, then advance the turn.
 /// Returns the result of the action + turn advancement.
-pub fn step(state: &mut GameState<impl Rng>, mv: &Move) -> (Result<String, String>, TurnResult) {
+pub fn step(state: &mut GameState, mv: &Move) -> (Result<String, String>, TurnResult) {
     let result = crate::rules::apply_move(state, mv);
     let tr = advance_turn(state);
     (result, tr)
 }
 
 /// Force-pass for an empty-handed current player (no legal moves).
-pub fn force_pass(state: &mut GameState<impl Rng>) -> TurnResult {
+pub fn force_pass(state: &mut GameState) -> TurnResult {
     advance_turn(state)
 }
 
-pub fn is_game_over(state: &GameState<impl Rng>) -> bool {
+pub fn is_game_over(state: &GameState) -> bool {
     state.game_over
 }

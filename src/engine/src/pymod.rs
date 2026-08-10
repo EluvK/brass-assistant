@@ -30,7 +30,7 @@ use crate::mcts_ai;
 
 #[pyclass(name = "GameState")]
 pub struct PyGame {
-    state: GameState<StdRng>,
+    state: GameState,
 }
 
 #[pymethods]
@@ -351,9 +351,8 @@ impl PyGame {
     /// resulting state's RNG is seeded from the sampling stream (same pattern
     /// as `mcts_ai`), so subsequent draws vary per determinization.
     fn determinize(&self) -> Self {
-        let mut rng = self.state.rng.clone();
-        let mut state = mcts_ai::determinize(&self.state, &mut rng);
-        state.rng = rng.clone();
+        let mut rng = StdRng::from_entropy();
+        let state = mcts_ai::determinize(&self.state, &mut rng);
         PyGame { state }
     }
 

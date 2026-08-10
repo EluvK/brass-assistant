@@ -28,7 +28,6 @@ use crate::data::Era;
 use crate::heuristic_ai::estimate_rounds_remaining;
 use crate::map::ALL_LOCATIONS;
 use crate::state::{Card, GameState, PendingBonus};
-use rand::Rng;
 
 const LOC_COUNT: usize = ALL_LOCATIONS.len(); // 27
 
@@ -56,7 +55,7 @@ impl EncodedTensor {
     }
 }
 
-fn hand_bag(state: &GameState<impl Rng>, pid: usize) -> Vec<f32> {
+fn hand_bag(state: &GameState, pid: usize) -> Vec<f32> {
     let mut bag = vec![0.0f32; HAND_LEN];
     let hand = &state.players[pid].hand;
     let n = hand.len().max(1) as f32;
@@ -80,7 +79,7 @@ fn hand_bag(state: &GameState<impl Rng>, pid: usize) -> Vec<f32> {
     bag
 }
 
-fn global_vec(state: &GameState<impl Rng>, pid: usize) -> Vec<f32> {
+fn global_vec(state: &GameState, pid: usize) -> Vec<f32> {
     let mut g = vec![0.0f32; GLOBAL_LEN];
 
     g[0] = if state.era == Era::Rail { 1.0 } else { 0.0 };
@@ -126,7 +125,7 @@ fn global_vec(state: &GameState<impl Rng>, pid: usize) -> Vec<f32> {
     g
 }
 
-fn board_vec(state: &GameState<impl Rng>) -> Vec<f32> {
+fn board_vec(state: &GameState) -> Vec<f32> {
     let mut b = vec![0.0f32; BOARD_PLANES * BOARD_CELLS];
     let city_slots_count = crate::state::total_city_slots(); // 47
     for cell in 0..BOARD_CELLS {
@@ -156,7 +155,7 @@ fn board_vec(state: &GameState<impl Rng>) -> Vec<f32> {
     b
 }
 
-fn links_vec(state: &GameState<impl Rng>) -> Vec<f32> {
+fn links_vec(state: &GameState) -> Vec<f32> {
     let mut l = vec![0.0f32; LINK_PLANES * LINK_CELLS];
     for (id, link) in state.links.iter().enumerate().take(LINK_CELLS) {
         if let Some(link) = link {
@@ -176,7 +175,7 @@ fn links_vec(state: &GameState<impl Rng>) -> Vec<f32> {
 /// caller decides whether it equals the current player). Opponent hands are
 /// read from whatever is in the state (caller decides determinized vs belief);
 /// this encoder is agnostic to their origin.
-pub fn state_to_tensor(state: &GameState<impl Rng>, pid: usize) -> EncodedTensor {
+pub fn state_to_tensor(state: &GameState, pid: usize) -> EncodedTensor {
     let board = board_vec(state);
     let links = links_vec(state);
     let global = global_vec(state, pid);

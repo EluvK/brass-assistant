@@ -1,7 +1,7 @@
 use crate::data::{industry_tiles, CardType, Era, IndustryType, TileDef};
 use crate::map::*;
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::Rng;
 use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
@@ -223,8 +223,9 @@ impl Player {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub struct GameState<R: Rng> {
-    pub rng: R,
+pub struct GameState {
+    /// Only used during setup (deal/shuffle); engine logic is deterministic.
+    rng: StdRng,
     pub era: Era,
     pub round: u32,
     pub turn_order: Vec<usize>,
@@ -324,8 +325,8 @@ pub fn deck_composition(player_count: usize) -> Vec<Card> {
     cards
 }
 
-impl<R: Rng> GameState<R> {
-    pub fn new(rng: R, num_players: usize) -> Self {
+impl GameState {
+    pub fn new(rng: StdRng, num_players: usize) -> Self {
         assert!(num_players >= 2 && num_players <= 4, "2-4 players");
         let mut state = GameState {
             rng,

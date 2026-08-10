@@ -21,7 +21,7 @@ use rand::SeedableRng;
 use std::env;
 
 fn print_era_snapshot(
-    state: &GameState<impl rand::Rng>,
+    state: &GameState,
     era_name: &str,
     action_stats: &[replay_fmt::PStats],
 ) {
@@ -51,6 +51,8 @@ fn main() {
 
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
+    // RNG for the random baseline (state.rng is setup-only).
+    let mut rand_rng = rand::rngs::StdRng::from_entropy();
 
     let mut prev_round = state.round;
     let mut prev_era = state.era;
@@ -109,7 +111,7 @@ fn main() {
 
         let pid = state.current_player_id();
         let mv = match policy.as_str() {
-            "random" => random_ai::choose_random_move(&mut state)
+            "random" => random_ai::choose_random_move(&mut state, &mut rand_rng)
                 .unwrap_or_else(|| heuristic_ai::pass_decision(&state).mv),
             "mcts-vs-random" => {
                 let mcts_seat = (seed as usize) % players;
@@ -121,7 +123,7 @@ fn main() {
                     };
                     mcts_ai::choose_action_mcts(&mut state, &cfg).mv
                 } else {
-                    random_ai::choose_random_move(&mut state)
+                    random_ai::choose_random_move(&mut state, &mut rand_rng)
                         .unwrap_or_else(|| heuristic_ai::pass_decision(&state).mv)
                 }
             }

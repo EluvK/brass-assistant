@@ -384,7 +384,7 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::SeedableRng;
 
-    fn fresh_state(seed: u64, players: usize) -> GameState<StdRng> {
+    fn fresh_state(seed: u64, players: usize) -> GameState {
         GameState::new(StdRng::seed_from_u64(seed), players)
     }
 
