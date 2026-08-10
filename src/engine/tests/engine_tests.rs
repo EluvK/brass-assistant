@@ -36,6 +36,8 @@ fn setup_clean_rail_state(players: usize) -> GameState {
         player.canal_links = LINKS_PER_PLAYER;
         player.rail_links = LINKS_PER_PLAYER;
     }
+    // Direct board clears above bypass the cache hooks; resync.
+    state.rebuild_free_sources();
     state
 }
 
@@ -1198,4 +1200,208 @@ fn legal_moves_include_executable_multi_tile_sell() {
         .filter(|sm| matches!(&sm.mv, Move::Sell { keys, .. } if keys.len() >= 2))
         .count();
     assert!(slot_multi > 0, "slot-level generation must include multi-tile sell plans");
+}
+
+// ---------------------------------------------------------------------------
+// Market resource pricing: each cube costs its own market-slot price, so a
+// multi-cube purchase pays the ascending slot prices (not N x the cheapest).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn market_iron_multicube_purchase_pays_ascending_slot_prices() {
+    let mut state = setup(4);
+    // IRON_MARKET_PRICES = [1,1,2,2,3,3,4,4,5,5]. With 7 cubes they occupy
+    // slots 3..9 (prices 2,3,3,4,4,5): the two cheapest are £2 and £3, so a
+    // 2-iron market purchase must cost £5 — NOT 2x the cheapest (£4).
+    state.iron_market = 7;
+    let opts = brass_engine::rules::iron_source_options(&state, 2);
+    assert!(!opts.is_empty(), "expected legal 2-iron market selections");
+    for sel in &opts {
+        assert_eq!(sel.len(), 2);
+        let paid: i32 = sel.iter().filter(|s| !s.free).map(|s| s.price as i32).sum();
+        assert_eq!(paid, 5, "2-iron purchase must cost £2+£3, got £{paid}");
+    }
+}
+
+#[test]
+fn market_iron_even_market_two_cheapest_share_a_price_pair() {
+    let state = setup(4);
+    // With 8 cubes (initial) slots 2..9 hold prices 2,2,3,3,4,4,5,5; the two
+    // cheapest are £2+£2 = £4.
+    assert_eq!(state.iron_market, 8);
+    let opts = brass_engine::rules::iron_source_options(&state, 2);
+    assert!(!opts.is_empty(), "expected legal 2-iron market selections");
+    for sel in &opts {
+        assert_eq!(sel.len(), 2);
+        let paid: i32 = sel.iter().filter(|s| !s.free).map(|s| s.price as i32).sum();
+        assert_eq!(paid, 4, "full-market 2-iron purchase should cost £2+£2, got £{paid}");
+    }
+}
+
+#[test]
+fn market_coal_multicube_purchase_pays_ascending_slot_prices() {
+    let mut state = setup(4);
+    // COAL_MARKET_PRICES = [1,1,2,2,3,3,4,4,5,5,6,6,7,7]. With 5 cubes they
+    // occupy slots 9..13 (prices 5,6,6,7,7): a 2-coal market purchase costs
+    // £5+£6 = £11, NOT 2x £5 = £10. Gloucester is a merchant, so the market is
+    // reachable with no links built.
+    state.coal_market = 5;
+    let sources = brass_engine::graph::find_coal_sources(&state, Loc::Gloucester);
+    let market_prices: Vec<u8> = sources
+        .iter()
+        .filter(|s| !s.free)
+        .map(|s| s.price)
+        .collect();
+    assert_eq!(market_prices[0], 5, "cheapest market coal must be £5");
+    assert_eq!(market_prices[1], 6, "second-cheapest market coal must be £6");
+
+    let opts = brass_engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
+    assert!(!opts.is_empty(), "expected legal 2-coal market selections");
+    for sel in &opts {
+        assert_eq!(sel.len(), 2);
+        let paid: i32 = sel.iter().filter(|s| !s.free).map(|s| s.price as i32).sum();
+        assert_eq!(paid, 11, "2-coal purchase must cost £5+£6, got £{paid}");
+    }
+}
+
+#[test]
+fn empty_market_draws_from_general_supply_at_empty_price() {
+    let mut state = setup(4);
+    state.coal_market = 0;
+    let sources = brass_engine::graph::find_coal_sources(&state, Loc::Gloucester);
+    let market: Vec<u8> = sources
+        .iter()
+        .filter(|s| !s.free)
+        .map(|s| s.price)
+        .collect();
+    assert_eq!(market.len(), brass_engine::map::GENERAL_SUPPLY_CAP);
+    assert!(
+        market.iter().all(|&p| p == brass_engine::map::COAL_EMPTY_PRICE),
+        "empty market should only offer General Supply at the empty price"
+    );
+    // A 2-coal draw from an empty market is still legal at £8 + £8.
+    let opts = brass_engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
+    assert!(!opts.is_empty(), "expected General Supply 2-coal selections");
+    let paid: i32 = opts[0].iter().filter(|s| !s.free).map(|s| s.price as i32).sum();
+    assert_eq!(paid, 16, "2-coal from empty market must cost £8+£8");
+}
+
+fn place_test_iron_works(state: &mut GameState, owner: usize, cubes: u8) {
+    state.place_tile(
+        Loc::Derby,
+        2,
+        BoardTile {
+            player: owner,
+            ind: IndustryType::IronWorks,
+            def: industry_tiles(IndustryType::IronWorks)[0],
+            flipped: false,
+            resource_cubes: cubes,
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cached free-resource & connectivity: `GameState` maintains free coal/iron
+// sources and a lazily-rebuilt connected-component cache (no BFS on queries).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn coal_purchase_cost_is_free_first_then_slot_prices_then_general_supply() {
+    let mut state = setup(4);
+    place_test_coal_mine(&mut state, 0); // Cannock, 2 cubes
+    // No merchant reachable yet (no links): free coal only, paid shortfall is
+    // infeasible even though the mine is at the queried city itself.
+    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 2), Some(0));
+    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 3), None);
+
+    // Connect Cannock -> Walsall -> Birmingham -> Oxford (merchant), and
+    // Cannock -> Stafford, so the mine is reachable and a merchant is too.
+    let link = |p| Some(brass_engine::state::Link { player: p, is_canal: false });
+    state.links[17] = link(0); // Cannock-Walsall
+    state.links[8] = link(0); // Walsall-Birmingham
+    state.links[5] = link(0); // Birmingham-Oxford
+    state.links[15] = link(0); // Cannock-Stafford
+
+    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 2), Some(0));
+    // Free 2 + one market cube at the cheapest slot (£1, market has 13).
+    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 3), Some(1));
+
+    // Odd market (5 cubes => slots 5,6,6,7,7): 2 free + 2 market = £5+£6.
+    state.coal_market = 5;
+    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 4), Some(11));
+    // 2 free + 5 market + 1 General Supply at £8.
+    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 8), Some(31 + 8));
+}
+
+#[test]
+fn iron_purchase_cost_is_free_first_then_slot_prices_then_general_supply() {
+    let mut state = setup(4);
+    // Full market (8 cubes => slots 2,2,3,3,4,4,5,5): 2 iron = £2+£2.
+    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 2), 4);
+    // Odd market (7 cubes => slots 2,3,3,4,4,5): two cheapest are £2+£3.
+    state.iron_market = 7;
+    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 2), 5);
+    // Market exhausted then General Supply at £6: 8 slots sum to 28 + 2x£6.
+    state.iron_market = 8;
+    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 10), 28 + 12);
+
+    // Free-first: an unflipped iron works with 3 cubes covers the draw.
+    place_test_iron_works(&mut state, 0, 3);
+    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 3), 0);
+    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 4), 2); // one market cube £2
+}
+
+#[test]
+fn free_source_cache_tracks_placement_consume_and_era_end() {
+    let mut state = setup(4);
+    state.assert_caches_consistent();
+
+    place_test_coal_mine(&mut state, 0); // Cannock, 2 cubes
+    place_test_iron_works(&mut state, 1, 1);
+    state.assert_caches_consistent();
+
+    let coal_key = state.city_slot_key(Loc::Cannock, 0).unwrap();
+    state.consume_from_city(coal_key); // 2 -> 1, still free
+    state.assert_caches_consistent();
+    state.consume_from_city(coal_key); // 1 -> 0, flips, no longer free
+    state.assert_caches_consistent();
+
+    // Level-1 tiles (and all links) are removed at the canal-era end; the
+    // free-source cache must be rebuilt to empty.
+    end_canal_era(&mut state);
+    state.assert_caches_consistent();
+    let coal = brass_engine::graph::find_coal_sources(&state, Loc::Cannock);
+    assert!(
+        coal.iter().all(|s| !s.free),
+        "era end must drop the level-1 coal mine from free sources"
+    );
+    let iron = brass_engine::graph::find_iron_sources(&state);
+    assert!(iron.iter().all(|s| !s.free), "era end must drop the level-1 iron works");
+}
+
+#[test]
+fn connectivity_cache_self_heals_after_direct_link_writes() {
+    let mut state = setup(4);
+    place_test_coal_mine(&mut state, 0); // Cannock, 2 cubes
+
+    // Direct link writes (bypass any maintenance hook): not reachable yet.
+    let free = |s: &GameState, loc: Loc| {
+        brass_engine::graph::find_coal_sources(s, loc)
+            .iter()
+            .filter(|x| x.free)
+            .count()
+    };
+    assert_eq!(free(&state, Loc::Oxford), 0);
+
+    let link = Some(brass_engine::state::Link { player: 0, is_canal: false });
+    state.links[17] = link; // Cannock-Walsall
+    state.links[8] = link; // Walsall-Birmingham
+    state.links[5] = link; // Birmingham-Oxford
+    assert_eq!(free(&state, Loc::Oxford), 2, "component cache must rebuild on the next query");
+
+    // Removing the last link severs the component again.
+    state.links[5] = None;
+    state.links[8] = None;
+    state.links[17] = None;
+    assert_eq!(free(&state, Loc::Oxford), 0);
 }

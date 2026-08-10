@@ -1,5 +1,6 @@
 use crate::data::IndustryType;
 use std::fmt;
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // Locations: cities (20) + merchants (5) + brewery farms (2)
@@ -333,6 +334,29 @@ pub struct Connection {
     pub via_farm: Option<Loc>,
 }
 
+/// (neighbor, conn_id) adjacency per location, built once from the static map.
+/// Shared by the connectivity cache (`GameState::connected_mask`) and any
+/// graph traversal.
+pub fn adjacency() -> &'static [Vec<(Loc, usize)>] {
+    static ADJ: OnceLock<Vec<Vec<(Loc, usize)>>> = OnceLock::new();
+    ADJ.get_or_init(|| {
+        let mut adj = vec![Vec::new(); ALL_LOCATIONS.len()];
+        for c in connections() {
+            let (a, b) = (c.a as usize, c.b as usize);
+            adj[a].push((c.b, c.id));
+            adj[b].push((c.a, c.id));
+            if let Some(v) = c.via_farm {
+                let v = v as usize;
+                adj[a].push((c.via_farm.unwrap(), c.id));
+                adj[b].push((c.via_farm.unwrap(), c.id));
+                adj[v].push((c.a, c.id));
+                adj[v].push((c.b, c.id));
+            }
+        }
+        adj
+    })
+}
+
 // Translated verbatim from CONNECTIONS in gameData.js.
 // via_farm only for kidderminster-worcester (via southern brewery).
 pub fn connections() -> &'static [Connection] {
@@ -502,6 +526,22 @@ pub const COAL_EMPTY_PRICE: u8 = 8;
 pub const IRON_MARKET_PRICES: [u8; 10] = [1, 1, 2, 2, 3, 3, 4, 4, 5, 5];
 pub const IRON_MARKET_INITIAL: usize = 8;
 pub const IRON_EMPTY_PRICE: u8 = 6;
+
+/// How many "General Supply" market entries `find_coal_sources` /
+/// `find_iron_sources` append after the real market cubes. General Supply is
+/// effectively UNLIMITED at the empty price (8/6) once the market runs out, so
+/// the pool only needs enough entries to cover the maximum any single action
+/// can draw from one market: a single action needs at most 2 cubes (build /
+/// develop / double-rail), a player's full round (two actions) at most 4.
+pub const GENERAL_SUPPLY_CAP: usize = 4;
+
+/// Bitmask over the 27 locations of all merchant locations. Used with the
+/// connected-component cache to test whether a merchant is reachable.
+pub const MERCHANT_LOC_MASK: u32 = (1 << (Loc::Shrewsbury as u8))
+    | (1 << (Loc::Gloucester as u8))
+    | (1 << (Loc::Oxford as u8))
+    | (1 << (Loc::Warrington as u8))
+    | (1 << (Loc::Nottingham as u8));
 
 pub const INITIAL_MONEY: i32 = 17;
 pub const INITIAL_INCOME_SPACE: u8 = 10;

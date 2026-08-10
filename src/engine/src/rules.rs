@@ -205,16 +205,16 @@ fn source_options<T: Copy + PartialEq>(
     }
     rec(&free_groups, 0, free_needed, &mut cur, &mut free_combos);
 
-    // Market sources all share one identity; fill the shortfall with them.
-    let market_rep = available.iter().find(|s| !is_free(s)).copied();
+    // Market sources are listed cheapest-first (per-slot prices, then General
+    // Supply). Fill the shortfall with the cheapest `market_needed` distinct
+    // entries so a multi-cube market purchase pays the ascending slot prices,
+    // not `market_needed` copies of the cheapest cube.
+    let market_sources: Vec<T> = available.iter().filter(|s| !is_free(s)).copied().collect();
     let mut out = Vec::new();
     for combo in free_combos {
         let mut sel = combo;
-        if let Some(m) = market_rep {
-            for _ in 0..market_needed {
-                sel.push(m);
-            }
-        }
+        let take = market_needed.min(market_sources.len());
+        sel.extend_from_slice(&market_sources[..take]);
         out.push(sel);
     }
     out
@@ -1113,13 +1113,7 @@ fn rollback_double_rail_coal(state: &mut GameState, undo: ResourceUndo) {
             prev_flipped,
             owner,
             prev_income_space,
-        } => {
-            if let Some(tile) = state.city_tiles[key].as_mut() {
-                tile.resource_cubes = prev_cubes;
-                tile.flipped = prev_flipped;
-            }
-            state.players[owner].income_space = prev_income_space;
-        }
+        } => state.restore_consumed_city_tile(key, prev_cubes, prev_flipped, owner, prev_income_space),
     }
 }
 
@@ -1375,8 +1369,7 @@ pub fn execute_develop(
         if src.free {
             state.consume_from_city(src.key);
         } else {
-            let price = state.iron_price();
-            state.spend_money(pid, price as i32);
+            state.spend_money(pid, src.price as i32);
             state.take_market_iron();
         }
     }
@@ -2365,7 +2358,7 @@ fn build_multi_sell_plans(
 
 pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
     let pid = state.current_player_id();
-    match mv {
+    let res = match mv {
         Move::Build { loc, slot_index, ind, coal, iron, card_index } => {
             execute_build(state, pid, *loc, *slot_index, *ind, coal, iron, *card_index)
         }
@@ -2392,5 +2385,10 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
         Move::Loan { card_index } => execute_loan(state, pid, *card_index),
         Move::Scout { card_indices } => execute_scout(state, pid, *card_indices),
         Move::Pass { card_index } => execute_pass(state, pid, *card_index),
+    };
+    #[cfg(debug_assertions)]
+    if res.is_ok() {
+        state.assert_caches_consistent();
     }
+    res
 }

@@ -175,9 +175,9 @@ fn resolve_shortfall(state: &mut GameState, pid: usize) {
         };
         let refund = tile.def.cost / 2;
         if is_farm {
-            state.farm_tiles[key] = None;
+            state.remove_farm_by_idx(key);
         } else {
-            state.city_tiles[key] = None;
+            state.remove_city_tile_by_key(key);
         }
         state.players[pid].money += refund;
     }
@@ -217,6 +217,9 @@ pub fn end_canal_era(state: &mut GameState) {
             }
         }
     }
+
+    // Bulk board clears above bypassed the per-tile cache hooks; rescan.
+    state.rebuild_free_sources();
 
     state.era = Era::Rail;
     state.round = 1;

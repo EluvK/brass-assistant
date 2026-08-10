@@ -39,7 +39,7 @@
 
 ### 3.2 回合行动（每回合必须选一个）
 1. **Build 建厂** — 打出地点牌（在指定城市）或工业牌（在自己的网络内），消耗对应资源(煤/铁)建设建筑；运河时代每城市每玩家限 1 个板块
-2. **Network 建网** — 打出任意 1 张牌，建造运河（时代1，£3）/ 铁路（时代2，£5+1煤；双铁路 £15+1煤+1啤酒）
+2. **Network 建网** — 打出任意 1 张牌，建造运河（时代1，£3）/ 铁路（时代2，£5+1煤；双铁路 £15+2煤+1啤酒，每段铁路各耗 1 煤）
 3. **Develop 研发** — 打出任意 1 张牌，消耗铁（1铁移除1个，最多2铁移除2个），移除面板上的低级建筑板块，解锁更高级；陶器 I/III 不可研发
 4. **Sell 卖货** — 打出任意 1 张牌（不限地点牌），可一次行动售出多张未翻面产业板块
 5. **Loan 贷款** — 打出任意 1 张牌，贷款 £30，收入等级 **-3 级（不是 -10，收入可为负，下限 -10，回合末负收入需偿付）**
@@ -158,7 +158,10 @@ TTS 官方热门的《伯明翰》Mod 的 **Lua 脚本**，是 TTS 集成与数�
 - **rail_era（2级+）板块翻面后 VP 在两个时代末各计一次**（`scoring.rs score_era` 在运河/铁路各调一次）；AI 建厂评分用 1.1x（运河）/2x（铁路）反映（`heuristic_ai.rs double_vp`）
 - **可卖板块（棉/陶/制造）只有卖出才翻面**：AI 的 `estimate_flip_probability` 必须要求"连通接受该产业的商家 + 有啤酒可用"才给高翻面概率，否则低分（这是贷款→建厂→翻面→回收入经济链的关键）
 - **啤酒按需供给**：酒桶数应匹配自己未翻面可卖板块的 `beers_to_sell` 需求 + 铁路建网缓冲，超出即浪费（`heuristic_ai.rs sellable_beer_demand`）
-- **煤/铁源选择必须显式建模**（与啤酒选择同原则）：`Move::Build/Network/NetworkDouble/Develop` 都携带显式的 `coal`/`iron` 源列表；执行时校验（a）数量匹配（b）所选源当前可用（c）**免费优先**：有免费源时不得用市场源（防玩家故意不翻对手建筑）。`rules.rs` 的 `source_options`/`validate_source_choice` 是唯一事实来源，AI/heuristic/MCTS 都必须从这里取合法源，禁止执行函数内再自动挑源（`cheapest_coal_for_connection` 仅用于候选生成的成本估算）
+- **煤/铁源选择必须显式建模**（与啤酒选择同原则）：`Move::Build/Network/NetworkDouble/Develop` 都携带显式的 `coal`/`iron` 源列表；执行时校验（a）数量匹配（b）所选源当前可用（c）**免费优先**：有免费源时不得用市场源（防玩家故意不翻对手建筑）。`rules.rs` 的 `source_options`/`validate_source_choice` 是唯一事实来源，AI/heuristic/MCTS 都必须从这里取合法源，禁止执行函数内再自动挑源（`cheapest_coal_for_connection` 仅用于候选生成的成本估算）。**2026-08 复核确认保留显式选择**（用户裁决：合法时多个免费源必须由 AI 选消耗哪个）
+- **资源/连通性全部走 GameState 缓存，废除 BFS 搜图（2026-08 落地）**：`state.rs` 维护 `free_coal_mines`/`free_iron_works`（`place_tile`/`remove_tile`/`consume_*`/`auto_sell_to_market`/`end_canal_era` 的 `rebuild_free_sources()`/`resolve_shortfall` 的 `remove_city_tile_by_key` 维护，debug 下 `apply_move` 末尾 `assert_caches_consistent` 自检）+ `component_cache` 连通分量位掩码（39 链接存在性指纹惰性重建，对测试/双铁路 dry-run 的直接 `links` 写入自动自愈；`RwLock` 因 PyO3 需 Send+Sync）。`graph::find_coal_sources`/`find_iron_sources`/`connected_locations`/`find_beer_sources` 都只读缓存，**无 BFS**。新增成本函数 `graph::coal_purchase_cost(state, loc, needed) -> Option<i32>` / `iron_purchase_cost(needed) -> i32`（免费先抵扣→市场按槽位价逐桶最便宜优先→General Supply 空市价 8/6）。`coal_price()`/`iron_price()` 仅作"市场紧张度"标量信号（NN 特征 g[42]/g[43] 与启发式），**不是**多桶成本估算器
+- **市场多桶采购必须按各自槽位价计费（已修复）**：之前 `find_coal_sources` 所有市场桶统一按最便宜格价 `coal_price()` 列出、`source_options` 用单一 `market_rep` 填充缺口、`execute_develop` 用 `iron_price()` 收费 → 多桶时少收（奇数市场桶时 ≤£1 差额）。现逐桶列槽位价 + 缺口取最便宜 N 桶 + 按 `src.price` 收费，与 npow 及实体规则一致
+- **General Supply 空市价是无限的，魔法数字已语义化**：`map::GENERAL_SUPPLY_CAP = 4`（单行动最多消耗 2 资源、双动最多 4，池只需物化到该上限）；市场空后可按空市价无限购买
 - **Policy 头必须对合法槽位掩码后再算 CE loss（重要教训）**：策略表含 ~703 个 double-rail 幽灵槽（绝大多数状态非法）。若 loss 用全空间 `log_softmax`，幽灵槽仍进分母，初始约 53% 概率质量压在幽灵槽上，网络浪费梯度压制它们 → policy 极弱（贪心仅 ~7 VP）。修复见 `train.py compute_loss`：用每样本 `legal` 掩码 `masked_fill(~mask, -inf)`，并把非法槽 log_probs 清零避免 `0×-inf=NaN`。修复后贪心 7→50 VP、MCTS 反超启发式。MCTS 侧 `_masked_softmax` 一直是对的；只有训练侧曾漏掩码
 - **双铁路允许不共享端点（已裁决）**：引擎与 npow 参考实现一致，两条铁路只需都在玩家网络内。因此策略表双铁路域是全部无序铁路对（703），不能用"共享端点"缩小
 - **新 Schema（2026-08，已落地）**：分叉 policy（`type_head 7` + `goal_head 1316`，`logit(s)=type[t(s)]+goal[s]`，`t(s)` 来自 `policy.rs slot_type` 带算术）+ **4 玩家 value 头**（`Linear(256→4)` 去 tanh，单视角预测全部玩家终局 z，因 `encode.rs global` 已含每玩家 money/income/vp、`opp_hands` 含全部手牌）。Rust `nn_mcts::flush_net` 每 request 只发 **1 行**，Rust 侧合并分叉先验 + 直接用 4 向量（省 4× 视角编码）。**`net(batch)` 返回 3 元组 `(type, goal, value)`**；训练 loss 与单线程 `mcts.py` 用 `net.merge_logits` 合并。效果：BC 基线 `new_best.pt` @sims=1000 胜率 0.65/mean 93.3/**min 57（零灾难对局）**，优于旧 best_masked（0.50/77.8/20）
@@ -175,5 +178,6 @@ TTS 官方热门的《伯明翰》Mod 的 **Lua 脚本**，是 TTS 集成与数�
 | 资金折算分 | 无（`money_value=0`） | 无（无"每£10=1VP"规则） | 2026-08 |
 | 平手规则 | 未实现 | 收入等级高者胜，再平手现金多者胜 | 2026-08 |
 | 起始资金 | £17 | £17 | 2026-08 |
+| 双铁路煤耗 | 每段铁路 1 煤（共 2 煤，`gameLogic.js:450-452`） | **共 2 煤**（摘要原误记为 1 煤，已订正 §3.2 与 `docs/rules`） | 2026-08 |
 | 2 人局每轮行动数 | 固定 2 | 2 人局为 3（引擎暂未支持 2 人局特殊处理，见「已知歧义」） | 待定 |
 | 铁路时代是否再次埋每人1张弃牌 | 会再次 `seedDiscardPiles()`（`gameState.js:793-794`） | **不会**；仅初始设置时埋 1 张，铁路时代重洗后直接发 8 张，因此 4 人局铁路时代应完整 8 轮/64 动 | 2026-08 |

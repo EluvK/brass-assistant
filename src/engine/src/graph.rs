@@ -3,11 +3,9 @@
 //! Translated from gameState.js isInNetwork / getConnectedLocations /
 //! findCoalSource / findIronSource / findBeerSources.
 //!
-//! Performance notes (hot path for legal-move generation & AI evaluation):
-//! - A static adjacency table is built once and reused by every BFS, so we
-//!   never scan all 39 connections per node.
-//! - `visited` is a u32 bitmask over the 27 locations (no Vec::contains).
-//! - The BFS queue is a fixed-size stack array (no VecDeque heap allocation).
+//! Connectivity is NOT searched here: `GameState` maintains a lazily-rebuilt
+//! connected-component cache (bitmasks per location) plus cached lists of free
+//! coal/iron cubes, so the hot paths below are O(free sources + market slots).
 
 use crate::data::IndustryType;
 use crate::map::{city_slots, connections, Loc};
@@ -16,27 +14,6 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 const LOC_COUNT: usize = 27;
-
-/// (neighbor, conn_id) adjacency per location, built once from the static map.
-fn adjacency() -> &'static [Vec<(Loc, usize)>] {
-    static ADJ: OnceLock<Vec<Vec<(Loc, usize)>>> = OnceLock::new();
-    ADJ.get_or_init(|| {
-        let mut adj = vec![Vec::new(); LOC_COUNT];
-        for c in connections() {
-            let (a, b) = (c.a as usize, c.b as usize);
-            adj[a].push((c.b, c.id));
-            adj[b].push((c.a, c.id));
-            if let Some(v) = c.via_farm {
-                let v = v as usize;
-                adj[a].push((c.via_farm.unwrap(), c.id));
-                adj[b].push((c.via_farm.unwrap(), c.id));
-                adj[v].push((c.a, c.id));
-                adj[v].push((c.b, c.id));
-            }
-        }
-        adj
-    })
-}
 
 /// Connection ids touching each location (for cheap `is_in_network` checks).
 fn loc_connections() -> &'static [Vec<usize>] {
@@ -56,33 +33,13 @@ fn loc_connections() -> &'static [Vec<usize>] {
 
 /// Locations reachable from `start` by following ANY built link (regardless
 /// of owner). Includes `start` itself and brewery farms passed through.
+/// Backed by the `GameState` connected-component cache (no per-call BFS).
 pub fn connected_locations(state: &GameState, start: Loc) -> Vec<Loc> {
-    let mut visited: Vec<Loc> = Vec::with_capacity(LOC_COUNT);
-    let mut mask: u32 = 1u32 << (start as u8);
-    let mut queue = [Loc::Belper; LOC_COUNT];
-    let (mut head, mut tail) = (0usize, 0usize);
-    visited.push(start);
-    queue[tail] = start;
-    tail += 1;
-
-    while head < tail {
-        let loc = queue[head];
-        head += 1;
-        for &(nb, conn_id) in &adjacency()[loc as usize] {
-            if state.links[conn_id].is_none() {
-                continue;
-            }
-            let bit = 1u32 << (nb as u8);
-            if mask & bit != 0 {
-                continue;
-            }
-            mask |= bit;
-            visited.push(nb);
-            queue[tail] = nb;
-            tail += 1;
-        }
-    }
-    visited
+    let mask = state.connected_mask(start);
+    (0..27u8)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| crate::map::ALL_LOCATIONS[i as usize])
+        .collect()
 }
 
 /// Is `loc` in player `pid`'s own network (own tile there, or own link touching)?
@@ -170,72 +127,45 @@ pub struct CoalSource {
     pub free: bool,
 }
 
-/// Find coal sources for `loc`, nearest mines first, then market (only if a
-/// merchant is reachable). One entry per cube.
+/// Find coal sources for `loc`: unflipped coal mines reachable via any built
+/// link (free, one entry per cube), then market cubes at their own slot price
+/// (only if a merchant is reachable), then General Supply at the empty price.
+/// Free entries are ordered by slot key for determinism.
 pub fn find_coal_sources(state: &GameState, loc: Loc) -> Vec<CoalSource> {
-    let mut sources = Vec::new();
-    let mut mask: u32 = 1u32 << (loc as u8);
-    let mut queue = [Loc::Belper; LOC_COUNT];
-    let (mut head, mut tail) = (0usize, 0usize);
-    queue[tail] = loc;
-    tail += 1;
-    let mut merchant_reached = loc.is_merchant();
-
-    while head < tail {
-        let cur = queue[head];
-        head += 1;
-        if cur.is_city() {
-            for slot in 0..city_slots(cur).len() {
-                if let Some(k) = state.city_slot_key(cur, slot) {
-                    if let Some(tile) = &state.city_tiles[k] {
-                        if tile.ind == IndustryType::CoalMine
-                            && !tile.flipped
-                            && tile.resource_cubes > 0
-                        {
-                            for _ in 0..tile.resource_cubes {
-                                sources.push(CoalSource {
-                                    kind: CoalSourceKind::Mine,
-                                    key: k,
-                                    price: 0,
-                                    free: true,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for &(nb, conn_id) in &adjacency()[cur as usize] {
-            if state.links[conn_id].is_none() {
-                continue;
-            }
-            let bit = 1u32 << (nb as u8);
-            if mask & bit != 0 {
-                continue;
-            }
-            mask |= bit;
-            if nb.is_merchant() {
-                merchant_reached = true;
-            }
-            queue[tail] = nb;
-            tail += 1;
+    let mask = state.connected_mask(loc);
+    let mut sources: Vec<CoalSource> = Vec::new();
+    for m in state
+        .free_coal_mines
+        .iter()
+        .filter(|m| mask & (1u32 << (m.loc as u8)) != 0)
+    {
+        for _ in 0..m.cubes {
+            sources.push(CoalSource {
+                kind: CoalSourceKind::Mine,
+                key: m.key,
+                price: 0,
+                free: true,
+            });
         }
     }
+    sources.sort_by_key(|s| s.key);
 
-    sources.sort_by_key(|s| if s.free { 0 } else { 1 });
-
-    // Market coal requires a connection to a merchant location.
-    if merchant_reached {
-        for _ in 0..state.coal_market {
+    // Market coal requires a connection to a merchant location. Each cube is
+    // listed at its own market-slot price, cheapest first, so a multi-cube
+    // purchase pays the ascending slot prices (the first entry matches
+    // `state.coal_price()`). After the real cubes come GENERAL_SUPPLY_CAP
+    // General-Supply entries at the empty price.
+    if mask & crate::map::MERCHANT_LOC_MASK != 0 {
+        let prices = crate::map::COAL_MARKET_PRICES;
+        for i in 0..state.coal_market {
             sources.push(CoalSource {
                 kind: CoalSourceKind::Market,
                 key: usize::MAX,
-                price: state.coal_price(),
+                price: prices[prices.len() - state.coal_market + i],
                 free: false,
             });
         }
-        for _ in 0..6 {
+        for _ in 0..crate::map::GENERAL_SUPPLY_CAP {
             sources.push(CoalSource {
                 kind: CoalSourceKind::Market,
                 key: usize::MAX,
@@ -254,31 +184,35 @@ pub struct IronSource {
     pub price: u8,
     pub free: bool,
 }
-
-/// Iron needs no connection: any unflipped iron works on the board, then market.
+/// Iron needs no connection: any unflipped iron works on the board (free, one
+/// entry per cube), then market cubes at their own slot price, then General
+/// Supply at the empty price. Free entries are ordered by slot key.
 pub fn find_iron_sources(state: &GameState) -> Vec<IronSource> {
-    let mut sources = Vec::new();
-    for (k, tile) in state.city_tiles.iter().enumerate() {
-        if let Some(t) = tile {
-            if t.ind == IndustryType::IronWorks && !t.flipped && t.resource_cubes > 0 {
-                for _ in 0..t.resource_cubes {
-                    sources.push(IronSource {
-                        key: k,
-                        price: 0,
-                        free: true,
-                    });
-                }
-            }
+    let mut sources: Vec<IronSource> = Vec::new();
+    for w in &state.free_iron_works {
+        for _ in 0..w.cubes {
+            sources.push(IronSource {
+                key: w.key,
+                price: 0,
+                free: true,
+            });
         }
     }
-    for _ in 0..state.iron_market {
+    sources.sort_by_key(|s| s.key);
+
+    // Each market cube at its own slot price, cheapest first (a multi-cube
+    // purchase pays ascending slot prices); then GENERAL_SUPPLY_CAP
+    // General-Supply entries at the empty price. No connection is ever required
+    // for iron.
+    let prices = crate::map::IRON_MARKET_PRICES;
+    for i in 0..state.iron_market {
         sources.push(IronSource {
             key: usize::MAX,
-            price: state.iron_price(),
+            price: prices[prices.len() - state.iron_market + i],
             free: false,
         });
     }
-    for _ in 0..6 {
+    for _ in 0..crate::map::GENERAL_SUPPLY_CAP {
         sources.push(IronSource {
             key: usize::MAX,
             price: crate::map::IRON_EMPTY_PRICE,
@@ -286,6 +220,66 @@ pub fn find_iron_sources(state: &GameState) -> Vec<IronSource> {
         });
     }
     sources
+}
+
+/// Cash needed to draw `needed` coal cubes at `loc`: free reachable mines
+/// first, then cheapest market slots (per-cube ascending), then General Supply
+/// at the empty price. `None` if a paid shortfall remains with no merchant
+/// reachable (the market and General Supply are unavailable).
+pub fn coal_purchase_cost(state: &GameState, loc: Loc, needed: usize) -> Option<i32> {
+    let mask = state.connected_mask(loc);
+    let free: usize = state
+        .free_coal_mines
+        .iter()
+        .filter(|m| mask & (1u32 << (m.loc as u8)) != 0)
+        .map(|m| m.cubes as usize)
+        .sum();
+    let paid = needed.saturating_sub(free);
+    if paid == 0 {
+        return Some(0);
+    }
+    if mask & crate::map::MERCHANT_LOC_MASK == 0 {
+        return None;
+    }
+    let prices = crate::map::COAL_MARKET_PRICES;
+    let mut cost = 0i32;
+    let mut remaining = paid;
+    for i in 0..state.coal_market {
+        if remaining == 0 {
+            break;
+        }
+        cost += prices[prices.len() - state.coal_market + i] as i32;
+        remaining -= 1;
+    }
+    if remaining > 0 {
+        cost += remaining as i32 * crate::map::COAL_EMPTY_PRICE as i32;
+    }
+    Some(cost)
+}
+
+/// Cash needed to draw `needed` iron cubes: free works first, then cheapest
+/// market slots, then General Supply at the empty price. Always affordable
+/// (General Supply is unlimited; iron needs no connection).
+pub fn iron_purchase_cost(state: &GameState, needed: usize) -> i32 {
+    let free: usize = state.free_iron_works.iter().map(|w| w.cubes as usize).sum();
+    let paid = needed.saturating_sub(free);
+    if paid == 0 {
+        return 0;
+    }
+    let prices = crate::map::IRON_MARKET_PRICES;
+    let mut cost = 0i32;
+    let mut remaining = paid;
+    for i in 0..state.iron_market {
+        if remaining == 0 {
+            break;
+        }
+        cost += prices[prices.len() - state.iron_market + i] as i32;
+        remaining -= 1;
+    }
+    if remaining > 0 {
+        cost += remaining as i32 * crate::map::IRON_EMPTY_PRICE as i32;
+    }
+    cost
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -454,17 +448,13 @@ pub fn is_resource_depleted(state: &GameState, ind: IndustryType) -> bool {
             if state.coal_market > 0 {
                 return false;
             }
-            !state.city_tiles.iter().flatten().any(|t| {
-                t.ind == IndustryType::CoalMine && !t.flipped && t.resource_cubes > 0
-            })
+            !state.free_coal_mines.iter().any(|m| m.cubes > 0)
         }
         IndustryType::IronWorks => {
             if state.iron_market > 0 {
                 return false;
             }
-            !state.city_tiles.iter().flatten().any(|t| {
-                t.ind == IndustryType::IronWorks && !t.flipped && t.resource_cubes > 0
-            })
+            !state.free_iron_works.iter().any(|w| w.cubes > 0)
         }
         _ => false,
     }

@@ -79,6 +79,29 @@ pub struct Link {
 }
 
 // ---------------------------------------------------------------------------
+// Free-resource caches (maintained by `GameState`; single source of truth for
+// "which unflipped coal/iron cubes are on the board"). Connectivity for coal
+// is applied at query time via the component-mask cache.
+// ---------------------------------------------------------------------------
+
+/// A free (unflipped, cubes > 0) coal mine on the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoalMineEntry {
+    pub key: usize,
+    pub loc: Loc,
+    pub owner: usize,
+    pub cubes: u8,
+}
+
+/// A free (unflipped, cubes > 0) iron works on the board (location-independent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IronWorksEntry {
+    pub key: usize,
+    pub owner: usize,
+    pub cubes: u8,
+}
+
+// ---------------------------------------------------------------------------
 // Merchant tiles
 // ---------------------------------------------------------------------------
 
@@ -222,7 +245,6 @@ impl Player {
 // GameState
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
 pub struct GameState {
     /// Only used during setup (deal/shuffle); engine logic is deterministic.
     rng: StdRng,
@@ -244,6 +266,19 @@ pub struct GameState {
     /// Links indexed by connection id.
     pub links: Vec<Option<Link>>,
 
+    /// Unflipped coal mines with cubes, kept in sync with `city_tiles`
+    /// (`place_tile` / `remove_tile` / `consume_*` / `auto_sell_to_market` /
+    /// bulk rebuilds). Connectivity is applied at query time.
+    pub(crate) free_coal_mines: Vec<CoalMineEntry>,
+    /// Unflipped iron works with cubes (location-independent).
+    pub(crate) free_iron_works: Vec<IronWorksEntry>,
+    /// Connected-component cache over built links:
+    /// `component_masks[loc]` = bitmask of every location in `loc`'s component.
+    /// Lazily rebuilt whenever the set of built links changes (fingerprint).
+    /// `RwLock` (not `RefCell`) so `GameState` stays `Send + Sync` for PyO3;
+    /// a single game is single-threaded, so the lock is uncontended.
+    pub(crate) component_cache: std::sync::RwLock<(u64, [u32; 27])>,
+
     pub coal_market: usize,
     pub iron_market: usize,
     pub merchants: Vec<MerchantTile>,
@@ -255,6 +290,41 @@ pub struct GameState {
     pub wild_location_pile: u8,
     pub wild_industry_pile: u8,
     pub pending_bonus: Option<PendingBonus>,
+}
+
+impl Clone for GameState {
+    fn clone(&self) -> Self {
+        // `RwLock` is not Clone; copy the cached (fingerprint, masks) pair.
+        let component_cache =
+            std::sync::RwLock::new(*self.component_cache.read().expect("component cache"));
+        GameState {
+            rng: self.rng.clone(),
+            era: self.era,
+            round: self.round,
+            turn_order: self.turn_order.clone(),
+            current_index: self.current_index,
+            actions_this_turn: self.actions_this_turn,
+            actions_per_turn: self.actions_per_turn,
+            is_first_round: self.is_first_round,
+            game_over: self.game_over,
+            players: self.players.clone(),
+            money_spent_this_round: self.money_spent_this_round.clone(),
+            city_tiles: self.city_tiles.clone(),
+            farm_tiles: self.farm_tiles.clone(),
+            links: self.links.clone(),
+            free_coal_mines: self.free_coal_mines.clone(),
+            free_iron_works: self.free_iron_works.clone(),
+            component_cache,
+            coal_market: self.coal_market,
+            iron_market: self.iron_market,
+            merchants: self.merchants.clone(),
+            deck: self.deck.clone(),
+            discard_pile: self.discard_pile.clone(),
+            wild_location_pile: self.wild_location_pile,
+            wild_industry_pile: self.wild_industry_pile,
+            pending_bonus: self.pending_bonus,
+        }
+    }
 }
 
 // City slot offsets: slot_offsets[loc as usize] = start index in city_tiles.
@@ -343,6 +413,9 @@ impl GameState {
             city_tiles: vec![None; total_city_slots()],
             farm_tiles: [None, None],
             links: vec![None; connections().len()],
+            free_coal_mines: Vec::new(),
+            free_iron_works: Vec::new(),
+            component_cache: std::sync::RwLock::new((u64::MAX, [0u32; 27])),
             coal_market: COAL_MARKET_INITIAL,
             iron_market: IRON_MARKET_INITIAL,
             merchants: Vec::new(),
@@ -440,6 +513,12 @@ impl GameState {
         &mut self.players[id]
     }
 
+    /// Price of the cheapest currently-available market coal cube (the empty
+    /// price when the market is dry). This is a scalar "market tightness"
+    /// signal used by NN features (`encode.rs`) and heuristics — NOT a
+    /// multi-cube cost estimator. Actual per-cube slot prices live in
+    /// `graph::find_coal_sources`; total purchase costs come from
+    /// `rules::calculate_build_cost` / `coal_source_options`.
     pub fn coal_price(&self) -> u8 {
         if self.coal_market == 0 {
             return COAL_EMPTY_PRICE;
@@ -447,6 +526,9 @@ impl GameState {
         COAL_MARKET_PRICES[COAL_MARKET_PRICES.len() - self.coal_market]
     }
 
+    /// Price of the cheapest currently-available market iron cube. Same scalar
+    /// role as `coal_price()`; see its docs. Per-slot prices live in
+    /// `graph::find_iron_sources`.
     pub fn iron_price(&self) -> u8 {
         if self.iron_market == 0 {
             return IRON_EMPTY_PRICE;
@@ -493,9 +575,26 @@ impl GameState {
         if loc.is_city() {
             if let Some(k) = self.city_slot_key(loc, slot_index) {
                 self.city_tiles[k] = Some(tile);
+                self.sync_free_source(k);
             }
         } else if let Some(idx) = farm_index(loc) {
             self.farm_tiles[idx] = Some(tile);
+        }
+    }
+
+    /// Remove a city tile by its flat slot key (keeps the free-source cache in
+    /// sync). Used by shortfall repayment.
+    pub fn remove_city_tile_by_key(&mut self, key: usize) {
+        if key < self.city_tiles.len() {
+            self.city_tiles[key] = None;
+            self.drop_free_source(key);
+        }
+    }
+
+    /// Remove a farm tile by index.
+    pub fn remove_farm_by_idx(&mut self, idx: usize) {
+        if idx < self.farm_tiles.len() {
+            self.farm_tiles[idx] = None;
         }
     }
 
@@ -503,10 +602,152 @@ impl GameState {
         if loc.is_city() {
             if let Some(k) = self.city_slot_key(loc, slot_index) {
                 self.city_tiles[k] = None;
+                self.drop_free_source(k);
             }
         } else if let Some(idx) = farm_index(loc) {
             self.farm_tiles[idx] = None;
         }
+    }
+
+    // --- free-resource & connectivity caches -------------------------------
+
+    /// Rescan `city_tiles` and rebuild the free coal/iron caches from scratch.
+    /// Called after bulk board changes (era end) or direct tile writes (tests).
+    pub fn rebuild_free_sources(&mut self) {
+        self.free_coal_mines.clear();
+        self.free_iron_works.clear();
+        for k in 0..self.city_tiles.len() {
+            self.sync_free_source(k);
+        }
+    }
+
+    /// Drop any cached free-source entry for a city slot key.
+    fn drop_free_source(&mut self, key: usize) {
+        self.free_coal_mines.retain(|e| e.key != key);
+        self.free_iron_works.retain(|e| e.key != key);
+    }
+
+    /// Re-derive the cached free-source entry for one city slot key from the
+    /// tile's current state (an unflipped coal/iron tile with cubes).
+    fn sync_free_source(&mut self, key: usize) {
+        self.drop_free_source(key);
+        let Some(tile) = &self.city_tiles[key] else {
+            return;
+        };
+        if tile.flipped || tile.resource_cubes == 0 {
+            return;
+        }
+        let Some((loc, _)) = loc_from_key(key) else {
+            return;
+        };
+        match tile.ind {
+            IndustryType::CoalMine => self.free_coal_mines.push(CoalMineEntry {
+                key,
+                loc,
+                owner: tile.player,
+                cubes: tile.resource_cubes,
+            }),
+            IndustryType::IronWorks => self.free_iron_works.push(IronWorksEntry {
+                key,
+                owner: tile.player,
+                cubes: tile.resource_cubes,
+            }),
+            _ => {}
+        }
+    }
+
+    /// Bitmask of every location connected to `loc` via any built link
+    /// (includes `loc` and brewery farms passed through). Cached; rebuilt only
+    /// when the set of built links changes. Self-healing against any direct
+    /// `links` write (tests / double-rail dry-runs).
+    pub(crate) fn connected_mask(&self, loc: Loc) -> u32 {
+        let fp = self.link_fingerprint();
+        let mut cache = self.component_cache.write().unwrap();
+        if cache.0 != fp {
+            *cache = (fp, self.compute_component_masks());
+        }
+        cache.1[loc as usize]
+    }
+
+    /// Presence fingerprint of the built-link set (one bit per connection).
+    fn link_fingerprint(&self) -> u64 {
+        let mut fp = 0u64;
+        for (i, link) in self.links.iter().enumerate() {
+            if link.is_some() {
+                fp |= 1u64 << i;
+            }
+        }
+        fp
+    }
+
+    /// Compute `component_masks` (one bitmask per location) via a full
+    /// component sweep. Runs only when the link fingerprint changes.
+    fn compute_component_masks(&self) -> [u32; 27] {
+        let adj = crate::map::adjacency();
+        let mut masks = [0u32; 27];
+        for start in 0..27usize {
+            let mut mask = 1u32 << (start as u8);
+            let mut queue = [0usize; 27];
+            let (mut head, mut tail) = (0usize, 1usize);
+            queue[0] = start;
+            while head < tail {
+                let cur = queue[head];
+                head += 1;
+                for &(nb, conn_id) in &adj[cur] {
+                    if self.links[conn_id].is_none() {
+                        continue;
+                    }
+                    let bit = 1u32 << (nb as u8);
+                    if mask & bit != 0 {
+                        continue;
+                    }
+                    mask |= bit;
+                    queue[tail] = nb as usize;
+                    tail += 1;
+                }
+            }
+            masks[start] = mask;
+        }
+        masks
+    }
+
+    /// Verify the free-source caches match a full rescan of `city_tiles`.
+    /// Cheap (47 slots); used by tests and, in debug builds, by `apply_move`
+    /// to catch any mutation site that bypassed the cache.
+    pub fn assert_caches_consistent(&self) {
+        let mut coal = Vec::new();
+        let mut iron = Vec::new();
+        for (k, tile) in self.city_tiles.iter().enumerate() {
+            let Some(t) = tile else { continue };
+            if t.flipped || t.resource_cubes == 0 {
+                continue;
+            }
+            let Some((loc, _)) = loc_from_key(k) else { continue };
+            match t.ind {
+                IndustryType::CoalMine => coal.push(CoalMineEntry {
+                    key: k,
+                    loc,
+                    owner: t.player,
+                    cubes: t.resource_cubes,
+                }),
+                IndustryType::IronWorks => iron.push(IronWorksEntry {
+                    key: k,
+                    owner: t.player,
+                    cubes: t.resource_cubes,
+                }),
+                _ => {}
+            }
+        }
+        // Compare order-insensitively: incremental syncs can reorder the live
+        // cache (e.g. overbuilding a lower-key mine re-pushes it last).
+        coal.sort_by_key(|e| e.key);
+        iron.sort_by_key(|e| e.key);
+        let mut live_coal = self.free_coal_mines.clone();
+        let mut live_iron = self.free_iron_works.clone();
+        live_coal.sort_by_key(|e| e.key);
+        live_iron.sort_by_key(|e| e.key);
+        assert_eq!(live_coal, coal, "free coal cache drifted");
+        assert_eq!(live_iron, iron, "free iron cache drifted");
     }
 
     // --- money & income ----------------------------------------------------
@@ -625,12 +866,31 @@ impl GameState {
                 (0, 0)
             }
         };
+        self.sync_free_source(key);
         // Only when a flip happened do we advance income.
         let (player, income) = (player, income);
         if self.city_tiles[key].as_ref().map_or(false, |t| t.flipped) {
             self.advance_income_spaces(player, income);
         }
         true
+    }
+
+    /// Restore a city tile after a dry-run consumption rollback (double rail),
+    /// re-syncing the free-source cache.
+    pub fn restore_consumed_city_tile(
+        &mut self,
+        key: usize,
+        prev_cubes: u8,
+        prev_flipped: bool,
+        owner: usize,
+        prev_income_space: u8,
+    ) {
+        if let Some(tile) = self.city_tiles[key].as_mut() {
+            tile.resource_cubes = prev_cubes;
+            tile.flipped = prev_flipped;
+        }
+        self.players[owner].income_space = prev_income_space;
+        self.sync_free_source(key);
     }
 
     pub fn consume_from_farm(&mut self, idx: usize) -> bool {
@@ -694,6 +954,7 @@ impl GameState {
                 (0, 0)
             }
         };
+        self.sync_free_source(key);
         if should_flip {
             self.advance_income_spaces(player, income);
         }
