@@ -286,7 +286,7 @@ pub fn choose_action_mcts<R: Rng + Clone>(state: &mut GameState<R>, cfg: &MctsCo
     let mut apply_fail = 0u64;
     let mut empty_cand = 0u64;
     for _ in 0..cfg.simulations {
-        let _ = sim_rng.gen::<u64>(); // vary determinization per simulation
+        let _ = sim_rng.r#gen::<u64>(); // vary determinization per simulation
         let mut work = determinize(state, &mut sim_rng);
         work.rng = sim_rng.clone(); // future draws during the sim use this rng
 

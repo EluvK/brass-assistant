@@ -211,7 +211,7 @@ pub fn search_net(
         // keep every sim on one request and the wave would never flush.
         while sims_left > 0 && parked.len() < cfg.batch_size {
             sims_left -= 1;
-            let _ = sim_rng.gen::<u64>(); // vary determinization per simulation
+            let _ = sim_rng.r#gen::<u64>(); // vary determinization per simulation
             let mut work = crate::mcts_ai::determinize(state, &mut sim_rng);
             work.rng = sim_rng.clone();
 
