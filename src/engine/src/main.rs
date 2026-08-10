@@ -1,4 +1,4 @@
-use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use brass_engine::engine::{advance_turn, handle_turn_result, TurnResult};
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::random_ai::choose_random_move;
@@ -128,20 +128,15 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
             }
         }
 
-        match advance_turn(&mut state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => {
-                end_canal_era(&mut state);
-                canal_events += 1;
-            }
-            TurnResult::EndGame => {
-                end_game(&mut state);
-            }
+        let tr = advance_turn(&mut state);
+        if matches!(tr, TurnResult::EndCanalEra) {
+            canal_events += 1;
         }
+        handle_turn_result(&mut state, tr);
     }
 
     if !state.game_over {
-        end_game(&mut state);
+        handle_turn_result(&mut state, TurnResult::EndGame);
     }
 
     let built = state.city_tiles.iter().flatten().count() as u64;

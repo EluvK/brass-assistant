@@ -1870,19 +1870,12 @@ fn best_merchant_beer_bonus(
 }
 
 fn merchant_bonus_value(state: &GameState, loc: Loc) -> f64 {
-    for def in crate::map::merchant_defs() {
-        if def.loc == loc {
-            return match def.bonus {
-                crate::map::MerchantBonus::Vp(v) => v as f64 * VP_WEIGHT,
-                crate::map::MerchantBonus::Money(m) => m as f64 * money_weight(state),
-                crate::map::MerchantBonus::Income(spaces) => {
-                    spaces as f64 * income_weight(state)
-                }
-                crate::map::MerchantBonus::Develop(_) => 0.5,
-            };
-        }
+    match crate::map::merchant_bonus_at(loc) {
+        crate::map::MerchantBonus::Vp(v) => v as f64 * VP_WEIGHT,
+        crate::map::MerchantBonus::Money(m) => m as f64 * money_weight(state),
+        crate::map::MerchantBonus::Income(spaces) => spaces as f64 * income_weight(state),
+        crate::map::MerchantBonus::Develop(_) => 0.5,
     }
-    0.0
 }
 
 fn sell_route_value(state: &GameState, route: &crate::rules::SellRoute) -> f64 {

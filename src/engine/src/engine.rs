@@ -264,6 +264,16 @@ pub fn end_game(state: &mut GameState) {
     state.game_over = true;
 }
 
+/// Apply the era-end / game-end transitions reported by `advance_turn` /
+/// `end_round` to a state (no-op for `Continue`).
+pub fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
+    match tr {
+        TurnResult::Continue => {}
+        TurnResult::EndCanalEra => end_canal_era(state),
+        TurnResult::EndGame => end_game(state),
+    }
+}
+
 /// Apply a move to the current player, then advance the turn.
 /// Returns the result of the action + turn advancement.
 pub fn step(state: &mut GameState, mv: &Move) -> (Result<String, String>, TurnResult) {

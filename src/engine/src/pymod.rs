@@ -161,16 +161,12 @@ impl PyGame {
     /// `main.rs`). A free-develop bonus leaves the same player to move again
     /// (`has_pending_bonus`).
     fn apply_move(&mut self, canonical: &str) -> PyResult<String> {
-        use crate::engine::{advance_turn, end_canal_era, end_game, TurnResult};
         let mv = move_codec::decode(canonical)
             .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
         let summary = apply_move(&mut self.state, &mv)
             .map_err(|e| PyValueError::new_err(e))?;
-        match advance_turn(&mut self.state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => end_canal_era(&mut self.state),
-            TurnResult::EndGame => end_game(&mut self.state),
-        }
+        let tr = crate::engine::advance_turn(&mut self.state);
+        crate::engine::handle_turn_result(&mut self.state, tr);
         Ok(summary)
     }
 

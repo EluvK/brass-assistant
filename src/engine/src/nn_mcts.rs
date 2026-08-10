@@ -15,7 +15,7 @@
 //! are applied before the next wave. This removes the per-sim Python/PyO3
 //! orchestration that capped the previous Python MCTS at ~4 ms/sim.
 
-use crate::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use crate::engine::{advance_turn, handle_turn_result};
 use crate::move_codec;
 use crate::rules::{legal_slot_moves, Move};
 use crate::state::GameState;
@@ -376,11 +376,7 @@ fn descend(
             return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
         }
         let tr = advance_turn(work);
-        match tr {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => end_canal_era(work),
-            TurnResult::EndGame => end_game(work),
-        }
+        handle_turn_result(work, tr);
         arena[child_node].player = work.current_player_id();
         node_idx = child_node;
         path.push(node_idx);

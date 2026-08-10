@@ -271,6 +271,15 @@ pub fn merchant_defs() -> &'static [MerchantDef] {
     ]
 }
 
+/// Bonus granted by the merchant located at `loc` (no-op `Vp(0)` if none).
+pub fn merchant_bonus_at(loc: Loc) -> MerchantBonus {
+    merchant_defs()
+        .iter()
+        .find(|def| def.loc == loc)
+        .map(|def| def.bonus)
+        .unwrap_or(MerchantBonus::Vp(0))
+}
+
 // Merchant tile mix: the ACTIVE set of tiles for each player count.
 // Each player count has its own independent set (NOT a cumulative "2p plus
 // 3p plus 4p" pool — that would yield two 'Any' tiles at 4 players, which

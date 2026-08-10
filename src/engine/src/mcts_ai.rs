@@ -12,7 +12,7 @@
 //!   non-zero-sum: opponents maximize their own VP, not a coalition vs us).
 
 use crate::data::IndustryType;
-use crate::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use crate::engine::{advance_turn, handle_turn_result};
 use crate::heuristic_ai::{self, Decision};
 use crate::map::Loc;
 use crate::rules::{apply_move, Move};
@@ -486,14 +486,5 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
     Decision {
         mv: best.mv.clone(),
         score,
-    }
-}
-
-/// Apply era-end / game-end transitions to a simulated state.
-fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
-    match tr {
-        TurnResult::Continue => {}
-        TurnResult::EndCanalEra => end_canal_era(state),
-        TurnResult::EndGame => end_game(state),
     }
 }

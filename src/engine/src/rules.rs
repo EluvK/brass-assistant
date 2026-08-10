@@ -1588,7 +1588,7 @@ pub fn execute_sell(
                 log_industry_label(ind),
                 log_loc_label(mt_loc)
             ));
-            let bonus = merchant_bonus_for(state, mt_loc);
+            let bonus = crate::map::merchant_bonus_at(mt_loc);
             let note = apply_merchant_bonus(state, pid, bonus);
             notes.push(note);
         } else if beer_remaining > 0 {
@@ -1657,15 +1657,6 @@ pub fn execute_sell(
             format!(" [{}]", extra.join(" | "))
         }
     ))
-}
-
-fn merchant_bonus_for(_state: &GameState, loc: Loc) -> MerchantBonus {
-    for def in merchant_defs() {
-        if def.loc == loc {
-            return def.bonus;
-        }
-    }
-    MerchantBonus::Vp(0)
 }
 
 fn apply_merchant_bonus(

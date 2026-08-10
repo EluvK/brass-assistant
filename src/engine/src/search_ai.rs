@@ -21,7 +21,7 @@
 //!   penalized (this suppresses lines that leave the player unable to act next
 //!   turn).
 
-use crate::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use crate::engine::{advance_turn, handle_turn_result};
 use crate::heuristic_ai::{self, Decision};
 use crate::rules::apply_move;
 use crate::state::GameState;
@@ -129,13 +129,4 @@ fn end_of_turn_penalty(
     let era_term = if state.era == Era::Rail { 1.0 } else { 0.8 };
     let runway_term = 0.6 + 0.4 * (1.0 - runway);
     -END_TURN_PENALTY_SCALE * scarcity * income_term * era_term * runway_term
-}
-
-/// Apply era-end / game-end transitions to a simulated state.
-fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
-    match tr {
-        TurnResult::Continue => {}
-        TurnResult::EndCanalEra => end_canal_era(state),
-        TurnResult::EndGame => end_game(state),
-    }
 }
