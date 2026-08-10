@@ -3,10 +3,9 @@
 //! Usage: cargo run --release --bin bench_mcts -- <seed> <players> [sims...]
 //! e.g. bench_mcts 7 4 5000 10000
 
-use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use brass_engine::game_loop;
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig};
-use brass_engine::rules;
 use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
@@ -30,20 +29,14 @@ fn main() {
     // non-trivial position (a full board isn't needed, but a few plies help).
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
-    let mut guard = 0;
-    while guard < 60 && !state.game_over {
-        guard += 1;
-        let mv = heuristic_ai::choose_action(&mut state).mv;
-        let _ = rules::apply_move(&mut state, &mv);
-        match advance_turn(&mut state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => end_canal_era(&mut state),
-            TurnResult::EndGame => end_game(&mut state),
-        }
-    }
+    let mut actions = 0;
+    game_loop::play(&mut state, 60, game_loop::GameHooks::default(), |state| {
+        actions += 1;
+        Some(heuristic_ai::choose_action(state).mv)
+    });
 
     println!(
-        "MCTS decision bench | seed={seed} players={players} | state after {guard} actions, era={:?}, current=player{}",
+        "MCTS decision bench | seed={seed} players={players} | state after {actions} actions, era={:?}, current=player{}",
         state.era,
         state.current_player_id()
     );

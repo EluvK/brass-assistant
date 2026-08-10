@@ -10,14 +10,16 @@
 //!   canal-only: "1"/"true" stops after the canal era (no rail era played).
 
 use brass_engine::data::Era;
-use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use brass_engine::heuristic_ai;
 use brass_engine::random_ai;
 use brass_engine::replay_fmt;
+use brass_engine::rules::Move;
 use brass_engine::scoring;
 use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
+use std::cell::RefCell;
 use std::env;
 
 fn print_era_snapshot(
@@ -56,8 +58,12 @@ fn main() {
 
     let mut prev_round = state.round;
     let mut prev_era = state.era;
-    let mut canal_stats: Vec<replay_fmt::PStats> = vec![replay_fmt::PStats::default(); players];
-    let mut rail_stats: Vec<replay_fmt::PStats> = vec![replay_fmt::PStats::default(); players];
+    // RefCell so both the per-move recording hook and the era-end snapshot
+    // hook can share the same accumulated stats.
+    let canal_stats: RefCell<Vec<replay_fmt::PStats>> =
+        RefCell::new(vec![replay_fmt::PStats::default(); players]);
+    let rail_stats: RefCell<Vec<replay_fmt::PStats>> =
+        RefCell::new(vec![replay_fmt::PStats::default(); players]);
 
     println!(
         "======================================================================"
@@ -79,17 +85,71 @@ fn main() {
     println!("商家: {}", replay_fmt::merchant_state(&state));
     println!("{}", replay_fmt::board_state(&state));
 
-    let mut guard = 0;
-    loop {
-        guard += 1;
-        if guard > 200_000 {
-            println!("[!] guard exceeded, aborting");
-            break;
+    let mut on_before = |state: &mut GameState, mv: &Move| {
+        let pid = state.current_player_id();
+        let detail = replay_fmt::move_detail(state, mv);
+        let before = replay_fmt::player_state(state, pid);
+        let hand_before = replay_fmt::hand_display(state, pid);
+        let stat_target = if state.era == Era::Canal {
+            &mut canal_stats.borrow_mut()[pid]
+        } else {
+            &mut rail_stats.borrow_mut()[pid]
+        };
+        stat_target.record(mv);
+        println!("玩家{pid} [{detail}]");
+        println!("    之前: {before}");
+        println!("    手牌前: {hand_before}");
+    };
+    let mut on_after = |state: &mut GameState, _mv: &Move, res: &Result<String, String>| {
+        let pid = state.current_player_id();
+        let after = replay_fmt::player_state(state, pid);
+        let hand_after = replay_fmt::hand_display(state, pid);
+        let status = match res {
+            Ok(msg) => msg.clone(),
+            Err(e) => format!("!!失败: {e}"),
+        };
+        println!("    结果: {status}");
+        println!("    之后: {after}");
+        println!("    手牌后: {hand_after}");
+        println!("    盘面: {}", replay_fmt::board_state(state));
+        println!("    商家: {}", replay_fmt::merchant_state(state));
+    };
+    let mut on_era = |state: &mut GameState, era: Era| -> AfterEra {
+        if era == Era::Canal {
+            println!("\n--- 运河时代结算明细 ---");
+            for pid in 0..players {
+                println!("玩家{pid}: {}", replay_fmt::era_score_detail(state, pid));
+            }
+            print_era_snapshot(state, "运河", &canal_stats.borrow());
+            if canal_only {
+                // Canal-only mode: print the canal cleanup detail and final
+                // standings, then stop WITHOUT running the cleanup.
+                println!("{}", replay_fmt::canal_cleanup_detail(state));
+                let ranking = scoring::final_ranking(state);
+                println!("运河末排名: {:?}", ranking);
+                if let Some(&w) = ranking.first() {
+                    println!("运河末第一: 玩家{w}");
+                }
+                return AfterEra::StopBeforeCleanup;
+            }
+            println!("{}", replay_fmt::canal_cleanup_detail(state));
         }
-        if state.game_over {
-            break;
+        AfterEra::Continue
+    };
+    let mut on_era_after = |_state: &mut GameState, era: Era| {
+        if era == Era::Canal {
+            println!(
+                "\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---"
+            );
         }
-
+    };
+    let hooks = GameHooks {
+        before_move: Some(&mut on_before),
+        after_move: Some(&mut on_after),
+        on_era: Some(&mut on_era),
+        after_era: Some(&mut on_era_after),
+    };
+    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
         // Era / round header change
         if state.era != prev_era {
             println!(
@@ -110,9 +170,9 @@ fn main() {
         }
 
         let pid = state.current_player_id();
-        let mv = match policy.as_str() {
-            "random" => random_ai::choose_random_move(&mut state, &mut rand_rng)
-                .unwrap_or_else(|| heuristic_ai::pass_decision(&state).mv),
+        Some(match policy.as_str() {
+            "random" => random_ai::choose_random_move(state, &mut rand_rng)
+                .unwrap_or_else(|| heuristic_ai::pass_decision(state).mv),
             "mcts-vs-random" => {
                 let mcts_seat = (seed as usize) % players;
                 if pid == mcts_seat {
@@ -121,10 +181,10 @@ fn main() {
                         simulations: sims,
                         ..Default::default()
                     };
-                    mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+                    mcts_ai::choose_action_mcts(state, &cfg).mv
                 } else {
-                    random_ai::choose_random_move(&mut state, &mut rand_rng)
-                        .unwrap_or_else(|| heuristic_ai::pass_decision(&state).mv)
+                    random_ai::choose_random_move(state, &mut rand_rng)
+                        .unwrap_or_else(|| heuristic_ai::pass_decision(state).mv)
                 }
             }
             "mcts-vs-heur" => {
@@ -135,9 +195,9 @@ fn main() {
                         simulations: sims,
                         ..Default::default()
                     };
-                    mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+                    mcts_ai::choose_action_mcts(state, &cfg).mv
                 } else {
-                    heuristic_ai::choose_action(&mut state).mv
+                    heuristic_ai::choose_action(state).mv
                 }
             }
             "mcts-vs-2ply" => {
@@ -148,92 +208,38 @@ fn main() {
                         simulations: sims,
                         ..Default::default()
                     };
-                    mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+                    mcts_ai::choose_action_mcts(state, &cfg).mv
                 } else {
-                    search_ai::choose_action_2ply(&mut state).mv
+                    search_ai::choose_action_2ply(state).mv
                 }
             }
-            "2ply" => search_ai::choose_action_2ply(&mut state).mv,
+            "2ply" => search_ai::choose_action_2ply(state).mv,
             "mcts" => {
                 use brass_engine::mcts_ai::{self, MctsConfig};
                 let cfg = MctsConfig {
                     simulations: sims,
                     ..Default::default()
                 };
-                mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+                mcts_ai::choose_action_mcts(state, &cfg).mv
             }
-            _ => heuristic_ai::choose_action(&mut state).mv,
-        };
-        let detail = replay_fmt::move_detail(&state, &mv);
-        let before = replay_fmt::player_state(&state, pid);
-        let hand_before = replay_fmt::hand_display(&state, pid);
-        let stat_target = if state.era == Era::Canal {
-            &mut canal_stats[pid]
-        } else {
-            &mut rail_stats[pid]
-        };
-        stat_target.record(&mv);
-        let res = brass_engine::rules::apply_move(&mut state, &mv);
-        let after = replay_fmt::player_state(&state, pid);
-        let hand_after = replay_fmt::hand_display(&state, pid);
-
-        let status = match &res {
-            Ok(msg) => msg.clone(),
-            Err(e) => format!("!!失败: {e}"),
-        };
-        println!("玩家{pid} [{detail}]");
-        println!("    之前: {before}");
-        println!("    手牌前: {hand_before}");
-        println!("    结果: {status}");
-        println!("    之后: {after}");
-        println!("    手牌后: {hand_after}");
-        println!("    盘面: {}", replay_fmt::board_state(&state));
-        println!("    商家: {}", replay_fmt::merchant_state(&state));
-
-        if res.is_ok() {
-            match advance_turn(&mut state) {
-                TurnResult::Continue => {}
-                TurnResult::EndCanalEra => {
-                    println!("\n--- 运河时代结算明细 ---");
-                    for pid in 0..players {
-                        println!("玩家{pid}: {}", replay_fmt::era_score_detail(&state, pid));
-                    }
-                    print_era_snapshot(&state, "运河", &canal_stats);
-                    if canal_only {
-                        // Canal-only mode: print the canal cleanup detail and
-                        // final standings, then stop without playing the rail era.
-                        println!("{}", replay_fmt::canal_cleanup_detail(&state));
-                        let ranking = scoring::final_ranking(&state);
-                        println!("运河末排名: {:?}", ranking);
-                        if let Some(&w) = ranking.first() {
-                            println!("运河末第一: 玩家{w}");
-                        }
-                        return;
-                    }
-                    println!("{}", replay_fmt::canal_cleanup_detail(&state));
-                    end_canal_era(&mut state);
-                    println!(
-                        "\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---"
-                    );
-                }
-                TurnResult::EndGame => {
-                    end_game(&mut state);
-                }
-            }
-        } else {
-            println!("[!] 非法动作，终止回放以避免污染轮次/手牌状态");
-            break;
-        }
+            _ => heuristic_ai::choose_action(state).mv,
+        })
+    });
+    if outcome == LoopOutcome::StoppedByEraEnd {
+        return;
     }
-
-    if !state.game_over {
-        end_game(&mut state);
+    if outcome == LoopOutcome::GuardExceeded {
+        println!("[!] guard exceeded, aborting");
     }
+    if outcome == LoopOutcome::IllegalMove {
+        println!("[!] 非法动作，终止回放以避免污染轮次/手牌状态");
+    }
+    game_loop::finish_game(&mut state);
 
     println!("\n======================================================================");
     println!("终局结算");
     println!("======================================================================");
-    print_era_snapshot(&state, "铁路", &rail_stats);
+    print_era_snapshot(&state, "铁路", &rail_stats.borrow());
     for pid in 0..players {
         println!("玩家{pid}: {}", replay_fmt::player_state(&state, pid));
     }

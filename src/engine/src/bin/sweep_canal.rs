@@ -7,7 +7,8 @@
 //!     policy: heuristic | 2ply | mcts
 //! Output: CSV on stdout, summary on stderr.
 
-use brass_engine::engine::{advance_turn, end_canal_era, TurnResult};
+use brass_engine::data::Era;
+use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::rules::Move;
@@ -32,89 +33,75 @@ struct CanalResult {
 fn play_canal(seed: u64, players: usize, policy: &str, sims: usize) -> CanalResult {
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
-    let mut res = CanalResult {
+    // RefCell so the per-move / era hooks can all mutate disjoint parts of the
+    // result without aliasing a single `&mut CanalResult`.
+    let res = std::cell::RefCell::new(CanalResult {
         seed,
         ..Default::default()
-    };
+    });
 
-    let mut guard = 0;
-    loop {
-        guard += 1;
-        if guard > 200_000 {
-            res.stuck = true;
-            break;
+    let mut on_move = |_state: &mut GameState, mv: &Move| {
+        let mut r = res.borrow_mut();
+        match mv {
+            Move::Build { .. } => r.actions[0] += 1,
+            Move::Network { .. } | Move::NetworkDouble { .. } => r.actions[1] += 1,
+            Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => r.actions[2] += 1,
+            Move::Sell { .. } => r.actions[3] += 1,
+            Move::Loan { .. } => r.actions[4] += 1,
+            Move::Pass { .. } => r.actions[5] += 1,
+            Move::Scout { .. } => {}
         }
-        if state.game_over {
-            break;
+    };
+    let mut on_era = |state: &mut GameState, _era: Era| -> AfterEra {
+        // Snapshot links + flipped tiles BEFORE cleanup (end_canal_era removes
+        // canal links and level-1 tiles).
+        let mut r = res.borrow_mut();
+        r.links = state.links.iter().flatten().count() as u64;
+        r.flipped = state
+            .city_tiles
+            .iter()
+            .flatten()
+            .filter(|t| t.flipped)
+            .count() as u64;
+        AfterEra::StopAfterCleanup
+    };
+    let mut on_era_after = |state: &mut GameState, _era: Era| {
+        let mut r = res.borrow_mut();
+        for (i, p) in state.players.iter().enumerate() {
+            if i < r.vp.len() {
+                r.vp[i] = p.vp as i64;
+            }
+            if i < r.income.len() {
+                r.income[i] = p.income_level();
+            }
+            if i < r.money.len() {
+                r.money[i] = p.money;
+            }
         }
-        let mv = match policy {
-            "2ply" => search_ai::choose_action_2ply(&mut state).mv,
+    };
+    let hooks = GameHooks {
+        before_move: Some(&mut on_move),
+        on_era: Some(&mut on_era),
+        after_era: Some(&mut on_era_after),
+        ..Default::default()
+    };
+    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
+        Some(match policy {
+            "2ply" => search_ai::choose_action_2ply(state).mv,
             "mcts" => {
                 let cfg = MctsConfig {
                     simulations: sims,
                     ..Default::default()
                 };
-                mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+                mcts_ai::choose_action_mcts(state, &cfg).mv
             }
-            _ => heuristic_ai::choose_action(&mut state).mv,
-        };
-        match &mv {
-            Move::Build { .. } => res.actions[0] += 1,
-            Move::Network { .. } | Move::NetworkDouble { .. } => res.actions[1] += 1,
-            Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => res.actions[2] += 1,
-            Move::Sell { .. } => res.actions[3] += 1,
-            Move::Loan { .. } => res.actions[4] += 1,
-            Move::Pass { .. } => res.actions[5] += 1,
-            Move::Scout { .. } => {}
-        }
-        if brass_engine::rules::apply_move(&mut state, &mv).is_err() {
-            res.illegal = true;
-            break;
-        }
-        match advance_turn(&mut state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => {
-                // Snapshot links + flipped tiles BEFORE cleanup (end_canal_era
-                // removes canal links and level-1 tiles).
-                res.links = state.links.iter().flatten().count() as u64;
-                res.flipped = state
-                    .city_tiles
-                    .iter()
-                    .flatten()
-                    .filter(|t| t.flipped)
-                    .count() as u64;
-                // Score the canal era, then snapshot the economic result.
-                end_canal_era(&mut state);
-                for (i, p) in state.players.iter().enumerate() {
-                    if i < res.vp.len() {
-                        res.vp[i] = p.vp as i64;
-                    }
-                    if i < res.income.len() {
-                        res.income[i] = p.income_level();
-                    }
-                    if i < res.money.len() {
-                        res.money[i] = p.money;
-                    }
-                }
-                break;
-            }
-            TurnResult::EndGame => {
-                // Shouldn't happen in canal-only mode, but be safe.
-                for (i, p) in state.players.iter().enumerate() {
-                    if i < res.vp.len() {
-                        res.vp[i] = p.vp as i64;
-                    }
-                    if i < res.income.len() {
-                        res.income[i] = p.income_level();
-                    }
-                    if i < res.money.len() {
-                        res.money[i] = p.money;
-                    }
-                }
-                break;
-            }
-        }
-    }
+            _ => heuristic_ai::choose_action(state).mv,
+        })
+    });
+
+    let mut res = res.into_inner();
+    res.illegal = outcome == LoopOutcome::IllegalMove;
+    res.stuck = outcome == LoopOutcome::GuardExceeded;
     res
 }
 

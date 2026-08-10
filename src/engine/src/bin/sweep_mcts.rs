@@ -4,10 +4,9 @@
 //! Tests (depth, c_puct) combos and reports which action each picks vs the
 //! 2-ply reference.
 
-use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use brass_engine::game_loop;
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig, LeafEval};
-use brass_engine::rules;
 use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
@@ -20,17 +19,9 @@ fn main() {
 
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
-    let mut guard = 0;
-    while guard < 60 && !state.game_over {
-        guard += 1;
-        let mv = heuristic_ai::choose_action(&mut state).mv;
-        let _ = rules::apply_move(&mut state, &mv);
-        match advance_turn(&mut state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => end_canal_era(&mut state),
-            TurnResult::EndGame => end_game(&mut state),
-        }
-    }
+    game_loop::play(&mut state, 60, game_loop::GameHooks::default(), |state| {
+        Some(heuristic_ai::choose_action(state).mv)
+    });
     let ref2 = search_ai::choose_action_2ply(&mut state).mv.describe(&state);
 
     for leaf in [LeafEval::OnePly, LeafEval::TwoPly] {

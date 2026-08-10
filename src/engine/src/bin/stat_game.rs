@@ -1,7 +1,7 @@
 //! Per-game diagnostic: per-player action counts split by era, plus the
 //! exact flipped tiles at each era end. Usage: cargo run --release --bin stat_game -- <seed>
 use brass_engine::data::Era;
-use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::random_ai;
@@ -70,25 +70,15 @@ fn main() {
     let mut canal: Vec<PStats> = vec![PStats::default(); players];
     let mut rail: Vec<PStats> = vec![PStats::default(); players];
 
-    let mut guard = 0;
-    while !state.game_over && guard < 200_000 {
-        guard += 1;
+    let mut last_err: Option<String> = None;
+    let mut on_move = |state: &mut GameState, mv: &Move| {
         let pid = state.current_player_id();
-        let target = if state.era == Era::Canal { &mut canal[pid] } else { &mut rail[pid] };
-        let mv = match policy.as_str() {
-            "random" => random_ai::choose_random_move(&mut state, &mut rand_rng)
-                .unwrap_or_else(|| heuristic_ai::pass_decision(&state).mv),
-            "2ply" => search_ai::choose_action_2ply(&mut state).mv,
-            "mcts" => {
-                let cfg = MctsConfig {
-                    simulations: sims,
-                    ..Default::default()
-                };
-                mcts_ai::choose_action_mcts(&mut state, &cfg).mv
-            }
-            _ => heuristic_ai::choose_action(&mut state).mv,
+        let target = if state.era == Era::Canal {
+            &mut canal[pid]
+        } else {
+            &mut rail[pid]
         };
-        match &mv {
+        match mv {
             Move::Build { ind, .. } => target.build[*ind as usize] += 1,
             Move::Network { .. } => target.network += 1,
             Move::NetworkDouble { .. } => target.dbl_rail += 1,
@@ -98,30 +88,53 @@ fn main() {
             Move::Pass { .. } => target.pass += 1,
             Move::Scout { .. } => target.scout += 1,
         }
-        if let Err(err) = brass_engine::rules::apply_move(&mut state, &mv) {
-            println!("[!] 非法动作: {err}");
-            break;
+    };
+    let mut on_after = |_state: &mut GameState, _mv: &Move, result: &Result<String, String>| {
+        if let Err(e) = result {
+            last_err = Some(e.clone());
         }
-        match advance_turn(&mut state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => {
-                println!("\n===== 运河时代结束 =====");
-                for pid in 0..players {
-                    let p = &state.players[pid];
-                    println!(
-                        "  P{}: 收入{} 钱£{} VP{} 运河链接{}",
-                        pid,
-                        p.income_level(),
-                        p.money,
-                        p.vp,
-                        p.canal_links
-                    );
-                }
-                println!("  翻面建筑: {}", flipped_desc(&state).join(", "));
-                end_canal_era(&mut state);
+    };
+    let mut on_era = |state: &mut GameState, era: Era| -> AfterEra {
+        if era == Era::Canal {
+            println!("\n===== 运河时代结束 =====");
+            for pid in 0..players {
+                let p = &state.players[pid];
+                println!(
+                    "  P{}: 收入{} 钱£{} VP{} 运河链接{}",
+                    pid,
+                    p.income_level(),
+                    p.money,
+                    p.vp,
+                    p.canal_links
+                );
             }
-            TurnResult::EndGame => end_game(&mut state),
+            println!("  翻面建筑: {}", flipped_desc(state).join(", "));
         }
+        AfterEra::Continue
+    };
+    let hooks = GameHooks {
+        before_move: Some(&mut on_move),
+        after_move: Some(&mut on_after),
+        on_era: Some(&mut on_era),
+        ..Default::default()
+    };
+    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
+        Some(match policy.as_str() {
+            "random" => random_ai::choose_random_move(state, &mut rand_rng)
+                .unwrap_or_else(|| heuristic_ai::pass_decision(state).mv),
+            "2ply" => search_ai::choose_action_2ply(state).mv,
+            "mcts" => {
+                let cfg = MctsConfig {
+                    simulations: sims,
+                    ..Default::default()
+                };
+                mcts_ai::choose_action_mcts(state, &cfg).mv
+            }
+            _ => heuristic_ai::choose_action(state).mv,
+        })
+    });
+    if outcome == LoopOutcome::IllegalMove {
+        println!("[!] 非法动作: {}", last_err.unwrap_or_default());
     }
 
     println!("\n===== 铁路时代结束 / 终局 =====");

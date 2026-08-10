@@ -7,7 +7,8 @@
 //!   policy: heuristic | 2ply | mcts
 //!   mcts uses sims (default 200). heuristic/2ply ignore sims.
 
-use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+use brass_engine::data::Era;
+use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::search_ai;
@@ -35,43 +36,38 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize) -> SweepResult
     };
 
     let mut canal_income: Option<[i8; 4]> = None;
-    let mut guard = 0;
-    while !state.game_over && guard < 200_000 {
-        guard += 1;
-        let mv = match policy {
-            "2ply" => search_ai::choose_action_2ply(&mut state).mv,
+    let mut on_era = |state: &mut GameState, era: Era| -> AfterEra {
+        if era == Era::Canal {
+            let mut inc = [0i8; 4];
+            for (i, p) in state.players.iter().enumerate() {
+                if i < inc.len() {
+                    inc[i] = p.income_level();
+                }
+            }
+            canal_income = Some(inc);
+        }
+        AfterEra::Continue
+    };
+    let hooks = GameHooks {
+        on_era: Some(&mut on_era),
+        ..Default::default()
+    };
+    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
+        Some(match policy {
+            "2ply" => search_ai::choose_action_2ply(state).mv,
             "mcts" => {
                 let cfg = MctsConfig {
                     simulations: sims,
                     ..Default::default()
                 };
-                mcts_ai::choose_action_mcts(&mut state, &cfg).mv
+                mcts_ai::choose_action_mcts(state, &cfg).mv
             }
-            _ => heuristic_ai::choose_action(&mut state).mv,
-        };
-        if brass_engine::rules::apply_move(&mut state, &mv).is_err() {
-            res.illegal = true;
-            break;
-        }
-        match advance_turn(&mut state) {
-            TurnResult::Continue => {}
-            TurnResult::EndCanalEra => {
-                let mut inc = [0i8; 4];
-                for (i, p) in state.players.iter().enumerate() {
-                    if i < inc.len() {
-                        inc[i] = p.income_level();
-                    }
-                }
-                canal_income = Some(inc);
-                end_canal_era(&mut state);
-            }
-            TurnResult::EndGame => end_game(&mut state),
-        }
-    }
-    if !state.game_over {
-        end_game(&mut state);
-        res.stuck = true;
-    }
+            _ => heuristic_ai::choose_action(state).mv,
+        })
+    });
+    game_loop::finish_game(&mut state);
+    res.illegal = outcome == LoopOutcome::IllegalMove;
+    res.stuck = !matches!(outcome, LoopOutcome::GameOver);
 
     for (i, p) in state.players.iter().enumerate() {
         if i < res.vp.len() {

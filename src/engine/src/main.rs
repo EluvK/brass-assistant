@@ -1,7 +1,8 @@
-use brass_engine::engine::{advance_turn, handle_turn_result, TurnResult};
+use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::random_ai::choose_random_move;
+use brass_engine::rules::Move;
 use brass_engine::scoring;
 use brass_engine::search_ai;
 use brass_engine::state::GameState;
@@ -60,84 +61,80 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
     let policy = if mcts_mixed { "mixed" } else { policy };
     let mcts_seat = if mcts_mixed { (seed as usize) % players } else { usize::MAX };
 
-    let mut guard = 0;
-    loop {
-        guard += 1;
-        if guard > 200_000 {
-            stuck = true;
-            break;
+    let mut on_move = |_state: &mut GameState, mv: &Move| match mv {
+        Move::Build { .. } => builds += 1,
+        Move::Network { .. } | Move::NetworkDouble { .. } => networks += 1,
+        Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => develops += 1,
+        Move::Sell { .. } => sells += 1,
+        Move::Loan { .. } => loans += 1,
+        Move::Pass { .. } => passes += 1,
+        Move::Scout { .. } => {}
+    };
+    let mut on_after = |state: &mut GameState, mv: &Move, result: &Result<String, String>| {
+        if let Err(err) = result {
+            eprintln!(
+                "[illegal] seed={} policy={} pid={} era={:?} round={} hand={} move={} err={}",
+                seed,
+                policy,
+                state.current_player_id(),
+                state.era,
+                state.round,
+                state.players[state.current_player_id()].hand.len(),
+                mv.describe(state),
+                err
+            );
         }
-        if state.game_over {
-            break;
+    };
+    let mut on_era = |_state: &mut GameState, era: brass_engine::data::Era| -> AfterEra {
+        if era == brass_engine::data::Era::Canal {
+            canal_events += 1;
         }
-
+        AfterEra::Continue
+    };
+    let hooks = GameHooks {
+        before_move: Some(&mut on_move),
+        after_move: Some(&mut on_after),
+        on_era: Some(&mut on_era),
+        ..Default::default()
+    };
+    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
         let pid = state.current_player_id();
-        let m = if mcts_mixed {
+        if mcts_mixed {
             if pid == mcts_seat {
                 let cfg = MctsConfig {
                     simulations: sims,
                     ..Default::default()
                 };
-                Some(mcts_ai::choose_action_mcts(&mut state, &cfg).mv)
+                Some(mcts_ai::choose_action_mcts(state, &cfg).mv)
             } else if mcts_vs_2ply {
-                Some(search_ai::choose_action_2ply(&mut state).mv)
+                Some(search_ai::choose_action_2ply(state).mv)
             } else if mcts_vs_heur {
-                Some(heuristic_ai::choose_action(&mut state).mv)
+                Some(heuristic_ai::choose_action(state).mv)
             } else {
-                choose_random_move(&mut state, &mut rand_rng)
+                choose_random_move(state, &mut rand_rng)
             }
         } else {
             match policy {
-                "random" => choose_random_move(&mut state, &mut rand_rng),
-                "2ply" => Some(search_ai::choose_action_2ply(&mut state).mv),
+                "random" => choose_random_move(state, &mut rand_rng),
+                "2ply" => Some(search_ai::choose_action_2ply(state).mv),
                 "mcts" => {
                     let cfg = MctsConfig {
                         simulations: sims,
                         ..Default::default()
                     };
-                    Some(mcts_ai::choose_action_mcts(&mut state, &cfg).mv)
+                    Some(mcts_ai::choose_action_mcts(state, &cfg).mv)
                 }
-                _ => Some(heuristic_ai::choose_action(&mut state).mv),
-            }
-        };
-        if let Some(mv) = m {
-            use brass_engine::rules::Move;
-            match &mv {
-                Move::Build { .. } => builds += 1,
-                Move::Network { .. } | Move::NetworkDouble { .. } => networks += 1,
-                Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => develops += 1,
-                Move::Sell { .. } => sells += 1,
-                Move::Loan { .. } => loans += 1,
-                Move::Pass { .. } => passes += 1,
-                Move::Scout { .. } => {}
-            }
-            if let Err(err) = brass_engine::rules::apply_move(&mut state, &mv) {
-                eprintln!(
-                    "[illegal] seed={} policy={} pid={} era={:?} round={} hand={} move={} err={}",
-                    seed,
-                    policy,
-                    pid,
-                    state.era,
-                    state.round,
-                    state.players[pid].hand.len(),
-                    mv.describe(&state),
-                    err
-                );
-                illegal_move = true;
-                break;
+                _ => Some(heuristic_ai::choose_action(state).mv),
             }
         }
-
-        let tr = advance_turn(&mut state);
-        if matches!(tr, TurnResult::EndCanalEra) {
-            canal_events += 1;
-        }
-        handle_turn_result(&mut state, tr);
+    });
+    if outcome == LoopOutcome::IllegalMove {
+        illegal_move = true;
     }
-
-    if !state.game_over {
-        handle_turn_result(&mut state, TurnResult::EndGame);
+    if outcome == LoopOutcome::GuardExceeded {
+        stuck = true;
     }
+    game_loop::finish_game(&mut state);
 
     let built = state.city_tiles.iter().flatten().count() as u64;
     let flipped = state
