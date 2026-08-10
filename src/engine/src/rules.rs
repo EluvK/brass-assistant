@@ -1014,40 +1014,43 @@ pub fn get_second_rail_options(
     }
 
     // Place the first link and dry-run its coal consumption so second-link
-    // generation matches the real execution order.
-    state.links[first_conn] = Some(crate::state::Link { player: pid, is_canal: false });
-    let coal1_undo = consume_coal_for_double_rail(state, coal1);
+    // generation matches the real execution order. The transaction rolls the
+    // mutation back on drop, so no early return / panic can leak it.
+    let mut tx = RailTx::new(state);
+    tx.place_link(first_conn, pid);
+    tx.consume_coal(coal1);
 
     let mut out = Vec::new();
     for conn in connections() {
-        if conn.id == first_conn || !conn.rail || state.links[conn.id].is_some() {
+        if conn.id == first_conn || !conn.rail || tx.state_ref().links[conn.id].is_some() {
             continue;
         }
 
-        if !is_in_network(state, pid, conn.a) && !is_in_network(state, pid, conn.b) {
+        if !is_in_network(tx.state_ref(), pid, conn.a)
+            && !is_in_network(tx.state_ref(), pid, conn.b)
+        {
             continue;
         }
         // Enumerate the coal choices for the second link with the first link
         // still in place (this is the state the player will execute from).
         // Keep only affordable selections; empty means no legal coal source.
-        let coal2_opts: Vec<Vec<CoalSource>> =
-            coal_options_for_connection(state, conn, 1)
-                .into_iter()
-                .filter(|sel| !sel.is_empty())
-                .filter(|sel| {
-                    sel.iter().all(|s| {
-                        let cost = if s.free { 0 } else { s.price as i32 };
-                        cost <= budget_left
-                    })
+        let coal2_opts: Vec<Vec<CoalSource>> = coal_options_for_connection(tx.state_ref(), conn, 1)
+            .into_iter()
+            .filter(|sel| !sel.is_empty())
+            .filter(|sel| {
+                sel.iter().all(|s| {
+                    let cost = if s.free { 0 } else { s.price as i32 };
+                    cost <= budget_left
                 })
-                .collect();
+            })
+            .collect();
         if coal2_opts.is_empty() {
             continue;
         }
         // Place the second link so beer connectivity matches execution time.
-        state.links[conn.id] = Some(crate::state::Link { player: pid, is_canal: false });
-        let beers = beer_sources_for_link(state, pid, conn);
-        state.links[conn.id] = None;
+        tx.state().links[conn.id] = Some(crate::state::Link { player: pid, is_canal: false });
+        let beers = beer_sources_for_link(tx.state_ref(), pid, conn);
+        tx.state().links[conn.id] = None;
         if beers.is_empty() {
             continue;
         }
@@ -1058,8 +1061,6 @@ pub fn get_second_rail_options(
         });
     }
 
-    rollback_double_rail_coal(state, coal1_undo);
-    state.links[first_conn] = None;
     out
 }
 
@@ -1114,6 +1115,75 @@ fn rollback_double_rail_coal(state: &mut GameState, undo: ResourceUndo) {
             owner,
             prev_income_space,
         } => state.restore_consumed_city_tile(key, prev_cubes, prev_flipped, owner, prev_income_space),
+    }
+}
+
+/// Transactional rail placement + coal consumption.
+///
+/// Placements and consumptions are recorded and rolled back (links removed,
+/// coal sources restored) unless the transaction is committed. `Drop`
+/// guarantees cleanup on every exit path, so legal-move dry-runs and
+/// validation-error returns can never leak mutations into the board.
+struct RailTx<'a> {
+    state: Option<&'a mut GameState>,
+    links: Vec<usize>,
+    coals: Vec<ResourceUndo>,
+    committed: bool,
+}
+
+impl<'a> RailTx<'a> {
+    fn new(state: &'a mut GameState) -> Self {
+        RailTx {
+            state: Some(state),
+            links: Vec::new(),
+            coals: Vec::new(),
+            committed: false,
+        }
+    }
+
+    fn state(&mut self) -> &mut GameState {
+        self.state.as_mut().expect("RailTx state already taken")
+    }
+
+    fn state_ref(&self) -> &GameState {
+        self.state.as_ref().expect("RailTx state already taken")
+    }
+
+    fn place_link(&mut self, id: usize, pid: usize) {
+        self.state().links[id] = Some(crate::state::Link { player: pid, is_canal: false });
+        self.links.push(id);
+    }
+
+    fn consume_coal(&mut self, coal: CoalSource) {
+        let undo = consume_coal_for_double_rail(self.state(), coal);
+        self.coals.push(undo);
+    }
+
+    fn describe_coal(&self, idx: usize) -> String {
+        describe_coal_consumption(self.state_ref(), &self.coals[idx])
+    }
+
+    /// Keep the placements and consumptions (mark committed) and hand the
+    /// state back for further mutation.
+    fn commit(mut self) -> &'a mut GameState {
+        self.committed = true;
+        self.state.take().expect("RailTx state already taken")
+    }
+}
+
+impl Drop for RailTx<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some(state) = self.state.as_mut() {
+            for undo in self.coals.iter().rev() {
+                rollback_double_rail_coal(state, *undo);
+            }
+            for &link in self.links.iter().rev() {
+                state.links[link] = None;
+            }
+        }
     }
 }
 
@@ -1227,67 +1297,59 @@ pub fn execute_network_double(
 
     let has_no_presence = !player_has_presence(state, pid);
 
+    // All rail mutations (link placements + coal consumption) run inside a
+    // transaction: any validation error rolls the board back on return.
+    let mut tx = RailTx::new(state);
+
     // Link 1 adjacency
     if !has_no_presence
-        && !is_in_network(state, pid, c1.a)
-        && !is_in_network(state, pid, c1.b)
+        && !is_in_network(tx.state_ref(), pid, c1.a)
+        && !is_in_network(tx.state_ref(), pid, c1.b)
     {
         return Err("First link is not adjacent to your network".into());
     }
-    state.links[conn1] = Some(crate::state::Link { player: pid, is_canal: false });
+    tx.place_link(conn1, pid);
 
     // The player must explicitly choose a legal coal source for the first link.
-    let legal_coal1 = coal_options_for_connection(state, c1, 1);
+    let legal_coal1 = coal_options_for_connection(tx.state_ref(), c1, 1);
     if !legal_coal1.iter().any(|opt| opt.as_slice() == [coal1]) {
-        state.links[conn1] = None;
         return Err("Chosen coal source is not legal for the first link".into());
     }
     let mut total = RAIL_DOUBLE_LINK_COST + if coal1.free { 0 } else { coal1.price as i32 };
-    let coal1_undo = consume_coal_for_double_rail(state, coal1);
+    tx.consume_coal(coal1);
 
     // Link 2 adjacency (with link1 on board)
-    if !is_in_network(state, pid, c2.a) && !is_in_network(state, pid, c2.b) {
-        rollback_double_rail_coal(state, coal1_undo);
-        state.links[conn1] = None;
+    if !is_in_network(tx.state_ref(), pid, c2.a) && !is_in_network(tx.state_ref(), pid, c2.b) {
         return Err("Second link is not adjacent to your network".into());
     }
-    state.links[conn2] = Some(crate::state::Link { player: pid, is_canal: false });
+    tx.place_link(conn2, pid);
 
     // The player must explicitly choose a legal coal source for the second link.
-    let legal_coal2 = coal_options_for_connection(state, c2, 1);
+    let legal_coal2 = coal_options_for_connection(tx.state_ref(), c2, 1);
     if !legal_coal2.iter().any(|opt| opt.as_slice() == [coal2]) {
-        rollback_double_rail_coal(state, coal1_undo);
-        state.links[conn1] = None;
-        state.links[conn2] = None;
         return Err("Chosen coal source is not legal for the second link".into());
     }
     total += if coal2.free { 0 } else { coal2.price as i32 };
-    let coal2_undo = consume_coal_for_double_rail(state, coal2);
+    tx.consume_coal(coal2);
 
     // The player must explicitly choose a legal beer source for the second link.
-    let legal_beers = beer_sources_for_link(state, pid, c2);
+    let legal_beers = beer_sources_for_link(tx.state_ref(), pid, c2);
     if !legal_beers.contains(&beer) {
-        rollback_double_rail_coal(state, coal2_undo);
-        rollback_double_rail_coal(state, coal1_undo);
-        state.links[conn1] = None;
-        state.links[conn2] = None;
         return Err("Chosen beer source is not legal for the second link".into());
     }
 
-    if total > state.players[pid].money {
-        rollback_double_rail_coal(state, coal2_undo);
-        rollback_double_rail_coal(state, coal1_undo);
-        state.links[conn1] = None;
-        state.links[conn2] = None;
+    if total > tx.state_ref().players[pid].money {
         return Err("Cannot afford both links".into());
     }
 
     // Capture pre-consumption state for the log.
-    let coal1_desc = describe_coal_consumption(state, &coal1_undo);
-    let coal2_desc = describe_coal_consumption(state, &coal2_undo);
-    let (beer_label, beer_before) = describe_beer_before(state, &beer);
+    let coal1_desc = tx.describe_coal(0);
+    let coal2_desc = tx.describe_coal(1);
+    let (beer_label, beer_before) = describe_beer_before(tx.state_ref(), &beer);
 
-    // Commit
+    // Commit: keep the placed links and consumed coal.
+    let state = tx.commit();
+
     state.consume_beer_source(&beer);
     state.spend_money(pid, total);
     state.players[pid].rail_links -= 2;
@@ -1824,7 +1886,39 @@ pub fn execute_pass(
 // Legal move enumeration
 // ---------------------------------------------------------------------------
 
+/// Expansion mode for legal-move enumeration.
+///
+/// `All` emits every legal source/card combination (the raw move space);
+/// `OnePerSlot` emits a single representative move per policy slot (the
+/// MCTS / policy-head fast path). Both modes share ONE generator below, so
+/// their coverage can never drift apart.
+#[derive(Clone, Copy)]
+enum MoveExpansion {
+    All,
+    OnePerSlot,
+}
+
+impl MoveExpansion {
+    /// Yield the full slice (`All`) or just its first element (`OnePerSlot`).
+    fn each<'a, T>(self, items: &'a [T]) -> impl Iterator<Item = &'a T> {
+        items.iter().take(match self {
+            MoveExpansion::All => items.len(),
+            MoveExpansion::OnePerSlot => 1,
+        })
+    }
+}
+
 pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
+    generate_moves(state, MoveExpansion::All)
+}
+
+/// The single legal-move generator shared by `legal_moves` (raw) and
+/// `legal_slot_moves` (one representative per policy slot). Every legality
+/// decision (build targets, network targets, double-rail options, develop
+/// sets, sell plans, scout combos) lives exactly here; the expansion mode only
+/// decides whether source/card choices are enumerated fully or truncated to
+/// their first representative.
+fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
     let pid = state.current_player_id();
 
     if let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {
@@ -1863,6 +1957,7 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
     }
 
     let mut moves = Vec::new();
+    let cards = any_card_indices(&state.players[pid]);
 
     // BUILD
     for t in get_valid_build_targets(state, pid) {
@@ -1870,16 +1965,16 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
         let iron_needed = t.cost_iron as usize;
         let coal_opts = coal_source_options(state, t.loc, coal_needed);
         let iron_opts = iron_source_options(state, iron_needed);
-        for coal in &coal_opts {
-            for iron in &iron_opts {
-                for ci in valid_build_cards(state, &state.players[pid], pid, t.loc, t.ind) {
+        for coal in exp.each(&coal_opts) {
+            for iron in exp.each(&iron_opts) {
+                for ci in exp.each(&valid_build_cards(state, &state.players[pid], pid, t.loc, t.ind)) {
                     moves.push(Move::Build {
                         loc: t.loc,
                         slot_index: t.slot_index,
                         ind: t.ind,
                         coal: coal.clone(),
                         iron: iron.clone(),
-                        card_index: ci,
+                        card_index: *ci,
                     });
                 }
             }
@@ -1891,21 +1986,21 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
         || state.era == Era::Rail && state.players[pid].rail_links > 0
     {
         for conn in get_valid_network_targets(state, pid) {
-            for ci in any_card_indices(&state.players[pid]) {
+            for ci in exp.each(&cards) {
                 if state.era == Era::Canal {
                     moves.push(Move::Network {
                         conn_id: conn,
                         coal: None,
-                        card_index: ci,
+                        card_index: *ci,
                     });
                 } else {
                     let c = &connections()[conn];
                     let coal_opts = coal_options_for_connection(state, c, 1);
-                    for coal in &coal_opts {
+                    for coal in exp.each(&coal_opts) {
                         moves.push(Move::Network {
                             conn_id: conn,
                             coal: coal.first().copied(),
-                            card_index: ci,
+                            card_index: *ci,
                         });
                     }
                 }
@@ -1919,21 +2014,21 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
         for conn1 in single {
             let c1 = &connections()[conn1];
             let coal1_opts = coal_options_for_connection(state, c1, 1);
-            for coal1 in &coal1_opts {
-                if coal1.is_empty() {
+            for coal1 in exp.each(&coal1_opts) {
+                let Some(&coal1) = coal1.first() else {
                     continue;
-                }
-                for opt in get_second_rail_options(state, pid, conn1, coal1[0]) {
-                    for coal2 in &opt.coal2_opts {
-                        for beer in &opt.beers {
-                            for ci in any_card_indices(&state.players[pid]) {
+                };
+                for opt in get_second_rail_options(state, pid, conn1, coal1) {
+                    for coal2 in exp.each(&opt.coal2_opts) {
+                        for beer in exp.each(&opt.beers) {
+                            for ci in exp.each(&cards) {
                                 moves.push(Move::NetworkDouble {
                                     conn1,
                                     conn2: opt.conn,
-                                    coal1: coal1[0],
+                                    coal1,
                                     coal2: coal2[0],
                                     beer: *beer,
-                                    card_index: ci,
+                                    card_index: *ci,
                                 });
                             }
                         }
@@ -1955,13 +2050,13 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
             // Single develop
             if affordable_iron >= 1 {
                 let iron_opts = iron_source_options(state, 1);
-                for iron in &iron_opts {
-                    for ci in any_card_indices(&state.players[pid]) {
+                for iron in exp.each(&iron_opts) {
+                    for ci in exp.each(&cards) {
                         moves.push(Move::Develop {
                             ind1,
                             ind2: None,
                             iron: iron.clone(),
-                            card_index: ci,
+                            card_index: *ci,
                         });
                     }
                 }
@@ -1975,13 +2070,13 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
                 }
                 let iron_opts = iron_source_options(state, 2);
                 for &ind2 in &second_types {
-                    for iron in &iron_opts {
-                        for ci in any_card_indices(&state.players[pid]) {
+                    for iron in exp.each(&iron_opts) {
+                        for ci in exp.each(&cards) {
                             moves.push(Move::Develop {
                                 ind1,
                                 ind2: Some(ind2),
                                 iron: iron.clone(),
-                                card_index: ci,
+                                card_index: *ci,
                             });
                         }
                     }
@@ -1993,28 +2088,29 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
     // SELL (single-tile + multi-tile plans; a Sell action may sell several tiles)
     let sell_targets = get_valid_sell_targets(state, pid);
     if !sell_targets.is_empty() {
-        // Single-tile sells (one tile per action).
+        // Single-tile sells (one tile per action). Each route is a distinct
+        // merchant/beer option, so routes are never collapsed.
         for t in &sell_targets {
             for route in &t.routes {
-                for ci in any_card_indices(&state.players[pid]) {
+                for ci in exp.each(&cards) {
                     moves.push(Move::Sell {
                         keys: vec![t.key],
                         merchant_indices: vec![route.merchant_index],
                         use_merchant_beer: vec![route.use_merchant_beer],
-                        card_index: ci,
+                        card_index: *ci,
                     });
                 }
             }
         }
         // Multi-tile sells: bounded subsets (2..=3 tiles) with compatible routes.
         let multi_plans = build_multi_sell_plans(state, pid, &sell_targets);
-        for ci in any_card_indices(&state.players[pid]) {
+        for ci in exp.each(&cards) {
             for plan in &multi_plans {
                 moves.push(Move::Sell {
                     keys: plan.0.clone(),
                     merchant_indices: plan.1.clone(),
                     use_merchant_beer: plan.2.clone(),
-                    card_index: ci,
+                    card_index: *ci,
                 });
             }
         }
@@ -2022,8 +2118,8 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
 
     // LOAN
     if state.can_take_loan(pid) {
-        for ci in any_card_indices(&state.players[pid]) {
-            moves.push(Move::Loan { card_index: ci });
+        for ci in exp.each(&cards) {
+            moves.push(Move::Loan { card_index: *ci });
         }
     }
 
@@ -2031,20 +2127,22 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
     if can_scout(state, pid) {
         // All 3-card combinations
         let n = state.players[pid].hand.len();
+        let mut combos = Vec::new();
         for i in 0..n {
             for j in (i + 1)..n {
                 for k in (j + 1)..n {
-                    moves.push(Move::Scout {
-                        card_indices: [i, j, k],
-                    });
+                    combos.push([i, j, k]);
                 }
             }
+        }
+        for &indices in exp.each(&combos) {
+            moves.push(Move::Scout { card_indices: indices });
         }
     }
 
     // PASS
-    for ci in any_card_indices(&state.players[pid]) {
-        moves.push(Move::Pass { card_index: ci });
+    for ci in exp.each(&cards) {
+        moves.push(Move::Pass { card_index: *ci });
     }
 
     moves
@@ -2070,194 +2168,14 @@ fn push_slot(out: &mut Vec<SlotMove>, mv: Move) {
 }
 
 /// Legal actions at SLOT granularity: one executable representative per occupied
-/// policy slot, mirroring the slot coverage of `legal_moves`. Sell emits one
-/// entry per route (a slot may appear several times; callers group by slot).
+/// policy slot, generated by the same single generator as `legal_moves` (see
+/// `generate_moves`). Sell emits one entry per route (a slot may appear several
+/// times; callers group by slot).
 pub fn legal_slot_moves(state: &mut GameState) -> Vec<SlotMove> {
-    let pid = state.current_player_id();
     let mut out: Vec<SlotMove> = Vec::new();
-
-    if let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {
-        if player_id != pid {
-            return Vec::new();
-        }
-        let types: Vec<IndustryType> = state.players[pid]
-            .developable_types()
-            .into_iter()
-            .map(|(ind, _)| ind)
-            .collect();
-        for &ind1 in &types {
-            if count >= 2 {
-                let rem1 = state.players[pid].remaining_count(ind1);
-                let mut second_types = types.clone();
-                if rem1 < 2 {
-                    second_types.retain(|&x| x != ind1);
-                }
-                for &ind2 in &second_types {
-                    push_slot(&mut out, Move::ResolveFreeDevelop { ind1, ind2: Some(ind2) });
-                }
-            } else {
-                push_slot(&mut out, Move::ResolveFreeDevelop { ind1, ind2: None });
-            }
-        }
-        return out;
+    for mv in generate_moves(state, MoveExpansion::OnePerSlot) {
+        push_slot(&mut out, mv);
     }
-
-    let player_hand_len = state.players[pid].hand.len();
-    if player_hand_len == 0 {
-        return Vec::new();
-    }
-
-    // BUILD: one representative (first coal / iron / card) per legal target.
-    for t in get_valid_build_targets(state, pid) {
-        let Some(coal) = coal_source_options(state, t.loc, t.cost_coal as usize).into_iter().next() else {
-            continue;
-        };
-        let Some(iron) = iron_source_options(state, t.cost_iron as usize).into_iter().next() else {
-            continue;
-        };
-        let Some(&card_index) = valid_build_cards(state, &state.players[pid], pid, t.loc, t.ind).first()
-        else {
-            continue;
-        };
-        push_slot(
-            &mut out,
-            Move::Build { loc: t.loc, slot_index: t.slot_index, ind: t.ind, coal, iron, card_index },
-        );
-    }
-
-    // NETWORK (single + double): one representative per connection / pair.
-    if state.era == Era::Canal && state.players[pid].canal_links > 0
-        || state.era == Era::Rail && state.players[pid].rail_links > 0
-    {
-        let Some(&card_index) = any_card_indices(&state.players[pid]).first() else {
-            return out;
-        };
-        for conn in get_valid_network_targets(state, pid) {
-            let mv = if state.era == Era::Canal {
-                Move::Network { conn_id: conn, coal: None, card_index }
-            } else {
-                let c = &connections()[conn];
-                let Some(coal) = coal_options_for_connection(state, c, 1)
-                    .into_iter().next().and_then(|o| o.into_iter().next()) else {
-                    continue;
-                };
-                Move::Network { conn_id: conn, coal: Some(coal), card_index }
-            };
-            push_slot(&mut out, mv);
-        }
-    }
-    if state.era == Era::Rail {
-        let single = get_valid_network_targets(state, pid);
-        let Some(&card_index) = any_card_indices(&state.players[pid]).first() else {
-            return out;
-        };
-        for conn1 in single {
-            let c1 = &connections()[conn1];
-            let Some(coal1) = coal_options_for_connection(state, c1, 1)
-                .into_iter().next().and_then(|o| o.into_iter().next()) else {
-                continue;
-            };
-            for opt in get_second_rail_options(state, pid, conn1, coal1) {
-                let Some(&coal2) = opt.coal2_opts.first().and_then(|o| o.first()) else {
-                    continue;
-                };
-                let Some(&beer) = opt.beers.first() else {
-                    continue;
-                };
-                push_slot(
-                    &mut out,
-                    Move::NetworkDouble { conn1, conn2: opt.conn, coal1, coal2, beer, card_index },
-                );
-            }
-        }
-    }
-
-    // DEVELOP (single + double): one representative iron selection per slot.
-    if can_develop(state, pid) {
-        let affordable_iron = affordable_develop_iron_count(state, pid);
-        let types: Vec<IndustryType> = state.players[pid]
-            .developable_types()
-            .into_iter()
-            .map(|(ind, _)| ind)
-            .collect();
-        for &ind1 in &types {
-            if affordable_iron >= 1 {
-                let Some(iron) = iron_source_options(state, 1).into_iter().next() else {
-                    continue;
-                };
-                let Some(&card_index) = any_card_indices(&state.players[pid]).first() else {
-                    continue;
-                };
-                push_slot(&mut out, Move::Develop { ind1, ind2: None, iron, card_index });
-            }
-            if affordable_iron >= 2 {
-                let rem1 = state.players[pid].remaining_count(ind1);
-                let mut second_types: Vec<IndustryType> = types.clone();
-                if rem1 < 2 {
-                    second_types.retain(|&x| x != ind1);
-                }
-                let Some(iron) = iron_source_options(state, 2).into_iter().next() else {
-                    continue;
-                };
-                for &ind2 in &second_types {
-                    let Some(&card_index) = any_card_indices(&state.players[pid]).first() else {
-                        continue;
-                    };
-                    push_slot(
-                        &mut out,
-                        Move::Develop { ind1, ind2: Some(ind2), iron: iron.clone(), card_index },
-                    );
-                }
-            }
-        }
-    }
-
-    // SELL: single-tile per route + multi-tile plans (each plan occupies the
-    // slots of every tile it sells).
-    let sell_targets = get_valid_sell_targets(state, pid);
-    if !sell_targets.is_empty() {
-        let Some(&card_index) = any_card_indices(&state.players[pid]).first() else {
-            return out;
-        };
-        for t in &sell_targets {
-            for route in &t.routes {
-                push_slot(
-                    &mut out,
-                    Move::Sell {
-                        keys: vec![t.key],
-                        merchant_indices: vec![route.merchant_index],
-                        use_merchant_beer: vec![route.use_merchant_beer],
-                        card_index,
-                    },
-                );
-            }
-        }
-        for plan in build_multi_sell_plans(state, pid, &sell_targets) {
-            push_slot(
-                &mut out,
-                Move::Sell {
-                    keys: plan.0,
-                    merchant_indices: plan.1,
-                    use_merchant_beer: plan.2,
-                    card_index,
-                },
-            );
-        }
-    }
-
-    // LOAN / SCOUT / PASS: one representative each.
-    if state.can_take_loan(pid) {
-        if let Some(&card_index) = any_card_indices(&state.players[pid]).first() {
-            push_slot(&mut out, Move::Loan { card_index });
-        }
-    }
-    if can_scout(state, pid) && state.players[pid].hand.len() >= 3 {
-        push_slot(&mut out, Move::Scout { card_indices: [0, 1, 2] });
-    }
-    if let Some(&card_index) = any_card_indices(&state.players[pid]).first() {
-        push_slot(&mut out, Move::Pass { card_index });
-    }
-
     out
 }
 
