@@ -22,16 +22,18 @@ use rand::SeedableRng;
 use std::cell::RefCell;
 use std::env;
 
-fn print_era_snapshot(
-    state: &GameState,
-    era_name: &str,
-    action_stats: &[replay_fmt::PStats],
-) {
+fn print_era_snapshot(state: &GameState, era_name: &str, action_stats: &[replay_fmt::PStats]) {
     println!("\n--- {era_name}时代玩家汇总（动作/在场板块/翻面板块） ---");
     for (pid, stats) in action_stats.iter().enumerate() {
         println!("玩家{pid} 动作: {}", replay_fmt::fmt_stats_line(stats));
-        println!("玩家{pid} 在场板块: {}", replay_fmt::player_tiles_detail(state, pid, false));
-        println!("玩家{pid} 翻面板块: {}", replay_fmt::player_tiles_detail(state, pid, true));
+        println!(
+            "玩家{pid} 在场板块: {}",
+            replay_fmt::player_tiles_detail(state, pid, false)
+        );
+        println!(
+            "玩家{pid} 翻面板块: {}",
+            replay_fmt::player_tiles_detail(state, pid, true)
+        );
     }
 }
 
@@ -65,16 +67,12 @@ fn main() {
     let rail_stats: RefCell<Vec<replay_fmt::PStats>> =
         RefCell::new(vec![replay_fmt::PStats::default(); players]);
 
-    println!(
-        "======================================================================"
-    );
+    println!("======================================================================");
     println!(
         "Replay: {players}玩家 {policy}AI, seed={seed} | 起始顺位: {:?}",
         state.turn_order
     );
-    println!(
-        "======================================================================"
-    );
+    println!("======================================================================");
     for pid in 0..players {
         println!(
             "开局 玩家{pid}: {} | 手牌: {}",
@@ -138,9 +136,7 @@ fn main() {
     };
     let mut on_era_after = |_state: &mut GameState, era: Era| {
         if era == Era::Canal {
-            println!(
-                "\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---"
-            );
+            println!("\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---");
         }
     };
     let hooks = GameHooks {

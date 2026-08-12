@@ -5,16 +5,17 @@
 //! highest VP-equivalent score. One-ply, no search.
 
 use crate::data::{Era, IndustryType};
-use crate::engine::{advance_turn, TurnResult};
+use crate::engine::{TurnResult, advance_turn};
 use crate::graph::{
     connected_locations, find_beer_sources, find_coal_sources, find_iron_sources, is_in_network,
 };
-use crate::map::{city_slots, connections, Loc, ALL_LOCATIONS, CITY_COUNT};
+use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, city_slots, connections};
 use crate::rules::{
-    can_develop, can_scout, execute_sell, get_valid_build_targets, get_valid_network_targets,
-    get_valid_second_rail_links, get_valid_sell_targets, valid_build_cards, BuildTarget, Move,
+    BuildTarget, Move, can_develop, can_scout, execute_sell, get_valid_build_targets,
+    get_valid_network_targets, get_valid_second_rail_links, get_valid_sell_targets,
+    valid_build_cards,
 };
-use crate::state::{city_slot_offsets, Card, GameState, PendingBonus};
+use crate::state::{Card, GameState, PendingBonus, city_slot_offsets};
 
 // Scoring weights (from aiPlayer.js).
 const VP_WEIGHT: f64 = 1.0;
@@ -200,12 +201,11 @@ fn plan_flip_probability(state: &GameState, pid: usize, ind: IndustryType) -> f6
     }
     // Beer available: own barrels + reachable merchant beer.
     let beer_ok = owned_beer_barrels(state, pid) > 0
-        || state.merchants.iter().any(|mt| mt.has_beer && mt.accepts(ind));
-    if beer_ok {
-        0.7
-    } else {
-        0.3
-    }
+        || state
+            .merchants
+            .iter()
+            .any(|mt| mt.has_beer && mt.accepts(ind));
+    if beer_ok { 0.7 } else { 0.3 }
 }
 
 /// Compute the quantified production plan for `pid`: the sellable industry
@@ -498,14 +498,11 @@ pub(crate) fn income_weight(state: &GameState) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn vp_equivalent(
-    state: &GameState,
-    vp: f64,
-    income: f64,
-    money: f64,
-    flex: f64,
-) -> f64 {
-    vp * VP_WEIGHT + income * income_weight(state) + money * money_weight(state) + flex * FLEX_WEIGHT
+pub(crate) fn vp_equivalent(state: &GameState, vp: f64, income: f64, money: f64, flex: f64) -> f64 {
+    vp * VP_WEIGHT
+        + income * income_weight(state)
+        + money * money_weight(state)
+        + flex * FLEX_WEIGHT
 }
 
 // ---------------------------------------------------------------------------
@@ -582,7 +579,8 @@ fn estimate_flip_probability(
     pid: usize,
     ind: IndustryType,
     city_id: Loc,
-) -> f64 {    let base = if matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks) {
+) -> f64 {
+    let base = if matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks) {
         // Resources flip when consumed (building/networking) or when a build
         // immediately sells its cubes into the market (iron always; coal if
         // connected to a merchant). Flip odds follow MARKET HUNGER + ERA DEMAND:
@@ -604,8 +602,7 @@ fn estimate_flip_probability(
         };
         let scarcity = ((capacity - market) / capacity).clamp(0.0, 1.0);
         let connected = connected_locations(state, city_id);
-        let can_sell = ind == IndustryType::IronWorks
-            || connected.iter().any(|l| l.is_merchant());
+        let can_sell = ind == IndustryType::IronWorks || connected.iter().any(|l| l.is_merchant());
         // Coal flips by selling to a merchant market OR being consumed by the
         // table. A coal mine with NO merchant connection (an "island mine")
         // can't sell on build and — especially in the canal era — nobody will
@@ -673,9 +670,10 @@ fn estimate_flip_probability(
         // "double-score" they can never realize.
         let mut b = 0.12f64;
         let connected = connected_locations(state, city_id);
-        let has_reachable_merchant = state.merchants.iter().any(|mt| {
-            connected.contains(&mt.loc) && mt.accepts(ind)
-        });
+        let has_reachable_merchant = state
+            .merchants
+            .iter()
+            .any(|mt| connected.contains(&mt.loc) && mt.accepts(ind));
         if has_reachable_merchant {
             // A merchant is only worth real flip credit if there is beer to
             // fuel the sale; without beer it's a dead end this era.
@@ -753,7 +751,8 @@ fn own_brewery_stats(state: &GameState, pid: usize) -> (usize, usize) {
 }
 
 /// Can `pid` reach a merchant barrel (any accepted industry) from `loc`?
-fn beer_barrels_reachable(state: &GameState, loc: Loc) -> bool {    let connected = connected_locations(state, loc);
+fn beer_barrels_reachable(state: &GameState, loc: Loc) -> bool {
+    let connected = connected_locations(state, loc);
     state
         .merchants
         .iter()
@@ -802,10 +801,7 @@ fn resource_source_ratio(state: &GameState, cand: &BuildTarget) -> f64 {
         f64::MAX
     };
     let free_iron = if cand.cost_iron > 0 {
-        find_iron_sources(state)
-            .iter()
-            .filter(|s| s.free)
-            .count() as f64
+        find_iron_sources(state).iter().filter(|s| s.free).count() as f64
     } else {
         f64::MAX
     };
@@ -832,14 +828,11 @@ fn immediate_sellable(state: &GameState, pid: usize, ind: IndustryType, loc: Loc
     find_beer_sources(state, loc, pid, &[]).len() > 0 || beer_barrels_reachable(state, loc)
 }
 
-fn score_build_candidate(
-    state: &GameState,
-    pid: usize,
-    cand: &BuildTarget,
-    plan: &Plan,
-) -> f64 {
+fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan: &Plan) -> f64 {
     let tile = state.players[pid].next_tile(cand.ind);
-    let Some(tile) = tile else { return f64::NEG_INFINITY };
+    let Some(tile) = tile else {
+        return f64::NEG_INFINITY;
+    };
 
     if BAN_BUILD_LV1_BREWERY && cand.ind == IndustryType::Brewery && tile.level == 1 {
         return f64::NEG_INFINITY;
@@ -882,8 +875,8 @@ fn score_build_candidate(
     // tile, the worse (unless spent on your very next action)."
     let market_adjust = if is_resource {
         let connected = connected_locations(state, cand.loc);
-        let market_ok = cand.ind == IndustryType::IronWorks
-            || connected.iter().any(|l| l.is_merchant());
+        let market_ok =
+            cand.ind == IndustryType::IronWorks || connected.iter().any(|l| l.is_merchant());
         let is_coal = cand.ind == IndustryType::CoalMine;
         // Coal demand is far higher than iron (every rail build/link eats it);
         // iron demand is steadier and the market fills faster. Discount iron
@@ -945,8 +938,7 @@ fn score_build_candidate(
     } else {
         0.0
     };
-    let network_expansion =
-        0.1 * count_new_unbuilt_neighbor_connections(state, cand.loc) as f64;
+    let network_expansion = 0.1 * count_new_unbuilt_neighbor_connections(state, cand.loc) as f64;
 
     // Emergency coal supply prior (rail): if coal market is near empty, any
     // legal coal mine is strategically premium because the whole table must pay
@@ -978,9 +970,10 @@ fn score_build_candidate(
     if sellable {
         // A reachable merchant that accepts this industry raises flip odds.
         let connected = connected_locations(state, cand.loc);
-        let has_merchant = state.merchants.iter().any(|mt| {
-            connected.contains(&mt.loc) && mt.accepts(cand.ind)
-        });
+        let has_merchant = state
+            .merchants
+            .iter()
+            .any(|mt| connected.contains(&mt.loc) && mt.accepts(cand.ind));
         if has_merchant {
             beer_bonus += 0.6;
         }
@@ -1003,8 +996,7 @@ fn score_build_candidate(
         // output to need: barrels should cover our unflipped sellable tiles'
         // beer demand plus a small rail-network buffer. Building beyond that is
         // wasted, and level-1 breweries vanish at era end so they're weak.
-        let barrels = owned_beer_barrels(state, pid) as f64
-            + tile.resource_cubes as f64; // this brewery's contribution
+        let barrels = owned_beer_barrels(state, pid) as f64 + tile.resource_cubes as f64; // this brewery's contribution
         let demand = sellable_beer_demand(state, pid) as f64
             + if state.era == Era::Rail { 1.0 } else { 0.5 };
         let surplus = (barrels - demand).max(0.0);
@@ -1117,10 +1109,7 @@ fn score_build_candidate(
     // player's production plan. Only applies from Canal-Late onward — in
     // Canal-Early the priority is the coal/iron economy engine, not committing
     // to the sellable line yet. Additive + small so it nudges, not overrides.
-    if plan.count > 0
-        && plan.industry == cand.ind
-        && era_phase(state) != Phase::CanalEarly
-    {
+    if plan.count > 0 && plan.industry == cand.ind && era_phase(state) != Phase::CanalEarly {
         score += 0.5;
     }
 
@@ -1208,11 +1197,7 @@ pub(crate) fn score_top_builds(
 // NETWORK
 // ---------------------------------------------------------------------------
 
-fn count_hand_cards_newly_in_network(
-    state: &GameState,
-    pid: usize,
-    cand_cities: &[Loc; 2],
-) -> f64 {
+fn count_hand_cards_newly_in_network(state: &GameState, pid: usize, cand_cities: &[Loc; 2]) -> f64 {
     let player = &state.players[pid];
     let mut count = 0.0;
     for card in &player.hand {
@@ -1346,12 +1331,7 @@ fn future_link_node_potential(state: &GameState, pid: usize, loc: Loc) -> f64 {
     total
 }
 
-fn potential_link_vps(
-    state: &GameState,
-    pid: usize,
-    conn_id: usize,
-    cities: &[Loc; 2],
-) -> f64 {
+fn potential_link_vps(state: &GameState, pid: usize, conn_id: usize, cities: &[Loc; 2]) -> f64 {
     let mut immediate = 0.0;
     let mut future = 0.0;
     for loc in cities {
@@ -1503,13 +1483,8 @@ fn score_network_candidate(
     // through, so its links are worth more.
     let profile = era_profile(state);
     let net_scale = profile.network_w;
-    let mut score = vp_equivalent(
-        state,
-        access_gain + merchant_gain,
-        0.0,
-        -(cost as f64),
-        0.0,
-    ) + exploration_bonus
+    let mut score = vp_equivalent(state, access_gain + merchant_gain, 0.0, -(cost as f64), 0.0)
+        + exploration_bonus
         - over_networking_penalty
         + plan_bonus
         - critical_penalty
@@ -1585,11 +1560,7 @@ pub(crate) fn score_top_networks(
         .collect()
 }
 
-fn score_best_network_double(
-    state: &mut GameState,
-    pid: usize,
-    plan: &Plan,
-) -> Option<Decision> {
+fn score_best_network_double(state: &mut GameState, pid: usize, plan: &Plan) -> Option<Decision> {
     if state.era != Era::Rail {
         return None;
     }
@@ -1607,26 +1578,10 @@ fn score_best_network_double(
             let c2 = &connections()[conn2];
             let cost1 = crate::map::RAIL_LINK_COST + estimated_connection_coal_cost(state, conn1);
             let cost2 = crate::map::RAIL_LINK_COST + estimated_connection_coal_cost(state, conn2);
-            let s1 = score_network_candidate(
-                state,
-                pid,
-                conn1,
-                cost1,
-                &[c1.a, c1.b],
-                false,
-                plan,
-            );
-            let s2 = score_network_candidate(
-                state,
-                pid,
-                conn2,
-                cost2,
-                &[c2.a, c2.b],
-                false,
-                plan,
-            );
-            let extra_base = (crate::map::RAIL_DOUBLE_LINK_COST
-                - 2 * crate::map::RAIL_LINK_COST) as f64;
+            let s1 = score_network_candidate(state, pid, conn1, cost1, &[c1.a, c1.b], false, plan);
+            let s2 = score_network_candidate(state, pid, conn2, cost2, &[c2.a, c2.b], false, plan);
+            let extra_base =
+                (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST) as f64;
             let s = s1 + s2 - extra_base * money_weight(state);
             // Double-rail synergy: one action builds two links (a tempo win vs
             // two separate actions), and in Rail-Early the net is being laid
@@ -1642,9 +1597,7 @@ fn score_best_network_double(
             let touches_farm = [&connections()[conn1], &connections()[conn2]]
                 .iter()
                 .any(|c| {
-                    c.a.is_farm()
-                        || c.b.is_farm()
-                        || c.via_farm.map_or(false, |f| f.is_farm())
+                    c.a.is_farm() || c.b.is_farm() || c.via_farm.map_or(false, |f| f.is_farm())
                 });
             if touches_farm {
                 s += 0.8;
@@ -1676,11 +1629,7 @@ fn score_best_network_double(
         .copied()
         .find(|b| b.kind == crate::graph::BeerSourceKind::Own)
         .or_else(|| opt.beers.first().copied())?;
-    let coal2 = opt
-        .coal2_opts
-        .first()
-        .and_then(|o| o.first())
-        .copied()?;
+    let coal2 = opt.coal2_opts.first().and_then(|o| o.first()).copied()?;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::NetworkDouble {
@@ -1798,15 +1747,14 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
     // Iron is scarce and the develop action burns a full turn; charge a real
     // opportunity cost so develop isn't a free high-score default.
     let iron_scarcity = if iron[0].free { 0.0 } else { 0.6 };
-    let second_value = if let Some(_) = second { scored[1].1 * 0.4 } else { 0.0 };
+    let second_value = if let Some(_) = second {
+        scored[1].1 * 0.4
+    } else {
+        0.0
+    };
 
-    let mut score = vp_equivalent(
-        state,
-        first.1 + second_value,
-        0.0,
-        -(iron_cost as f64),
-        0.0,
-    ) - iron_scarcity;
+    let mut score =
+        vp_equivalent(state, first.1 + second_value, 0.0, -(iron_cost as f64), 0.0) - iron_scarcity;
 
     if state.era == Era::Canal {
         score *= 2.0;
@@ -1855,10 +1803,7 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
 // SELL
 // ---------------------------------------------------------------------------
 
-fn best_merchant_beer_bonus(
-    state: &GameState,
-    merchant_indices: &[usize],
-) -> f64 {
+fn best_merchant_beer_bonus(state: &GameState, merchant_indices: &[usize]) -> f64 {
     let mut best = 0.0f64;
     for &i in merchant_indices {
         let mt = &state.merchants[i];
@@ -1956,7 +1901,11 @@ fn score_sell_plan(state: &GameState, pid: usize) -> Option<Decision> {
             continue;
         };
         let mut routes = target.routes.clone();
-        routes.sort_by(|a, b| sell_route_value(state, b).partial_cmp(&sell_route_value(state, a)).unwrap());
+        routes.sort_by(|a, b| {
+            sell_route_value(state, b)
+                .partial_cmp(&sell_route_value(state, a))
+                .unwrap()
+        });
 
         for route in routes {
             let mut try_keys = keys.clone();
@@ -2001,9 +1950,9 @@ fn score_sell_plan(state: &GameState, pid: usize) -> Option<Decision> {
     let total_vp: f64 = keys
         .iter()
         .map(|key| {
-            state.city_tiles[*key]
-                .as_ref()
-                .map_or(0.0, |tile| tile.def.vp as f64 + tile.def.income as f64 * 0.3)
+            state.city_tiles[*key].as_ref().map_or(0.0, |tile| {
+                tile.def.vp as f64 + tile.def.income as f64 * 0.3
+            })
         })
         .sum();
 
@@ -2090,7 +2039,8 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
 
     // The post-loan budget opens up builds that buy back income fast.
     let cash = player.money as f64;
-    let after = best_affordable_build_score(state, pid, cash + crate::map::LOAN_AMOUNT as f64, &plan);
+    let after =
+        best_affordable_build_score(state, pid, cash + crate::map::LOAN_AMOUNT as f64, &plan);
     let now = best_affordable_build_score(state, pid, cash, &plan);
     let gain = (after - now).max(0.0);
 
@@ -2140,20 +2090,12 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
     } else {
         0.0
     };
-    let unlock_bonus = if now <= 0.0 && after > 0.8 {
-        3.2
-    } else {
-        0.0
-    };
+    let unlock_bonus = if now <= 0.0 && after > 0.8 { 3.2 } else { 0.0 };
 
     // Startup-loan peak: Canal-Early round 1-2 with low cash — the loan funds
     // the economy engine (build/develop) before tempo stalls.
     let startup_loan_bonus = if era_phase(state) == Phase::CanalEarly && state.round <= 2 {
-        if cash < 18.0 {
-            2.2
-        } else {
-            1.0
-        }
+        if cash < 18.0 { 2.2 } else { 1.0 }
     } else {
         0.0
     };
@@ -2170,11 +2112,7 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
                 .flatten()
                 .any(|t| t.player == pid && !t.flipped && t.ind.is_sellable());
         if can_flip_soon && cash < 30.0 {
-            if cash < 18.0 {
-                2.8
-            } else {
-                1.8
-            }
+            if cash < 18.0 { 2.8 } else { 1.8 }
         } else {
             0.0
         }
@@ -2182,8 +2120,12 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
         0.0
     };
 
-    let score = gain + combo_gain + idle_bonus + unlock_bonus + startup_loan_bonus
-        + canal_late_loan_bonus - income_cost - floor_penalty - rich_penalty - late_era_penalty;
+    let score =
+        gain + combo_gain + idle_bonus + unlock_bonus + startup_loan_bonus + canal_late_loan_bonus
+            - income_cost
+            - floor_penalty
+            - rich_penalty
+            - late_era_penalty;
     let card_index = pick_any_card(state, pid)?;
     Some(Decision {
         mv: Move::Loan { card_index },
@@ -2212,12 +2154,7 @@ fn best_same_turn_after_loan(state: &GameState, pid: usize) -> Option<f64> {
 }
 
 /// Best build score the player could afford within a cash budget.
-fn best_affordable_build_score(
-    state: &GameState,
-    pid: usize,
-    budget: f64,
-    plan: &Plan,
-) -> f64 {
+fn best_affordable_build_score(state: &GameState, pid: usize, budget: f64, plan: &Plan) -> f64 {
     let mut best = f64::NEG_INFINITY;
     for t in get_valid_build_targets(state, pid) {
         if (t.cost_total as f64) > budget {
@@ -2228,11 +2165,7 @@ fn best_affordable_build_score(
             best = s;
         }
     }
-    if best == f64::NEG_INFINITY {
-        0.0
-    } else {
-        best
-    }
+    if best == f64::NEG_INFINITY { 0.0 } else { best }
 }
 
 // ---------------------------------------------------------------------------
@@ -2265,11 +2198,7 @@ fn card_usefulness(state: &GameState, pid: usize, card: &Card) -> f64 {
             } else {
                 false
             };
-            if has {
-                1.5
-            } else {
-                0.0
-            }
+            if has { 1.5 } else { 0.0 }
         }
     }
 }
@@ -2317,21 +2246,11 @@ fn score_pass_result(state: &GameState, pid: usize) -> Option<Decision> {
 }
 
 // --- temporary debug helpers ------------------------------------------------
-pub fn debug_flip(
-    state: &GameState,
-    pid: usize,
-    ind: IndustryType,
-    loc: Loc,
-) -> f64 {
+pub fn debug_flip(state: &GameState, pid: usize, ind: IndustryType, loc: Loc) -> f64 {
     estimate_flip_probability(state, pid, ind, loc)
 }
 
-pub fn debug_market_adjust(
-    state: &GameState,
-    ind: IndustryType,
-    loc: Loc,
-    cubes: u8,
-) -> f64 {
+pub fn debug_market_adjust(state: &GameState, ind: IndustryType, loc: Loc, cubes: u8) -> f64 {
     let is_resource = matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks);
     if !is_resource {
         return 0.0;

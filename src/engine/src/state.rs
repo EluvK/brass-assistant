@@ -1,4 +1,4 @@
-use crate::data::{industry_tiles, CardType, Era, IndustryType, TileDef};
+use crate::data::{CardType, Era, IndustryType, TileDef, industry_tiles};
 use crate::map::*;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -12,7 +12,10 @@ use std::sync::OnceLock;
 pub enum Card {
     Location(Loc),
     /// An industry card may permit up to 2 industry types (dual card).
-    Industry { industries: [IndustryType; 2], n: u8 },
+    Industry {
+        industries: [IndustryType; 2],
+        n: u8,
+    },
     WildLocation,
     WildIndustry,
 }
@@ -36,9 +39,7 @@ impl Card {
 
     pub fn is_industry(&self, ind: IndustryType) -> bool {
         match self {
-            Card::Industry { industries, n } => {
-                industries[..*n as usize].contains(&ind)
-            }
+            Card::Industry { industries, n } => industries[..*n as usize].contains(&ind),
             _ => false,
         }
     }
@@ -340,7 +341,8 @@ impl Clone for GameState {
         // `RwLock` is not Clone; copy the cached (fingerprint, masks) pair.
         let component_cache =
             std::sync::RwLock::new(*self.component_cache.read().expect("component cache"));
-        let network_cache = std::sync::RwLock::new(*self.network_cache.read().expect("network cache"));
+        let network_cache =
+            std::sync::RwLock::new(*self.network_cache.read().expect("network cache"));
         GameState {
             rng: self.rng.clone(),
             era: self.era,
@@ -445,7 +447,10 @@ fn build_deck_composition(player_count: usize) -> Vec<Card> {
     }
     for (ind, count) in industry_cards(player_count) {
         for _ in 0..*count {
-            cards.push(Card::Industry { industries: [*ind; 2], n: 1 });
+            cards.push(Card::Industry {
+                industries: [*ind; 2],
+                n: 1,
+            });
         }
     }
     for _ in 0..dual_cotton_manufacturer_cards(player_count) {
@@ -500,7 +505,7 @@ impl GameState {
 
     // --- setup -------------------------------------------------------------
 
-    pub     fn init_merchants(&mut self) {
+    pub fn init_merchants(&mut self) {
         // Take the active merchant-tile set for THIS player count, shuffle it,
         // and deal one to each active merchant slot.
         let mut mix: Vec<BuyType> = Vec::new();
@@ -672,7 +677,11 @@ impl GameState {
             self.farm_tiles[idx] = None;
             self.drop_farm_beer(idx);
             if let Some(owner) = owner {
-                let loc = if idx == 0 { Loc::BreweryNorth } else { Loc::BrewerySouth };
+                let loc = if idx == 0 {
+                    Loc::BreweryNorth
+                } else {
+                    Loc::BrewerySouth
+                };
                 self.clear_network_location(owner, loc);
             }
         }
@@ -896,7 +905,11 @@ impl GameState {
         }
         for (idx, tile) in self.farm_tiles.iter().enumerate() {
             if let Some(t) = tile {
-                let loc = if idx == 0 { Loc::BreweryNorth } else { Loc::BrewerySouth };
+                let loc = if idx == 0 {
+                    Loc::BreweryNorth
+                } else {
+                    Loc::BrewerySouth
+                };
                 fp[t.player] |= 1u128 << (39 + loc as u8);
             }
         }
@@ -920,7 +933,11 @@ impl GameState {
         for (idx, tile) in self.farm_tiles.iter().enumerate() {
             if let Some(t) = tile {
                 if t.player == pid {
-                    let loc = if idx == 0 { Loc::BreweryNorth } else { Loc::BrewerySouth };
+                    let loc = if idx == 0 {
+                        Loc::BreweryNorth
+                    } else {
+                        Loc::BrewerySouth
+                    };
                     mask |= 1u32 << (loc as u8);
                 }
             }
@@ -942,10 +959,7 @@ impl GameState {
 
     /// Set the "own network" bit for a location of a player (place tile / link).
     fn mark_network(&mut self, pid: usize, loc: Loc) {
-        self.network_cache
-            .write()
-            .expect("network cache")
-            .1[pid] |= 1u32 << (loc as u8);
+        self.network_cache.write().expect("network cache").1[pid] |= 1u32 << (loc as u8);
     }
 
     /// Recompute one location's bit for a player after a tile/link removal:
@@ -980,10 +994,7 @@ impl GameState {
             }
         }
         if !keep {
-            self.network_cache
-                .write()
-                .expect("network cache")
-                .1[pid] &= !(1u32 << (loc as u8));
+            self.network_cache.write().expect("network cache").1[pid] &= !(1u32 << (loc as u8));
         }
     }
 
@@ -1031,7 +1042,9 @@ impl GameState {
             if t.flipped || t.resource_cubes == 0 {
                 continue;
             }
-            let Some((loc, _)) = loc_from_key(k) else { continue };
+            let Some((loc, _)) = loc_from_key(k) else {
+                continue;
+            };
             match t.ind {
                 IndustryType::CoalMine => coal.push(CoalMineEntry {
                     key: k,
@@ -1286,7 +1299,11 @@ impl GameState {
                 &crate::map::IRON_MARKET_PRICES
             };
             while tile.resource_cubes > 0 {
-                let market = if is_coal { self.coal_market } else { self.iron_market };
+                let market = if is_coal {
+                    self.coal_market
+                } else {
+                    self.iron_market
+                };
                 if market >= prices.len() {
                     break;
                 }

@@ -6,7 +6,7 @@
 
 use brass_engine::game_loop;
 use brass_engine::heuristic_ai;
-use brass_engine::mcts_ai::{self, MctsConfig, LeafEval};
+use brass_engine::mcts_ai::{self, LeafEval, MctsConfig};
 use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
@@ -22,7 +22,9 @@ fn main() {
     game_loop::play(&mut state, 60, game_loop::GameHooks::default(), |state| {
         Some(heuristic_ai::choose_action(state).mv)
     });
-    let ref2 = search_ai::choose_action_2ply(&mut state).mv.describe(&state);
+    let ref2 = search_ai::choose_action_2ply(&mut state)
+        .mv
+        .describe(&state);
 
     for leaf in [LeafEval::OnePly, LeafEval::TwoPly] {
         for &(depth, c_puct) in &[(4, 10.0), (6, 10.0), (6, 30.0), (8, 30.0)] {

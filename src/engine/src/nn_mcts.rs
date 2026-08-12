@@ -17,16 +17,16 @@
 
 use crate::engine::{advance_turn, handle_turn_result};
 use crate::move_codec;
-use crate::rules::{legal_slot_moves, Move};
+use crate::rules::{Move, legal_slot_moves};
 use crate::state::GameState;
 use numpy::PyArray2;
 use numpy::PyArrayMethods;
+use pyo3::Py;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use pyo3::Py;
-use rand::rngs::StdRng;
-use rand::SeedableRng;
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 pub const MAX_PLAYERS: usize = 4;
 
@@ -129,8 +129,14 @@ struct Request {
 }
 
 enum ParkedOutcome {
-    Terminal { path: Vec<usize>, vps: Vec<i32> },
-    Net { path: Vec<usize>, request_idx: usize },
+    Terminal {
+        path: Vec<usize>,
+        vps: Vec<i32>,
+    },
+    Net {
+        path: Vec<usize>,
+        request_idx: usize,
+    },
 }
 
 struct BatchResult {
@@ -161,7 +167,8 @@ pub fn search_net(
     let mut sims_left = sims;
 
     let mut requests: Vec<Request> = Vec::new();
-    let mut request_by_node: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut request_by_node: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
     let mut parked: Vec<ParkedOutcome> = Vec::new();
 
     // Prime the root: expand it and fetch priors so the very first simulation
@@ -264,7 +271,10 @@ pub fn search_net(
         .map(|c| (c.slot, move_codec::encode(&c.mv), arena[c.node].visits))
         .collect();
     children.sort_by(|a, b| b.2.cmp(&a.2));
-    let best_slot = children.first().filter(|(_, _, v)| *v > 0).map(|(s, _, _)| *s);
+    let best_slot = children
+        .first()
+        .filter(|(_, _, v)| *v > 0)
+        .map(|(s, _, _)| *s);
     let best_canonical = best_slot.and_then(|slot| {
         root.children
             .iter()
@@ -340,9 +350,7 @@ fn descend(
 
             if legal_slots.is_empty() {
                 // No legal moves: treat as a leaf (network value).
-                return park(work, requests, request_by_node, path, |_| {
-                    RequestKind::Leaf
-                });
+                return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
             }
             return park(work, requests, request_by_node, path, move |node_idx| {
                 RequestKind::Expand {
@@ -412,7 +420,10 @@ fn park(
         request_by_node.insert(node_idx, i);
         i
     };
-    ParkedOutcome::Net { path, request_idx: idx }
+    ParkedOutcome::Net {
+        path,
+        request_idx: idx,
+    }
 }
 
 fn select_child(arena: &[Node], node_idx: usize, pid: usize, c_puct: f64) -> usize {

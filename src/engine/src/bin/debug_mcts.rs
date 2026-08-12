@@ -49,9 +49,22 @@ fn main() {
     let d = mcts_ai::choose_action_mcts(&mut state, &cfg);
     let elapsed = t.elapsed();
 
-    println!("MCTS chose: {}  score={:.2}  ({:.2?})", d.mv.describe(&state), d.score, elapsed);
-    println!("1-ply would: {}", heuristic_ai::choose_action(&mut state).mv.describe(&state));
-    println!("2-ply would: {}", brass_engine::search_ai::choose_action_2ply(&mut state).mv.describe(&state));
+    println!(
+        "MCTS chose: {}  score={:.2}  ({:.2?})",
+        d.mv.describe(&state),
+        d.score,
+        elapsed
+    );
+    println!(
+        "1-ply would: {}",
+        heuristic_ai::choose_action(&mut state).mv.describe(&state)
+    );
+    println!(
+        "2-ply would: {}",
+        brass_engine::search_ai::choose_action_2ply(&mut state)
+            .mv
+            .describe(&state)
+    );
     // Candidates considered at the root by the 1-ply prior:
     println!("root candidate set (k=3):");
     for c in brass_engine::heuristic_ai::candidate_actions_k(&mut state, 3) {

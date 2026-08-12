@@ -1,10 +1,10 @@
 //! Random policy baselines: picks uniformly (or with mild preference) among
 //! legal moves. Used to sanity-check the engine and as a weak baseline.
 
-use crate::rules::{legal_moves, Move};
+use crate::rules::{Move, legal_moves};
 use crate::state::GameState;
-use rand::rngs::StdRng;
 use rand::Rng;
+use rand::rngs::StdRng;
 
 pub fn choose_random_move(state: &mut GameState, rng: &mut StdRng) -> Option<Move> {
     let moves = legal_moves(state);
@@ -23,14 +23,9 @@ pub fn choose_random_action_first(state: &mut GameState, rng: &mut StdRng) -> Op
         return None;
     }
     // Split into non-pass and pass.
-    let (non_pass, pass): (Vec<_>, Vec<_>) = moves
-        .iter()
-        .partition(|m| !matches!(m, Move::Pass { .. }));
-    let pool = if !non_pass.is_empty() {
-        non_pass
-    } else {
-        pass
-    };
+    let (non_pass, pass): (Vec<_>, Vec<_>) =
+        moves.iter().partition(|m| !matches!(m, Move::Pass { .. }));
+    let pool = if !non_pass.is_empty() { non_pass } else { pass };
     let idx = rng.gen_range(0..pool.len());
     Some(pool[idx].clone())
 }

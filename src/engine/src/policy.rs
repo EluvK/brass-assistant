@@ -16,8 +16,8 @@
 //!   Loan / Scout / Pass 1 each
 
 use crate::data::IndustryType;
-use crate::map::{connections, Loc, ALL_LOCATIONS, CITY_COUNT, MAX_SLOTS_PER_CITY};
-use crate::rules::{legal_slot_moves, Move};
+use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, MAX_SLOTS_PER_CITY, connections};
+use crate::rules::{Move, legal_slot_moves};
 use crate::state::GameState;
 use std::sync::OnceLock;
 
@@ -76,7 +76,10 @@ pub fn slot_types() -> Vec<usize> {
 fn assert_layout() {
     debug_assert_eq!(SELL_CELLS, crate::state::total_city_slots());
     debug_assert_eq!(NETWORK_CELLS, connections().len());
-    debug_assert_eq!(CITY_BUILD_CELLS, CITY_COUNT * MAX_SLOTS_PER_CITY * INDUSTRY_COUNT);
+    debug_assert_eq!(
+        CITY_BUILD_CELLS,
+        CITY_COUNT * MAX_SLOTS_PER_CITY * INDUSTRY_COUNT
+    );
 }
 
 /// NetworkDouble occupies the band right after the single networks; its size
@@ -135,7 +138,9 @@ fn double_rail_index(conn1: usize, conn2: usize) -> Option<usize> {
     } else {
         (conn2, conn1)
     };
-    double_rail_pairs().iter().position(|(a, b)| *a == lo && *b == hi)
+    double_rail_pairs()
+        .iter()
+        .position(|(a, b)| *a == lo && *b == hi)
 }
 
 /// Total number of policy slots (the network's policy-head output width).
@@ -158,9 +163,11 @@ pub fn move_slots(mv: &Move) -> Vec<usize> {
             if loc.is_city() {
                 let city = *loc as usize;
                 if city < CITY_COUNT && *slot_index < MAX_SLOTS_PER_CITY {
-                    vec![city * (MAX_SLOTS_PER_CITY * INDUSTRY_COUNT)
-                        + *slot_index * INDUSTRY_COUNT
-                        + *ind as usize]
+                    vec![
+                        city * (MAX_SLOTS_PER_CITY * INDUSTRY_COUNT)
+                            + *slot_index * INDUSTRY_COUNT
+                            + *ind as usize,
+                    ]
                 } else {
                     vec![]
                 }
@@ -172,23 +179,20 @@ pub fn move_slots(mv: &Move) -> Vec<usize> {
             }
         }
         Move::Network { conn_id, .. } => vec![NETWORK_OFFSET + *conn_id],
-        Move::NetworkDouble {
-            conn1, conn2, ..
-        } => double_rail_index(*conn1, *conn2)
+        Move::NetworkDouble { conn1, conn2, .. } => double_rail_index(*conn1, *conn2)
             .map(|i| network_double_offset() + i)
             .into_iter()
             .collect(),
         Move::Develop { ind1, ind2, .. } | Move::ResolveFreeDevelop { ind1, ind2 } => {
             let base = develop_offset();
             match ind2 {
-                Some(i2) => vec![base + DEVELOP_SINGLE_CELLS + (*ind1 as usize) * INDUSTRY_COUNT + *i2 as usize],
+                Some(i2) => vec![
+                    base + DEVELOP_SINGLE_CELLS + (*ind1 as usize) * INDUSTRY_COUNT + *i2 as usize,
+                ],
                 None => vec![base + *ind1 as usize],
             }
         }
-        Move::Sell { keys, .. } => keys
-            .iter()
-            .map(|k| sell_offset() + *k)
-            .collect(),
+        Move::Sell { keys, .. } => keys.iter().map(|k| sell_offset() + *k).collect(),
         Move::Loan { .. } => vec![loan_offset()],
         Move::Scout { .. } => vec![loan_offset() + 1],
         Move::Pass { .. } => vec![pass_offset()],

@@ -21,11 +21,11 @@
 //!   penalized (this suppresses lines that leave the player unable to act next
 //!   turn).
 
+use crate::data::Era;
 use crate::engine::{advance_turn, handle_turn_result};
 use crate::heuristic_ai::{self, Decision};
 use crate::rules::apply_move;
 use crate::state::GameState;
-use crate::data::Era;
 
 /// Discount applied to the look-ahead (best second action) score.
 /// (Values now live in `EraProfile::alpha`, defined in heuristic_ai.)
@@ -105,11 +105,7 @@ fn combo_alpha(state: &GameState) -> f64 {
 /// Penalize lines that strand the player without cash at the end of their
 /// turn, unless the turn bought a clear income jump (a good flip) which makes
 /// low cash acceptable.
-fn end_of_turn_penalty(
-    state: &GameState,
-    pid: usize,
-    income_before: i8,
-) -> f64 {
+fn end_of_turn_penalty(state: &GameState, pid: usize, income_before: i8) -> f64 {
     let p = &state.players[pid];
     if p.money >= LOW_MONEY_THRESHOLD {
         return 0.0;

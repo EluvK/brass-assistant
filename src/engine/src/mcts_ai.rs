@@ -16,12 +16,12 @@ use crate::data::IndustryType;
 use crate::engine::{advance_turn, handle_turn_result};
 use crate::heuristic_ai::{self, Decision};
 use crate::map::Loc;
-use crate::rules::{apply_move, Move};
-use crate::state::{deck_composition, Card, GameState};
+use crate::rules::{Move, apply_move};
+use crate::state::{Card, GameState, deck_composition};
+use rand::Rng;
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
-use rand::Rng;
 
 /// Leaf-evaluation strategy (pluggable, per project decision "1-ply first,
 /// add a switch later").
@@ -113,12 +113,18 @@ enum MoveKey {
 
 fn move_key(mv: &Move) -> MoveKey {
     match mv {
-        Move::Build { loc, slot_index, ind, coal, iron, .. } => {
+        Move::Build {
+            loc,
+            slot_index,
+            ind,
+            coal,
+            iron,
+            ..
+        } => {
             let mut coal_ids: Vec<(crate::graph::CoalSourceKind, usize)> =
                 coal.iter().map(|c| (c.kind, c.key)).collect();
             coal_ids.sort_unstable();
-            let mut iron_ids: Vec<(usize, bool)> =
-                iron.iter().map(|i| (i.key, i.free)).collect();
+            let mut iron_ids: Vec<(usize, bool)> = iron.iter().map(|i| (i.key, i.free)).collect();
             iron_ids.sort_unstable();
             MoveKey::Build {
                 loc: *loc,
@@ -132,16 +138,24 @@ fn move_key(mv: &Move) -> MoveKey {
             conn: *conn_id,
             coal: *coal,
         },
-        Move::NetworkDouble { conn1, conn2, coal1, coal2, beer, .. } => MoveKey::NetworkDouble {
+        Move::NetworkDouble {
+            conn1,
+            conn2,
+            coal1,
+            coal2,
+            beer,
+            ..
+        } => MoveKey::NetworkDouble {
             c1: *conn1,
             c2: *conn2,
             coal1: *coal1,
             coal2: *coal2,
             beer: *beer,
         },
-        Move::Develop { ind1, ind2, iron, .. } => {
-            let mut iron_ids: Vec<(usize, bool)> =
-                iron.iter().map(|i| (i.key, i.free)).collect();
+        Move::Develop {
+            ind1, ind2, iron, ..
+        } => {
+            let mut iron_ids: Vec<(usize, bool)> = iron.iter().map(|i| (i.key, i.free)).collect();
             iron_ids.sort_unstable();
             MoveKey::Develop {
                 i1: *ind1,
@@ -168,8 +182,14 @@ fn move_key(mv: &Move) -> MoveKey {
                 .collect();
             pairs.sort_unstable_by_key(|(key, _, _)| *key);
             let keys = pairs.iter().map(|(key, _, _)| *key).collect();
-            let merchant_indices = pairs.iter().map(|(_, merchant_index, _)| *merchant_index).collect();
-            let use_merchant_beer = pairs.iter().map(|(_, _, use_merchant)| *use_merchant).collect();
+            let merchant_indices = pairs
+                .iter()
+                .map(|(_, merchant_index, _)| *merchant_index)
+                .collect();
+            let use_merchant_beer = pairs
+                .iter()
+                .map(|(_, _, use_merchant)| *use_merchant)
+                .collect();
             MoveKey::Sell {
                 keys,
                 merchant_indices,
@@ -252,7 +272,11 @@ pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {
     // Multiset-consistency guard: everything left in the pool IS the deck.
     // `deck + all hands + discard_pile == deck_composition` holds on any
     // well-formed state, so the pool always exactly covers the remaining deck.
-    debug_assert_eq!(det.deck.len(), pool.len(), "determinize pool must equal the deck");
+    debug_assert_eq!(
+        det.deck.len(),
+        pool.len(),
+        "determinize pool must equal the deck"
+    );
     det.deck = pool;
     det
 }
@@ -352,8 +376,8 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
                         None => (0.0, 0.0),
                     };
                     let prior = e / sum;
-                    let explore = cfg.c_puct * prior
-                        * ((parent_visits + 1.0).ln() / (1.0 + visits)).sqrt();
+                    let explore =
+                        cfg.c_puct * prior * ((parent_visits + 1.0).ln() / (1.0 + visits)).sqrt();
                     let uct = q + explore;
                     (ci, uct, prior)
                 })

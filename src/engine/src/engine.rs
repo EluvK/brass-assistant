@@ -95,11 +95,7 @@ pub fn end_round(state: &mut GameState) -> TurnResult {
 
     // Income phase — not collected on the final round of the game.
     if !is_final_round {
-        let incomes: Vec<i8> = state
-            .players
-            .iter()
-            .map(|p| p.income_level())
-            .collect();
+        let incomes: Vec<i8> = state.players.iter().map(|p| p.income_level()).collect();
         for (pid, level) in incomes.iter().enumerate() {
             state.players[pid].money += *level as i32;
             if state.players[pid].money < 0 {

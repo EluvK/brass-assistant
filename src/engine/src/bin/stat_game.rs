@@ -35,7 +35,10 @@ fn flipped_desc(state: &GameState) -> Vec<String> {
             if t.flipped {
                 out.push(format!(
                     "P{} {}Lv{}@农场{}",
-                    t.player, t.ind.name(), t.def.level, fi
+                    t.player,
+                    t.ind.name(),
+                    t.def.level,
+                    fi
                 ));
             }
         }
@@ -45,12 +48,21 @@ fn flipped_desc(state: &GameState) -> Vec<String> {
 }
 
 fn main() {
-    let seed: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(7);
-    let players: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(4);
+    let seed: u64 = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7);
+    let players: usize = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
     let policy = std::env::args()
         .nth(3)
         .unwrap_or_else(|| "heuristic".to_string());
-    let sims: usize = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(300);
+    let sims: usize = std::env::args()
+        .nth(4)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     // RNG for the random baseline (state.rng is setup-only).
@@ -182,6 +194,8 @@ fn main() {
     // Market check at end
     println!(
         "\n终局资源: 煤市{}/14 铁市{}/10 | 牌堆{}",
-        state.coal_market, state.iron_market, state.deck.len()
+        state.coal_market,
+        state.iron_market,
+        state.deck.len()
     );
 }

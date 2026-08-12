@@ -118,9 +118,7 @@ fn main() {
         .map(|seed| play_canal(seed, players, &policy, sims))
         .collect();
 
-    println!(
-        "seed,p0,p1,p2,p3,avg_winner,build,network,develop,sell,loan,pass,flipped,links"
-    );
+    println!("seed,p0,p1,p2,p3,avg_winner,build,network,develop,sell,loan,pass,flipped,links");
     let mut winner_sum = 0i64;
     let mut player_sum = 0i64;
     let mut illegal = 0;

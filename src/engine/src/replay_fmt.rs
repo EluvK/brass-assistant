@@ -9,9 +9,9 @@
 //! costs nothing for training or inference performance.
 
 use crate::data::{CardType, Era, IndustryType};
-use crate::map::{city_slots, connections, ALL_LOCATIONS, Loc, CITY_COUNT};
-use crate::rules::{calculate_build_cost, Move};
-use crate::state::{city_slot_offsets, Card, GameState};
+use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, city_slots, connections};
+use crate::rules::{Move, calculate_build_cost};
+use crate::state::{Card, GameState, city_slot_offsets};
 
 // ---------------------------------------------------------------------------
 // Labels
@@ -30,12 +30,12 @@ pub fn loc_label(loc: Loc) -> String {
 
 pub fn industry_label(ind: IndustryType) -> &'static str {
     match ind {
-        IndustryType::CottonMill => "棉纺厂(Cotton Mill)",
-        IndustryType::CoalMine => "煤矿(Coal Mine)",
-        IndustryType::IronWorks => "铁厂(Iron Works)",
-        IndustryType::Manufacturer => "制造厂(Manufacturer)",
-        IndustryType::Pottery => "陶器厂(Pottery)",
-        IndustryType::Brewery => "啤酒厂(Brewery)",
+        IndustryType::CottonMill => "棉纺厂",
+        IndustryType::CoalMine => "煤矿",
+        IndustryType::IronWorks => "铁厂",
+        IndustryType::Manufacturer => "制造厂",
+        IndustryType::Pottery => "陶器厂",
+        IndustryType::Brewery => "啤酒厂",
     }
 }
 
@@ -91,10 +91,20 @@ pub fn player_state(state: &GameState, pid: usize) -> String {
 }
 
 pub fn board_state(state: &GameState) -> String {
-    let built = state.city_tiles.iter().flatten().count()
-        + state.farm_tiles.iter().flatten().count();
-    let flipped = state.city_tiles.iter().flatten().filter(|t| t.flipped).count()
-        + state.farm_tiles.iter().flatten().filter(|t| t.flipped).count();
+    let built =
+        state.city_tiles.iter().flatten().count() + state.farm_tiles.iter().flatten().count();
+    let flipped = state
+        .city_tiles
+        .iter()
+        .flatten()
+        .filter(|t| t.flipped)
+        .count()
+        + state
+            .farm_tiles
+            .iter()
+            .flatten()
+            .filter(|t| t.flipped)
+            .count();
     let links = state.links.iter().flatten().count();
     format!(
         "煤市{}/{} 铁市{}/{} | 板块{}(翻{}) 连接{} 牌堆{}",
@@ -119,7 +129,12 @@ pub fn merchant_state(state: &GameState) -> String {
                 crate::state::BuyType::Any => "任意".to_string(),
                 crate::state::BuyType::Industry(t) => industry_label(t).to_string(),
             };
-            format!("{}[{}]{}", loc_label(mt.loc), buys, if mt.has_beer { "·桶" } else { "" })
+            format!(
+                "{}[{}]{}",
+                loc_label(mt.loc),
+                buys,
+                if mt.has_beer { "·桶" } else { "" }
+            )
         })
         .collect::<Vec<_>>()
         .join("  ")
@@ -148,12 +163,20 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
     let card = state.players[pid].hand.get(mv_card_index(mv));
     let card_name = card.map(card_label).unwrap_or_else(|| "?".to_string());
     match mv {
-        Move::Build { loc, slot_index, ind, .. } => {
+        Move::Build {
+            loc,
+            slot_index,
+            ind,
+            ..
+        } => {
             let cost = crate_cost(state, pid, *ind, *loc);
             format!(
                 "建厂 {} Lv{} @ {}(槽{})，用牌[{}]，花费£{}",
                 industry_label(*ind),
-                state.players[pid].next_tile(*ind).map(|t| t.level).unwrap_or(0),
+                state.players[pid]
+                    .next_tile(*ind)
+                    .map(|t| t.level)
+                    .unwrap_or(0),
                 loc_label(*loc),
                 slot_index + 1,
                 card_name,
@@ -215,7 +238,12 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
                 s
             }
         }
-        Move::Sell { keys, merchant_indices, use_merchant_beer, .. } => {
+        Move::Sell {
+            keys,
+            merchant_indices,
+            use_merchant_beer,
+            ..
+        } => {
             let mut parts = Vec::new();
             for (i, k) in keys.iter().enumerate() {
                 let (loc, slot) = match crate::state::loc_from_key(*k) {
@@ -262,12 +290,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
     }
 }
 
-fn crate_cost(
-    state: &GameState,
-    pid: usize,
-    ind: IndustryType,
-    loc: Loc,
-) -> String {
+fn crate_cost(state: &GameState, pid: usize, ind: IndustryType, loc: Loc) -> String {
     match calculate_build_cost(state, pid, ind, loc) {
         Some(c) => format!("{}(+煤{}铁{})", c.cost_total, c.coal_cost, c.iron_cost),
         None => "?".to_string(),
@@ -297,7 +320,11 @@ pub fn era_score_detail(state: &GameState, pid: usize) -> String {
             if let Some(tile) = state.city_tiles[key].as_ref() {
                 if tile.player == pid && tile.flipped {
                     industry_vp += tile.def.vp as u16;
-                    flipped_tiles.push(format!("{} => {}VP", tile_label(*loc, slot_index, tile), tile.def.vp));
+                    flipped_tiles.push(format!(
+                        "{} => {}VP",
+                        tile_label(*loc, slot_index, tile),
+                        tile.def.vp
+                    ));
                 }
             }
         }
@@ -306,7 +333,13 @@ pub fn era_score_detail(state: &GameState, pid: usize) -> String {
         if let Some(tile) = state.farm_tile(farm_loc) {
             if tile.player == pid && tile.flipped {
                 industry_vp += tile.def.vp as u16;
-                flipped_tiles.push(format!("{} Lv{} @ {} => {}VP", industry_label(tile.ind), tile.def.level, loc_label(farm_loc), tile.def.vp));
+                flipped_tiles.push(format!(
+                    "{} Lv{} @ {} => {}VP",
+                    industry_label(tile.ind),
+                    tile.def.level,
+                    loc_label(farm_loc),
+                    tile.def.vp
+                ));
             }
         }
     }
@@ -354,7 +387,13 @@ pub fn era_score_detail(state: &GameState, pid: usize) -> String {
             }
         }
         link_vp += value;
-        link_parts.push(format!("{}↔{} => {}VP [{}]", loc_label(conn.a), loc_label(conn.b), value, sources.join(", ")));
+        link_parts.push(format!(
+            "{}↔{} => {}VP [{}]",
+            loc_label(conn.a),
+            loc_label(conn.b),
+            value,
+            sources.join(", ")
+        ));
     }
 
     format!(
@@ -380,7 +419,12 @@ pub fn canal_cleanup_detail(state: &GameState) -> String {
         let Some(link) = link else { continue };
         if link.is_canal {
             let conn = &connections()[id];
-            removed_links.push(format!("玩家{}:{}↔{}", link.player, loc_label(conn.a), loc_label(conn.b)));
+            removed_links.push(format!(
+                "玩家{}:{}↔{}",
+                link.player,
+                loc_label(conn.a),
+                loc_label(conn.b)
+            ));
         }
     }
 
@@ -389,7 +433,11 @@ pub fn canal_cleanup_detail(state: &GameState) -> String {
         for slot_index in 0..city_slots(*loc).len() {
             if let Some(tile) = state.tile_at(*loc, slot_index) {
                 if tile.def.level == 1 {
-                    removed_tiles.push(format!("玩家{}:{}", tile.player, tile_label(*loc, slot_index, tile)));
+                    removed_tiles.push(format!(
+                        "玩家{}:{}",
+                        tile.player,
+                        tile_label(*loc, slot_index, tile)
+                    ));
                 }
             }
         }

@@ -24,8 +24,8 @@
 //! ```
 
 use crate::data::Era;
-use crate::engine::{advance_turn, handle_turn_result, TurnResult};
-use crate::rules::{apply_move, Move};
+use crate::engine::{TurnResult, advance_turn, handle_turn_result};
+use crate::rules::{Move, apply_move};
 use crate::state::GameState;
 
 /// What ended the loop.
@@ -123,10 +123,7 @@ pub fn play(
             .as_mut()
             .map(|h| h(state, era))
             .unwrap_or(AfterEra::Continue);
-        let run_cleanup = matches!(
-            action,
-            AfterEra::Continue | AfterEra::StopAfterCleanup
-        );
+        let run_cleanup = matches!(action, AfterEra::Continue | AfterEra::StopAfterCleanup);
         if run_cleanup {
             handle_turn_result(state, tr);
             if let Some(h) = hooks.after_era.as_mut() {

@@ -8,7 +8,7 @@
 //! coal/iron cubes, so the hot paths below are O(free sources + market slots).
 
 use crate::data::IndustryType;
-use crate::map::{Loc, ALL_LOCATIONS};
+use crate::map::{ALL_LOCATIONS, Loc};
 use crate::state::{BeerCubeEntry, GameState};
 use std::collections::HashSet;
 

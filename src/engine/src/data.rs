@@ -22,12 +22,12 @@ impl IndustryType {
 
     pub fn name(&self) -> &'static str {
         match self {
-            IndustryType::CottonMill => "Cotton Mill",
-            IndustryType::CoalMine => "Coal Mine",
-            IndustryType::IronWorks => "Iron Works",
-            IndustryType::Manufacturer => "Manufacturer",
-            IndustryType::Pottery => "Pottery",
-            IndustryType::Brewery => "Brewery",
+            IndustryType::CottonMill => "棉纺厂",
+            IndustryType::CoalMine => "煤矿",
+            IndustryType::IronWorks => "铁厂",
+            IndustryType::Manufacturer => "制造厂",
+            IndustryType::Pottery => "陶器厂",
+            IndustryType::Brewery => "啤酒厂",
         }
     }
 

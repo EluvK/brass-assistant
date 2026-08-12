@@ -30,7 +30,8 @@ fn un(s: &str) -> Result<usize, String> {
     if s == MAX_STR {
         Ok(usize::MAX)
     } else {
-        s.parse::<usize>().map_err(|e| format!("bad usize {s:?}: {e}"))
+        s.parse::<usize>()
+            .map_err(|e| format!("bad usize {s:?}: {e}"))
     }
 }
 
@@ -71,8 +72,12 @@ fn beer(s: &BeerSource) -> String {
         "{};{};{};{}",
         kind,
         u(s.key),
-        s.farm_idx.map(|x| x.to_string()).unwrap_or_else(|| NONE_STR.to_string()),
-        s.merchant_idx.map(|x| x.to_string()).unwrap_or_else(|| NONE_STR.to_string())
+        s.farm_idx
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| NONE_STR.to_string()),
+        s.merchant_idx
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| NONE_STR.to_string())
     )
 }
 
@@ -85,11 +90,18 @@ fn iron_list(v: &[IronSource]) -> String {
 }
 
 fn u_list(v: &[usize]) -> String {
-    v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(";")
+    v.iter()
+        .map(|x| x.to_string())
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn b_list(v: &[bool]) -> String {
-    v.iter().map(|b| *b as u8).map(|x| x.to_string()).collect::<Vec<_>>().join(";")
+    v.iter()
+        .map(|b| *b as u8)
+        .map(|x| x.to_string())
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 // --- source decoders --------------------------------------------------------
@@ -108,7 +120,9 @@ fn dec_coal(s: &str) -> Result<CoalSource, String> {
             return Err(format!("bad coal kind {}", parts[0]));
         },
         key: un(parts[1])?,
-        price: parts[2].parse().map_err(|e| format!("bad coal price: {e}"))?,
+        price: parts[2]
+            .parse()
+            .map_err(|e| format!("bad coal price: {e}"))?,
         free: parts[3] == "1",
     })
 }
@@ -120,7 +134,9 @@ fn dec_iron(s: &str) -> Result<IronSource, String> {
     }
     Ok(IronSource {
         key: un(parts[0])?,
-        price: parts[1].parse().map_err(|e| format!("bad iron price: {e}"))?,
+        price: parts[1]
+            .parse()
+            .map_err(|e| format!("bad iron price: {e}"))?,
         free: parts[2] == "1",
     })
 }
@@ -144,11 +160,17 @@ fn dec_beer(s: &str) -> Result<BeerSource, String> {
 }
 
 fn coal_list_dec(s: &str) -> Result<Vec<CoalSource>, String> {
-    s.split('|').filter(|x| !x.is_empty()).map(dec_coal).collect()
+    s.split('|')
+        .filter(|x| !x.is_empty())
+        .map(dec_coal)
+        .collect()
 }
 
 fn iron_list_dec(s: &str) -> Result<Vec<IronSource>, String> {
-    s.split('|').filter(|x| !x.is_empty()).map(dec_iron).collect()
+    s.split('|')
+        .filter(|x| !x.is_empty())
+        .map(dec_iron)
+        .collect()
 }
 
 fn u_list_dec(s: &str) -> Result<Vec<usize>, String> {
@@ -204,7 +226,10 @@ pub fn encode(mv: &Move) -> String {
         } => format!(
             "Network{{conn:{},coal:{},card:{}}}",
             conn_id,
-            coal_src.as_ref().map(coal).unwrap_or_else(|| NONE_STR.to_string()),
+            coal_src
+                .as_ref()
+                .map(coal)
+                .unwrap_or_else(|| NONE_STR.to_string()),
             card_enc(*card_index)
         ),
         Move::NetworkDouble {
@@ -222,7 +247,8 @@ pub fn encode(mv: &Move) -> String {
             coal(coal2),
             beer(beer_src),
             card_enc(*card_index)
-        ),        Move::Develop {
+        ),
+        Move::Develop {
             ind1,
             ind2,
             iron,
@@ -258,7 +284,11 @@ pub fn encode(mv: &Move) -> String {
         Move::Loan { card_index } => format!("Loan{{card:{}}}", card_enc(*card_index)),
         Move::Scout { card_indices } => format!(
             "Scout{{cards:{}}}",
-            card_indices.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(";")
+            card_indices
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(";")
         ),
         Move::Pass { card_index } => format!("Pass{{card:{}}}", card_enc(*card_index)),
     }
@@ -294,10 +324,10 @@ fn field_opt_ind(body: &str, name: &str) -> Result<Option<IndustryType>, String>
 
 pub fn decode(s: &str) -> Result<Move, String> {
     let s = s.trim();
-    let (head, rest) = s
-        .split_once('{')
+    let (head, rest) = s.split_once('{').ok_or_else(|| format!("bad move {s:?}"))?;
+    let body = rest
+        .strip_suffix('}')
         .ok_or_else(|| format!("bad move {s:?}"))?;
-    let body = rest.strip_suffix('}').ok_or_else(|| format!("bad move {s:?}"))?;
 
     match head {
         "Build" => {
@@ -381,8 +411,8 @@ mod tests {
     use crate::policy;
     use crate::rules::{apply_move, legal_moves};
     use crate::state::GameState;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     fn fresh_state(seed: u64, players: usize) -> GameState {
         GameState::new(StdRng::seed_from_u64(seed), players)
@@ -441,12 +471,19 @@ mod tests {
     fn malformed_inputs_are_rejected_not_panicked() {
         // A garbage farm/merchant index in a beer source must error, not decode
         // into usize::MAX (which would panic on apply via farm_tiles[MAX]).
-        let bad = "NetDouble{c1:0,c2:11,coal1:M;3;0;1,coal2:M;4;0;1,beer:O;3;garbage;-;-,card:0}".replace(";-;-", ";garbage;");
-        assert!(decode(&bad).is_err(), "malformed beer farm_idx must be rejected");
+        let bad = "NetDouble{c1:0,c2:11,coal1:M;3;0;1,coal2:M;4;0;1,beer:O;3;garbage;-;-,card:0}"
+            .replace(";-;-", ";garbage;");
+        assert!(
+            decode(&bad).is_err(),
+            "malformed beer farm_idx must be rejected"
+        );
 
         assert!(decode("Garbage{foo:1}").is_err());
         assert!(decode("Build{loc:99,slot:0,ind:0,coal:,iron:,card:0}").is_err());
-        assert!(decode("NetDouble{c1:0,c2:11,coal1:M;3;0;1,coal2:M;4;0;1,beer:M;max;-;abc,card:0}").is_err());
+        assert!(
+            decode("NetDouble{c1:0,c2:11,coal1:M;3;0;1,coal2:M;4;0;1,beer:M;max;-;abc,card:0}")
+                .is_err()
+        );
     }
 
     #[test]

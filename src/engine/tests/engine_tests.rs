@@ -1,4 +1,4 @@
-use brass_engine::data::{industry_tiles, Era, IndustryType};
+use brass_engine::data::{Era, IndustryType, industry_tiles};
 use brass_engine::engine::{advance_turn, end_canal_era};
 use brass_engine::map::*;
 use brass_engine::rules::{
@@ -7,8 +7,8 @@ use brass_engine::rules::{
 };
 use brass_engine::scoring;
 use brass_engine::state::{BoardTile, Card, GameState};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 fn setup(players: usize) -> GameState {
     let rng = StdRng::seed_from_u64(42);
@@ -70,7 +70,9 @@ fn place_test_brewery(state: &mut GameState, loc: Loc, owner: usize, cubes: u8) 
 }
 
 fn test_coal_from_cannock(state: &GameState) -> brass_engine::graph::CoalSource {
-    let key = state.city_slot_key(Loc::Cannock, 0).expect("cannock coal slot");
+    let key = state
+        .city_slot_key(Loc::Cannock, 0)
+        .expect("cannock coal slot");
     brass_engine::graph::CoalSource {
         kind: brass_engine::graph::CoalSourceKind::Mine,
         key,
@@ -244,7 +246,16 @@ fn build_changes_board_and_discards_card() {
         .into_iter()
         .next()
         .unwrap_or_default();
-    let res = execute_build(&mut state, pid, t.loc, t.slot_index, t.ind, &coal, &iron, card_idx);
+    let res = execute_build(
+        &mut state,
+        pid,
+        t.loc,
+        t.slot_index,
+        t.ind,
+        &coal,
+        &iron,
+        card_idx,
+    );
     assert!(res.is_ok(), "build failed: {:?}", res);
     assert_eq!(state.players[pid].hand.len(), hand_before - 1);
 }
@@ -320,8 +331,14 @@ fn link_scoring_ignores_unflipped_tiles_until_they_flip() {
 
     let scores = scoring::score_era(&mut state);
     let mine = scores.iter().find(|s| s.player_id == pid).unwrap();
-    assert_eq!(mine.link_vp, 2, "only the flipped Derby brewery should contribute link icons");
-    assert_eq!(mine.industry_vp, 4, "only flipped industries should score industry VP");
+    assert_eq!(
+        mine.link_vp, 2,
+        "only the flipped Derby brewery should contribute link icons"
+    );
+    assert_eq!(
+        mine.industry_vp, 4,
+        "only flipped industries should score industry VP"
+    );
 
     state.players[pid].vp = 0;
     let belper_key = state.city_slot_key(Loc::Belper, 0).unwrap();
@@ -329,7 +346,10 @@ fn link_scoring_ignores_unflipped_tiles_until_they_flip() {
 
     let scores = scoring::score_era(&mut state);
     let mine = scores.iter().find(|s| s.player_id == pid).unwrap();
-    assert_eq!(mine.link_vp, 4, "after Belper flips, both endpoint tiles should contribute link icons");
+    assert_eq!(
+        mine.link_vp, 4,
+        "after Belper flips, both endpoint tiles should contribute link icons"
+    );
 }
 
 #[test]
@@ -413,8 +433,14 @@ fn canal_era_rejects_brewery4_and_pottery5() {
     let p5 = industry_tiles(IndustryType::Pottery)[4];
     assert_eq!(b4.level, 4);
     assert_eq!(p5.level, 5);
-    assert!(!b4.canal_era && b4.rail_era, "Brewery IV is a rail-era-only build");
-    assert!(!p5.canal_era && p5.rail_era, "Pottery V is a rail-era-only build");
+    assert!(
+        !b4.canal_era && b4.rail_era,
+        "Brewery IV is a rail-era-only build"
+    );
+    assert!(
+        !p5.canal_era && p5.rail_era,
+        "Pottery V is a rail-era-only build"
+    );
 
     // 1) Move generation must exclude them in the canal era.
     let targets = get_valid_build_targets(&state, pid);
@@ -432,7 +458,16 @@ fn canal_era_rejects_brewery4_and_pottery5() {
         .into_iter()
         .next()
         .unwrap_or_default();
-    let res = execute_build(&mut state, pid, Loc::BreweryNorth, 0, IndustryType::Brewery, &[], &iron, 0);
+    let res = execute_build(
+        &mut state,
+        pid,
+        Loc::BreweryNorth,
+        0,
+        IndustryType::Brewery,
+        &[],
+        &iron,
+        0,
+    );
     assert!(
         res.is_err(),
         "raw Brewery IV build must fail in the canal era: {res:?}"
@@ -541,8 +576,13 @@ fn canal_era_one_build_per_city_per_player() {
     );
     assert!(res.is_ok(), "rail era: second Derby build failed: {res:?}");
     let derby1 = state.city_slot_key(Loc::Derby, 1).unwrap();
-    let tile = state.city_tiles[derby1].as_ref().expect("second Derby tile placed");
-    assert_eq!(tile.def.level, 2, "Mfg II built at Derby slot 1 in the rail era");
+    let tile = state.city_tiles[derby1]
+        .as_ref()
+        .expect("second Derby tile placed");
+    assert_eq!(
+        tile.def.level, 2,
+        "Mfg II built at Derby slot 1 in the rail era"
+    );
 }
 
 #[test]
@@ -613,7 +653,10 @@ fn industry_card_build_requires_network() {
         &[],
         1,
     );
-    assert!(res.is_ok(), "location-card build outside the network failed: {res:?}");
+    assert!(
+        res.is_ok(),
+        "location-card build outside the network failed: {res:?}"
+    );
     let bham0 = state.city_slot_key(Loc::Birmingham, 0).unwrap();
     assert!(state.city_tiles[bham0].is_some(), "Birmingham tile placed");
 }
@@ -640,10 +683,19 @@ fn discard_tracks_face_down_pile() {
     let idx = state.players[pid]
         .hand
         .iter()
-        .position(|c| !matches!(c, brass_engine::state::Card::WildLocation | brass_engine::state::Card::WildIndustry))
+        .position(|c| {
+            !matches!(
+                c,
+                brass_engine::state::Card::WildLocation | brass_engine::state::Card::WildIndustry
+            )
+        })
         .unwrap();
     brass_engine::rules::discard_card(&mut state, pid, idx);
-    assert_eq!(state.discard_pile.len(), before + 1, "non-wild discard should be tracked");
+    assert_eq!(
+        state.discard_pile.len(),
+        before + 1,
+        "non-wild discard should be tracked"
+    );
 }
 
 #[test]
@@ -735,7 +787,11 @@ fn mcts_determinize_pool_is_multiset_consistent() {
     }
     all.extend(det.deck.clone());
     all.extend(det.discard_pile.clone());
-    assert_eq!(all.len(), comp.len(), "non-wild cards in play must match composition");
+    assert_eq!(
+        all.len(),
+        comp.len(),
+        "non-wild cards in play must match composition"
+    );
     for c in &comp {
         assert_eq!(
             all.iter().filter(|x| *x == c).count(),
@@ -759,17 +815,29 @@ fn determinize_excludes_discarded_cards_from_opponent_hands() {
         .unwrap();
     let discarded = state.players[pid].hand[idx].clone();
     brass_engine::rules::discard_card(&mut state, pid, idx);
-    assert!(state.discard_pile.contains(&discarded), "setup: card must enter the discard pile");
+    assert!(
+        state.discard_pile.contains(&discarded),
+        "setup: card must enter the discard pile"
+    );
 
     let mut rng = StdRng::seed_from_u64(99);
     let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
     for (i, p) in det.players.iter().enumerate() {
         if i != pid {
-            assert!(!p.hand.contains(&discarded), "discarded card {discarded:?} leaked into P{i}'s hand");
+            assert!(
+                !p.hand.contains(&discarded),
+                "discarded card {discarded:?} leaked into P{i}'s hand"
+            );
         }
     }
-    assert!(!det.deck.contains(&discarded), "discarded card {discarded:?} leaked into the deck");
-    assert!(det.discard_pile.contains(&discarded), "discard pile must keep the card");
+    assert!(
+        !det.deck.contains(&discarded),
+        "discarded card {discarded:?} leaked into the deck"
+    );
+    assert!(
+        det.discard_pile.contains(&discarded),
+        "discard pile must keep the card"
+    );
 }
 
 /// Era transition re-enters every canal-era card into the rail deck, so both
@@ -793,7 +861,10 @@ fn end_canal_era_resets_discard_pile_and_played() {
     assert!(state.players.iter().any(|p| !p.played.is_empty()));
 
     end_canal_era(&mut state);
-    assert!(state.discard_pile.is_empty(), "discard pile must reset at era end");
+    assert!(
+        state.discard_pile.is_empty(),
+        "discard pile must reset at era end"
+    );
     for p in &state.players {
         assert!(p.played.is_empty(), "played history must reset at era end");
     }
@@ -850,11 +921,29 @@ fn discarding_a_wild_returns_it_to_supply_and_skips_played() {
         .unwrap();
     brass_engine::rules::discard_card(&mut state, pid, wl_idx);
 
-    assert_eq!(state.players[pid].played.len(), before_played, "wild must not enter played");
-    assert_eq!(state.discard_pile.len(), discard_before, "wild must not enter the discard pile");
-    assert_eq!(state.wild_location_pile, loc_pile_before + 1, "wild returns to the supply");
-    assert!(!state.players[pid].has_wild_location, "wild-location holding flag clears");
-    assert!(state.players[pid].has_wild_industry, "wild-industry holding flag unaffected");
+    assert_eq!(
+        state.players[pid].played.len(),
+        before_played,
+        "wild must not enter played"
+    );
+    assert_eq!(
+        state.discard_pile.len(),
+        discard_before,
+        "wild must not enter the discard pile"
+    );
+    assert_eq!(
+        state.wild_location_pile,
+        loc_pile_before + 1,
+        "wild returns to the supply"
+    );
+    assert!(
+        !state.players[pid].has_wild_location,
+        "wild-location holding flag clears"
+    );
+    assert!(
+        state.players[pid].has_wild_industry,
+        "wild-industry holding flag unaffected"
+    );
 }
 
 /// Holding a wild card is public information: the engine exposes it per player
@@ -871,8 +960,16 @@ fn wild_holding_is_public_and_encoded_in_training_tensor() {
     let res = brass_engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
     assert!(res.is_ok(), "scout failed: {res:?}");
     let t = brass_engine::encode::state_to_tensor(&state, pid);
-    assert_eq!(t.global[base + 5], 1.0, "wild-location holding encoded separately");
-    assert_eq!(t.global[base + 6], 1.0, "wild-industry holding encoded separately");
+    assert_eq!(
+        t.global[base + 5],
+        1.0,
+        "wild-location holding encoded separately"
+    );
+    assert_eq!(
+        t.global[base + 6],
+        1.0,
+        "wild-industry holding encoded separately"
+    );
 
     let wl_idx = state.players[pid]
         .hand
@@ -881,7 +978,11 @@ fn wild_holding_is_public_and_encoded_in_training_tensor() {
         .unwrap();
     brass_engine::rules::discard_card(&mut state, pid, wl_idx);
     let t = brass_engine::encode::state_to_tensor(&state, pid);
-    assert_eq!(t.global[base + 5], 0.0, "wild-location flag reflects the discard");
+    assert_eq!(
+        t.global[base + 5],
+        0.0,
+        "wild-location flag reflects the discard"
+    );
     assert_eq!(t.global[base + 6], 1.0, "wild-industry flag unaffected");
 }
 
@@ -913,8 +1014,14 @@ fn legal_moves_do_not_offer_unaffordable_double_develop() {
         .filter(|mv| matches!(mv, brass_engine::rules::Move::Develop { ind2: Some(_), .. }))
         .count();
 
-    assert!(single_develops > 0, "expected at least one single develop with one free iron");
-    assert_eq!(double_develops, 0, "double develop should not be generated when only one iron is affordable");
+    assert!(
+        single_develops > 0,
+        "expected at least one single develop with one free iron"
+    );
+    assert_eq!(
+        double_develops, 0,
+        "double develop should not be generated when only one iron is affordable"
+    );
 }
 
 #[test]
@@ -966,19 +1073,33 @@ fn execute_network_double_consumes_two_coal_and_one_own_beer() {
     let coal2 = test_coal_from_cannock(&state);
     let res = execute_network_double(&mut state, pid, 15, 33, coal1, coal2, own_beer, 0);
 
-    assert!(res.is_ok(), "double rail should succeed with 2 coal and 1 own beer available: {res:?}");
-    let coal_tile = state.tile_at(Loc::Cannock, 0).expect("coal tile should remain on board");
-    assert_eq!(coal_tile.resource_cubes, 0, "double rail should consume exactly 2 coal");
+    assert!(
+        res.is_ok(),
+        "double rail should succeed with 2 coal and 1 own beer available: {res:?}"
+    );
+    let coal_tile = state
+        .tile_at(Loc::Cannock, 0)
+        .expect("coal tile should remain on board");
+    assert_eq!(
+        coal_tile.resource_cubes, 0,
+        "double rail should consume exactly 2 coal"
+    );
     assert!(coal_tile.flipped, "depleted coal mine should flip");
     let own_brewery = state
         .farm_tile(Loc::BrewerySouth)
         .expect("own brewery should remain on board");
-    assert_eq!(own_brewery.resource_cubes, 0, "double rail should consume exactly 1 beer");
+    assert_eq!(
+        own_brewery.resource_cubes, 0,
+        "double rail should consume exactly 1 beer"
+    );
     assert!(own_brewery.flipped, "depleted brewery should flip");
     assert!(state.links[15].is_some());
     assert!(state.links[33].is_some());
     assert_eq!(state.players[pid].rail_links, LINKS_PER_PLAYER - 2);
-    assert_eq!(state.players[pid].money, 85, "double rail with free coal should cost only £15");
+    assert_eq!(
+        state.players[pid].money, 85,
+        "double rail with free coal should cost only £15"
+    );
 }
 
 #[test]
@@ -988,7 +1109,9 @@ fn execute_network_double_can_use_connected_opponent_beer() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::Stone, 1, 1);
 
-    let stone_key = state.city_slot_key(Loc::Stone, 0).expect("stone slot should exist");
+    let stone_key = state
+        .city_slot_key(Loc::Stone, 0)
+        .expect("stone slot should exist");
     let opp_beer = brass_engine::graph::BeerSource {
         kind: brass_engine::graph::BeerSourceKind::Opponent,
         key: stone_key,
@@ -999,9 +1122,17 @@ fn execute_network_double_can_use_connected_opponent_beer() {
     let coal2 = test_coal_from_cannock(&state);
     let res = execute_network_double(&mut state, pid, 15, 33, coal1, coal2, opp_beer, 0);
 
-    assert!(res.is_ok(), "connected opponent beer should be usable for double rail: {res:?}");
-    let opp_brewery = state.tile_at(Loc::Stone, 0).expect("opponent brewery should remain on board");
-    assert_eq!(opp_brewery.resource_cubes, 0, "connected opponent beer should be consumed");
+    assert!(
+        res.is_ok(),
+        "connected opponent beer should be usable for double rail: {res:?}"
+    );
+    let opp_brewery = state
+        .tile_at(Loc::Stone, 0)
+        .expect("opponent brewery should remain on board");
+    assert_eq!(
+        opp_brewery.resource_cubes, 0,
+        "connected opponent beer should be consumed"
+    );
     assert!(opp_brewery.flipped, "depleted opponent brewery should flip");
 }
 
@@ -1022,17 +1153,40 @@ fn execute_network_double_without_connected_beer_rolls_back_temp_changes() {
     let coal2 = test_coal_from_cannock(&state);
     let res = execute_network_double(&mut state, pid, 15, 33, coal1, coal2, opp_beer, 0);
 
-    assert_eq!(res, Err("Chosen beer source is not legal for the second link".to_string()));
-    let coal_tile = state.tile_at(Loc::Cannock, 0).expect("coal tile should remain on board");
-    assert_eq!(coal_tile.resource_cubes, 2, "failed double rail must not consume coal");
-    assert!(!coal_tile.flipped, "failed double rail must not flip the coal mine");
+    assert_eq!(
+        res,
+        Err("Chosen beer source is not legal for the second link".to_string())
+    );
+    let coal_tile = state
+        .tile_at(Loc::Cannock, 0)
+        .expect("coal tile should remain on board");
+    assert_eq!(
+        coal_tile.resource_cubes, 2,
+        "failed double rail must not consume coal"
+    );
+    assert!(
+        !coal_tile.flipped,
+        "failed double rail must not flip the coal mine"
+    );
     let opp_brewery = state
         .farm_tile(Loc::BrewerySouth)
         .expect("opponent brewery should remain on board");
-    assert_eq!(opp_brewery.resource_cubes, 1, "failed double rail must not consume beer");
-    assert!(state.links[15].is_none() && state.links[33].is_none(), "failed double rail must not leave links on the board");
-    assert_eq!(state.players[pid].money, 100, "failed double rail must not spend money");
-    assert_eq!(state.players[pid].rail_links, LINKS_PER_PLAYER, "failed double rail must not consume rail links");
+    assert_eq!(
+        opp_brewery.resource_cubes, 1,
+        "failed double rail must not consume beer"
+    );
+    assert!(
+        state.links[15].is_none() && state.links[33].is_none(),
+        "failed double rail must not leave links on the board"
+    );
+    assert_eq!(
+        state.players[pid].money, 100,
+        "failed double rail must not spend money"
+    );
+    assert_eq!(
+        state.players[pid].rail_links, LINKS_PER_PLAYER,
+        "failed double rail must not consume rail links"
+    );
 }
 
 #[test]
@@ -1042,7 +1196,10 @@ fn network_rejects_market_coal_while_free_source_available() {
     // Player has presence + a connected free coal source (Cannock mine).
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
     place_test_coal_mine(&mut state, 1);
-    state.links[15] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[15] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
 
     // Build a rail link using a PAID market coal source while a free connected
     // mine (Cannock) is available -> must fail under the free-first rule.
@@ -1058,9 +1215,17 @@ fn network_rejects_market_coal_while_free_source_available() {
         Err("Free sources must be used before the market".to_string()),
         "market coal must be rejected while a free source is available"
     );
-    assert!(state.links[33].is_none(), "failed network must not place the link");
-    let mine = state.tile_at(Loc::Cannock, 0).expect("cannock mine should remain");
-    assert_eq!(mine.resource_cubes, 2, "failed network must not consume free coal");
+    assert!(
+        state.links[33].is_none(),
+        "failed network must not place the link"
+    );
+    let mine = state
+        .tile_at(Loc::Cannock, 0)
+        .expect("cannock mine should remain");
+    assert_eq!(
+        mine.resource_cubes, 2,
+        "failed network must not consume free coal"
+    );
     assert!(!mine.flipped, "failed network must not flip the mine");
 }
 
@@ -1070,7 +1235,10 @@ fn network_uses_the_explicitly_chosen_free_coal_source() {
     let pid = 0;
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
     place_test_coal_mine(&mut state, 1);
-    state.links[15] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[15] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
 
     // Explicitly choose the Cannock free mine as the rail coal source.
     let coal_key = state.city_slot_key(Loc::Cannock, 0).expect("cannock slot");
@@ -1083,8 +1251,13 @@ fn network_uses_the_explicitly_chosen_free_coal_source() {
     let res = execute_network(&mut state, pid, 33, Some(coal), 0);
     assert!(res.is_ok(), "free coal network should succeed: {res:?}");
     assert!(state.links[33].is_some());
-    let mine = state.tile_at(Loc::Cannock, 0).expect("cannock mine should remain");
-    assert_eq!(mine.resource_cubes, 1, "one free coal cube should be consumed");
+    let mine = state
+        .tile_at(Loc::Cannock, 0)
+        .expect("cannock mine should remain");
+    assert_eq!(
+        mine.resource_cubes, 1,
+        "one free coal cube should be consumed"
+    );
 }
 
 #[test]
@@ -1105,10 +1278,22 @@ fn sell_uses_the_explicitly_chosen_merchant_bonus() {
         },
     );
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
-    state.links[34] = Some(brass_engine::state::Link { player: pid, is_canal: false });
-    state.links[35] = Some(brass_engine::state::Link { player: pid, is_canal: false });
-    state.links[29] = Some(brass_engine::state::Link { player: pid, is_canal: false });
-    state.links[28] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[34] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
+    state.links[35] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
+    state.links[29] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
+    state.links[28] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
     state.merchants = vec![
         brass_engine::state::MerchantTile {
             loc: Loc::Oxford,
@@ -1124,14 +1309,31 @@ fn sell_uses_the_explicitly_chosen_merchant_bonus() {
     let oxford_idx = 0usize;
     let warrington_idx = 1usize;
 
-    let tile_key = state.city_slot_key(Loc::Stone, 0).expect("stone slot should exist");
+    let tile_key = state
+        .city_slot_key(Loc::Stone, 0)
+        .expect("stone slot should exist");
     let res = execute_sell(&mut state, pid, &[tile_key], &[warrington_idx], &[true], 0);
 
-    assert!(res.is_ok(), "sell should succeed when explicitly targeting warrington: {res:?}");
+    assert!(
+        res.is_ok(),
+        "sell should succeed when explicitly targeting warrington: {res:?}"
+    );
     assert_eq!(state.players[pid].money, 105, "warrington should grant +£5");
-    assert!(state.tile_at(Loc::Stone, 0).expect("sold tile should remain on board").flipped, "sold tile should flip");
-    assert!(!state.merchants[warrington_idx].has_beer, "chosen merchant beer should be consumed");
-    assert!(state.merchants[oxford_idx].has_beer, "unchosen merchant beer should remain");
+    assert!(
+        state
+            .tile_at(Loc::Stone, 0)
+            .expect("sold tile should remain on board")
+            .flipped,
+        "sold tile should flip"
+    );
+    assert!(
+        !state.merchants[warrington_idx].has_beer,
+        "chosen merchant beer should be consumed"
+    );
+    assert!(
+        state.merchants[oxford_idx].has_beer,
+        "unchosen merchant beer should remain"
+    );
 }
 
 #[test]
@@ -1153,8 +1355,14 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
         },
     );
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
-    state.links[29] = Some(brass_engine::state::Link { player: pid, is_canal: false });
-    state.links[28] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[29] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
+    state.links[28] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
     state.merchants = vec![brass_engine::state::MerchantTile {
         loc: Loc::Gloucester,
         buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
@@ -1172,17 +1380,37 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
     ));
 
     let turn_result = advance_turn(&mut state);
-    assert!(matches!(turn_result, brass_engine::engine::TurnResult::Continue));
-    assert_eq!(state.current_player_id(), pid, "pending bonus should keep the same player active");
+    assert!(matches!(
+        turn_result,
+        brass_engine::engine::TurnResult::Continue
+    ));
+    assert_eq!(
+        state.current_player_id(),
+        pid,
+        "pending bonus should keep the same player active"
+    );
 
     let moves = legal_moves(&mut state);
-    assert!(!moves.is_empty(), "pending bonus should expose resolve moves");
-    assert!(moves.iter().all(|mv| matches!(mv, brass_engine::rules::Move::ResolveFreeDevelop { .. })));
+    assert!(
+        !moves.is_empty(),
+        "pending bonus should expose resolve moves"
+    );
+    assert!(
+        moves
+            .iter()
+            .all(|mv| matches!(mv, brass_engine::rules::Move::ResolveFreeDevelop { .. }))
+    );
 
     let first = moves[0].clone();
     let res = brass_engine::rules::apply_move(&mut state, &first);
-    assert!(res.is_ok(), "resolving pending free develop should succeed: {res:?}");
-    assert!(state.pending_bonus.is_none(), "pending bonus should clear after resolution");
+    assert!(
+        res.is_ok(),
+        "resolving pending free develop should succeed: {res:?}"
+    );
+    assert!(
+        state.pending_bonus.is_none(),
+        "pending bonus should clear after resolution"
+    );
 }
 
 #[test]
@@ -1213,7 +1441,10 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
             resource_cubes: 0,
         },
     );
-    state.links[28] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[28] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
     state.merchants = vec![brass_engine::state::MerchantTile {
         loc: Loc::Gloucester,
         buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
@@ -1233,11 +1464,18 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
         })
         .expect("heuristic should generate a sell candidate");
 
-    assert_eq!(sell.0.len(), 1, "heuristic sell plan must not try to sell two cotton mills with one merchant beer");
+    assert_eq!(
+        sell.0.len(),
+        1,
+        "heuristic sell plan must not try to sell two cotton mills with one merchant beer"
+    );
 
     let mut sim = state.clone();
     let res = brass_engine::rules::execute_sell(&mut sim, pid, &sell.0, &sell.1, &sell.2, sell.3);
-    assert!(res.is_ok(), "generated sell plan must execute successfully: {res:?}");
+    assert!(
+        res.is_ok(),
+        "generated sell plan must execute successfully: {res:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,10 +1484,10 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
 
 #[test]
 fn legal_slot_moves_cover_same_slots_as_legal_moves() {
-    use brass_engine::engine::{advance_turn, end_canal_era, end_game, TurnResult};
+    use brass_engine::engine::{TurnResult, advance_turn, end_canal_era, end_game};
     use brass_engine::policy;
     use brass_engine::random_ai;
-    use brass_engine::rules::{legal_slot_moves, legal_moves};
+    use brass_engine::rules::{legal_moves, legal_slot_moves};
 
     let mut state = setup(4);
     let mut checked = 0;
@@ -1264,15 +1502,20 @@ fn legal_slot_moves_cover_same_slots_as_legal_moves() {
             slots
         };
         let slotwise: Vec<usize> = {
-            let mut slots: Vec<usize> =
-                legal_slot_moves(&mut state).iter().map(|s| s.slot).collect();
+            let mut slots: Vec<usize> = legal_slot_moves(&mut state)
+                .iter()
+                .map(|s| s.slot)
+                .collect();
             slots.sort_unstable();
             slots.dedup();
             slots
         };
         assert_eq!(raw, slotwise, "slot coverage mismatch at step {checked}");
         let mask: Vec<usize> = policy::legal_mask(&mut state);
-        assert_eq!(raw, mask, "legal_mask must match slot-level coverage at step {checked}");
+        assert_eq!(
+            raw, mask,
+            "legal_mask must match slot-level coverage at step {checked}"
+        );
         checked += 1;
 
         // Advance with a random legal move.
@@ -1292,12 +1535,15 @@ fn legal_slot_moves_cover_same_slots_as_legal_moves() {
             None => break,
         }
     }
-    assert!(checked > 0, "the exploration should visit at least one state");
+    assert!(
+        checked > 0,
+        "the exploration should visit at least one state"
+    );
 }
 
 #[test]
 fn every_double_rail_move_from_legal_slots_executes() {
-    use brass_engine::rules::{apply_move, legal_moves, legal_slot_moves, Move};
+    use brass_engine::rules::{Move, apply_move, legal_moves, legal_slot_moves};
     let mut state = setup_clean_rail_state(2);
     let pid = 0;
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
@@ -1308,7 +1554,10 @@ fn every_double_rail_move_from_legal_slots_executes() {
         .into_iter()
         .filter(|sm| matches!(sm.mv, Move::NetworkDouble { .. }))
         .collect();
-    assert!(!doubles.is_empty(), "expected double-rail slot moves in this setup");
+    assert!(
+        !doubles.is_empty(),
+        "expected double-rail slot moves in this setup"
+    );
     for sm in &doubles {
         let mut sim = state.clone();
         let res = apply_move(&mut sim, &sm.mv);
@@ -1336,7 +1585,7 @@ fn every_double_rail_move_from_legal_slots_executes() {
 
 #[test]
 fn legal_moves_include_executable_multi_tile_sell() {
-    use brass_engine::rules::{apply_move, legal_moves, legal_slot_moves, Move};
+    use brass_engine::rules::{Move, apply_move, legal_moves, legal_slot_moves};
     let mut state = setup_clean_rail_state(3);
     let pid = 0;
     state.players[pid].hand = vec![Card::WildLocation];
@@ -1353,8 +1602,14 @@ fn legal_moves_include_executable_multi_tile_sell() {
     state.place_tile(Loc::Stone, 0, cotton.clone());
     state.place_tile(Loc::StokeOnTrent, 0, cotton);
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 2);
-    state.links[34] = Some(brass_engine::state::Link { player: pid, is_canal: false });
-    state.links[35] = Some(brass_engine::state::Link { player: pid, is_canal: false });
+    state.links[34] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
+    state.links[35] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    });
     state.merchants = vec![brass_engine::state::MerchantTile {
         loc: Loc::Warrington,
         buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
@@ -1373,10 +1628,18 @@ fn legal_moves_include_executable_multi_tile_sell() {
     let res = apply_move(&mut sim, &multi_mv);
     assert!(res.is_ok(), "multi-tile sell must execute: {res:?}");
     let stone_key = state.city_slot_key(Loc::Stone, 0).expect("stone slot");
-    let stoke_key = state.city_slot_key(Loc::StokeOnTrent, 0).expect("stoke slot");
+    let stoke_key = state
+        .city_slot_key(Loc::StokeOnTrent, 0)
+        .expect("stoke slot");
     assert!(
-        sim.city_tiles[stone_key].as_ref().map(|t| t.flipped).unwrap_or(false)
-            && sim.city_tiles[stoke_key].as_ref().map(|t| t.flipped).unwrap_or(false),
+        sim.city_tiles[stone_key]
+            .as_ref()
+            .map(|t| t.flipped)
+            .unwrap_or(false)
+            && sim.city_tiles[stoke_key]
+                .as_ref()
+                .map(|t| t.flipped)
+                .unwrap_or(false),
         "a multi-tile sell must flip BOTH tiles"
     );
 
@@ -1385,7 +1648,10 @@ fn legal_moves_include_executable_multi_tile_sell() {
         .iter()
         .filter(|sm| matches!(&sm.mv, Move::Sell { keys, .. } if keys.len() >= 2))
         .count();
-    assert!(slot_multi > 0, "slot-level generation must include multi-tile sell plans");
+    assert!(
+        slot_multi > 0,
+        "slot-level generation must include multi-tile sell plans"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,7 +1686,10 @@ fn market_iron_even_market_two_cheapest_share_a_price_pair() {
     for sel in &opts {
         assert_eq!(sel.len(), 2);
         let paid: i32 = sel.iter().filter(|s| !s.free).map(|s| s.price as i32).sum();
-        assert_eq!(paid, 4, "full-market 2-iron purchase should cost £2+£2, got £{paid}");
+        assert_eq!(
+            paid, 4,
+            "full-market 2-iron purchase should cost £2+£2, got £{paid}"
+        );
     }
 }
 
@@ -1439,7 +1708,10 @@ fn market_coal_multicube_purchase_pays_ascending_slot_prices() {
         .map(|s| s.price)
         .collect();
     assert_eq!(market_prices[0], 5, "cheapest market coal must be £5");
-    assert_eq!(market_prices[1], 6, "second-cheapest market coal must be £6");
+    assert_eq!(
+        market_prices[1], 6,
+        "second-cheapest market coal must be £6"
+    );
 
     let opts = brass_engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
     assert!(!opts.is_empty(), "expected legal 2-coal market selections");
@@ -1462,13 +1734,22 @@ fn empty_market_draws_from_general_supply_at_empty_price() {
         .collect();
     assert_eq!(market.len(), brass_engine::map::GENERAL_SUPPLY_CAP);
     assert!(
-        market.iter().all(|&p| p == brass_engine::map::COAL_EMPTY_PRICE),
+        market
+            .iter()
+            .all(|&p| p == brass_engine::map::COAL_EMPTY_PRICE),
         "empty market should only offer General Supply at the empty price"
     );
     // A 2-coal draw from an empty market is still legal at £8 + £8.
     let opts = brass_engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
-    assert!(!opts.is_empty(), "expected General Supply 2-coal selections");
-    let paid: i32 = opts[0].iter().filter(|s| !s.free).map(|s| s.price as i32).sum();
+    assert!(
+        !opts.is_empty(),
+        "expected General Supply 2-coal selections"
+    );
+    let paid: i32 = opts[0]
+        .iter()
+        .filter(|s| !s.free)
+        .map(|s| s.price as i32)
+        .sum();
     assert_eq!(paid, 16, "2-coal from empty market must cost £8+£8");
 }
 
@@ -1497,26 +1778,49 @@ fn coal_purchase_cost_is_free_first_then_slot_prices_then_general_supply() {
     place_test_coal_mine(&mut state, 0); // Cannock, 2 cubes
     // No merchant reachable yet (no links): free coal only, paid shortfall is
     // infeasible even though the mine is at the queried city itself.
-    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 2), Some(0));
-    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 3), None);
+    assert_eq!(
+        brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 2),
+        Some(0)
+    );
+    assert_eq!(
+        brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 3),
+        None
+    );
 
     // Connect Cannock -> Walsall -> Birmingham -> Oxford (merchant), and
     // Cannock -> Stafford, so the mine is reachable and a merchant is too.
-    let link = |p| Some(brass_engine::state::Link { player: p, is_canal: false });
+    let link = |p| {
+        Some(brass_engine::state::Link {
+            player: p,
+            is_canal: false,
+        })
+    };
     state.links[17] = link(0); // Cannock-Walsall
     state.links[8] = link(0); // Walsall-Birmingham
     state.links[5] = link(0); // Birmingham-Oxford
     state.links[15] = link(0); // Cannock-Stafford
 
-    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 2), Some(0));
+    assert_eq!(
+        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 2),
+        Some(0)
+    );
     // Free 2 + one market cube at the cheapest slot (£1, market has 13).
-    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 3), Some(1));
+    assert_eq!(
+        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 3),
+        Some(1)
+    );
 
     // Odd market (5 cubes => slots 5,6,6,7,7): 2 free + 2 market = £5+£6.
     state.coal_market = 5;
-    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 4), Some(11));
+    assert_eq!(
+        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 4),
+        Some(11)
+    );
     // 2 free + 5 market + 1 General Supply at £8.
-    assert_eq!(brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 8), Some(31 + 8));
+    assert_eq!(
+        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 8),
+        Some(31 + 8)
+    );
 }
 
 #[test]
@@ -1562,7 +1866,10 @@ fn free_source_cache_tracks_placement_consume_and_era_end() {
         "era end must drop the level-1 coal mine from free sources"
     );
     let iron = brass_engine::graph::find_iron_sources(&state);
-    assert!(iron.iter().all(|s| !s.free), "era end must drop the level-1 iron works");
+    assert!(
+        iron.iter().all(|s| !s.free),
+        "era end must drop the level-1 iron works"
+    );
 }
 
 #[test]
@@ -1579,11 +1886,18 @@ fn connectivity_cache_self_heals_after_direct_link_writes() {
     };
     assert_eq!(free(&state, Loc::Oxford), 0);
 
-    let link = Some(brass_engine::state::Link { player: 0, is_canal: false });
+    let link = Some(brass_engine::state::Link {
+        player: 0,
+        is_canal: false,
+    });
     state.links[17] = link; // Cannock-Walsall
     state.links[8] = link; // Walsall-Birmingham
     state.links[5] = link; // Birmingham-Oxford
-    assert_eq!(free(&state, Loc::Oxford), 2, "component cache must rebuild on the next query");
+    assert_eq!(
+        free(&state, Loc::Oxford),
+        2,
+        "component cache must rebuild on the next query"
+    );
 
     // Removing the last link severs the component again.
     state.links[5] = None;
@@ -1599,21 +1913,35 @@ fn network_mask_is_kept_by_moves_and_self_heals_after_direct_link_writes() {
 
     // Maintained path: a placed tile enters the player's network immediately.
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
-    assert!(brass_engine::graph::is_in_network(&state, pid, Loc::Stafford));
-    assert!(!brass_engine::graph::is_in_network(&state, pid, Loc::Birmingham));
+    assert!(brass_engine::graph::is_in_network(
+        &state,
+        pid,
+        Loc::Stafford
+    ));
+    assert!(!brass_engine::graph::is_in_network(
+        &state,
+        pid,
+        Loc::Birmingham
+    ));
     assert!(brass_engine::graph::player_has_presence(&state, pid));
     assert!(!brass_engine::graph::player_has_presence(&state, 1));
 
     // Direct link writes bypass the maintenance hooks; the mask must self-heal
     // on the next batch entry (get_valid_network_targets) and, once healed,
     // direct is_in_network reads agree with the scan.
-    state.links[15] = Some(brass_engine::state::Link { player: pid, is_canal: false }); // Cannock-Stafford
+    state.links[15] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    }); // Cannock-Stafford
     let _ = get_valid_network_targets(&state, pid);
     assert!(
         brass_engine::graph::is_in_network(&state, pid, Loc::Cannock),
         "network mask must self-heal after a direct link write"
     );
-    state.links[8] = Some(brass_engine::state::Link { player: pid, is_canal: false }); // Walsall-Birmingham
+    state.links[8] = Some(brass_engine::state::Link {
+        player: pid,
+        is_canal: false,
+    }); // Walsall-Birmingham
     let _ = get_valid_network_targets(&state, pid);
     assert!(
         brass_engine::graph::is_in_network(&state, pid, Loc::Birmingham),
@@ -1629,14 +1957,19 @@ fn network_mask_is_kept_by_moves_and_self_heals_after_direct_link_writes() {
         "removing the last link must sever the location from the network"
     );
     // The own tile keeps its own location in the network.
-    assert!(brass_engine::graph::is_in_network(&state, pid, Loc::Stafford));
+    assert!(brass_engine::graph::is_in_network(
+        &state,
+        pid,
+        Loc::Stafford
+    ));
 
     // A committed network move updates the mask through the rules layer.
     let conn_id = get_valid_network_targets(&state, pid)[0];
     execute_network(&mut state, pid, conn_id, None, 0).expect("network must succeed");
     let c = &connections()[conn_id];
     assert!(
-        brass_engine::graph::is_in_network(&state, pid, c.a) && brass_engine::graph::is_in_network(&state, pid, c.b),
+        brass_engine::graph::is_in_network(&state, pid, c.a)
+            && brass_engine::graph::is_in_network(&state, pid, c.b),
         "executed network must extend the player's network mask"
     );
 }

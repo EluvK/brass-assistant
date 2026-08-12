@@ -43,11 +43,23 @@ fn main() {
 
     // Reference: what does 1-ply heuristic pick here?
     let h = heuristic_ai::choose_action(&mut state);
-    println!("  1-ply heuristic picks: {}  score={:.2}", h.mv.describe(&state), h.score);
+    println!(
+        "  1-ply heuristic picks: {}  score={:.2}",
+        h.mv.describe(&state),
+        h.score
+    );
     let two = search_ai::choose_action_2ply(&mut state);
-    println!("  2-ply picks:            {}  score={:.2}", two.mv.describe(&state), two.score);
+    println!(
+        "  2-ply picks:            {}  score={:.2}",
+        two.mv.describe(&state),
+        two.score
+    );
     for d in heuristic_ai::candidate_actions(&mut state) {
-        println!("     candidate: {} score={:.2}", d.mv.describe(&state), d.score);
+        println!(
+            "     candidate: {} score={:.2}",
+            d.mv.describe(&state),
+            d.score
+        );
     }
 
     for &sims in &sims_list {

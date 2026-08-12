@@ -187,16 +187,9 @@ pub fn city_slots(loc: Loc) -> &'static [&'static [IndustryType]] {
         BurtonOnTrent => &[&[Manufacturer, CoalMine], &[Brewery]],
         Cannock => &[&[Manufacturer, CoalMine], &[CoalMine]],
         Tamworth => &[&[CottonMill, CoalMine], &[CottonMill, CoalMine]],
-        Walsall => &[
-            &[IronWorks, Manufacturer],
-            &[Manufacturer, Brewery],
-        ],
+        Walsall => &[&[IronWorks, Manufacturer], &[Manufacturer, Brewery]],
         Wolverhampton => &[&[Manufacturer], &[Manufacturer, CoalMine]],
-        Coalbrookdale => &[
-            &[IronWorks, Brewery],
-            &[IronWorks],
-            &[CoalMine],
-        ],
+        Coalbrookdale => &[&[IronWorks, Brewery], &[IronWorks], &[CoalMine]],
         Dudley => &[&[CoalMine], &[IronWorks]],
         Kidderminster => &[&[CottonMill, CoalMine], &[CottonMill]],
         Worcester => &[&[CottonMill], &[CottonMill]],
@@ -429,13 +422,7 @@ pub fn connections() -> &'static [Connection] {
         conn!(26, Dudley, Wolverhampton, true, true),
         conn!(27, Gloucester, Redditch, true, true),
         conn!(28, Gloucester, Worcester, true, true),
-        conn!(
-            29,
-            Kidderminster,
-            Worcester,
-            true,
-            true
-        ), // via southern farm
+        conn!(29, Kidderminster, Worcester, true, true), // via southern farm
         conn!(30, Leek, StokeOnTrent, true, true),
         conn!(31, Nuneaton, Tamworth, true, true),
         conn!(32, Redditch, Oxford, true, true),

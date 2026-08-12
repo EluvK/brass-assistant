@@ -16,17 +16,17 @@
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 use crate::encode;
 use crate::heuristic_ai;
+use crate::mcts_ai;
 use crate::move_codec;
 use crate::policy;
 use crate::rules::{apply_move, legal_moves};
 use crate::search_ai;
 use crate::state::GameState;
-use crate::mcts_ai;
 
 #[pyclass(name = "GameState")]
 pub struct PyGame {
@@ -163,8 +163,7 @@ impl PyGame {
     fn apply_move(&mut self, canonical: &str) -> PyResult<String> {
         let mv = move_codec::decode(canonical)
             .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
-        let summary = apply_move(&mut self.state, &mv)
-            .map_err(|e| PyValueError::new_err(e))?;
+        let summary = apply_move(&mut self.state, &mv).map_err(|e| PyValueError::new_err(e))?;
         let tr = crate::engine::advance_turn(&mut self.state);
         crate::engine::handle_turn_result(&mut self.state, tr);
         Ok(summary)
@@ -227,7 +226,10 @@ impl PyGame {
                 replay_fmt::hand_display(&self.state, pid)
             ));
         }
-        out.push_str(&format!("商家: {}\n", replay_fmt::merchant_state(&self.state)));
+        out.push_str(&format!(
+            "商家: {}\n",
+            replay_fmt::merchant_state(&self.state)
+        ));
         out.push_str(&format!("{}\n", replay_fmt::board_state(&self.state)));
         out
     }
@@ -394,11 +396,7 @@ impl PyGame {
 
     /// Final VP per player (index order), for value targets & evaluation.
     fn player_vps(&self) -> Vec<i32> {
-        self.state
-            .players
-            .iter()
-            .map(|p| p.vp as i32)
-            .collect()
+        self.state.players.iter().map(|p| p.vp as i32).collect()
     }
 
     /// Player ids ranked by final standing (best first, tiebreaks applied).
@@ -410,14 +408,22 @@ impl PyGame {
     fn choose_heuristic(&self) -> (String, String, f64) {
         let mut state = self.state.clone();
         let d = heuristic_ai::choose_action(&mut state);
-        (move_codec::encode(&d.mv), d.mv.describe(&self.state), d.score)
+        (
+            move_codec::encode(&d.mv),
+            d.mv.describe(&self.state),
+            d.score,
+        )
     }
 
     /// 2-ply choice: returns (canonical, describe, score).
     fn choose_2ply(&self) -> (String, String, f64) {
         let mut state = self.state.clone();
         let d = search_ai::choose_action_2ply(&mut state);
-        (move_codec::encode(&d.mv), d.mv.describe(&self.state), d.score)
+        (
+            move_codec::encode(&d.mv),
+            d.mv.describe(&self.state),
+            d.score,
+        )
     }
 }
 
@@ -458,7 +464,7 @@ fn py_describe_slot(slot: usize) -> String {
 /// Map a canonical move string to its policy slot(s).
 #[pyfunction(name = "moves_to_slots")]
 fn py_moves_to_slots(canonical: &str) -> PyResult<Vec<usize>> {
-    let mv = move_codec::decode(canonical)
-        .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
+    let mv =
+        move_codec::decode(canonical).map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
     Ok(policy::move_slots(&mv))
 }

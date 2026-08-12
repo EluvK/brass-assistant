@@ -50,8 +50,11 @@ pub struct EncodedTensor {
 
 impl EncodedTensor {
     pub fn total_len(&self) -> usize {
-        self.board.len() + self.links.len() + self.global.len()
-            + self.own_hand.len() + self.opp_hands.len()
+        self.board.len()
+            + self.links.len()
+            + self.global.len()
+            + self.own_hand.len()
+            + self.opp_hands.len()
     }
 }
 
@@ -105,8 +108,7 @@ fn global_vec(state: &GameState, pid: usize) -> Vec<f32> {
         g[base + 4] = (player.rail_links as f32 / 14.0).min(1.0);
         g[base + 5] = player.has_wild_location as u8 as f32;
         g[base + 6] = player.has_wild_industry as u8 as f32;
-        g[base + 7] =
-            ((player.develops_in_canal + player.develops_in_rail) as f32 / 8.0).min(1.0);
+        g[base + 7] = ((player.develops_in_canal + player.develops_in_rail) as f32 / 8.0).min(1.0);
     }
 
     g[40] = (state.coal_market as f32 / 14.0).min(1.0);

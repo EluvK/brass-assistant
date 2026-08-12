@@ -59,7 +59,11 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
     let mcts_vs_random = policy == "mcts-vs-random";
     let mcts_mixed = mcts_vs_2ply || mcts_vs_heur || mcts_vs_random;
     let policy = if mcts_mixed { "mixed" } else { policy };
-    let mcts_seat = if mcts_mixed { (seed as usize) % players } else { usize::MAX };
+    let mcts_seat = if mcts_mixed {
+        (seed as usize) % players
+    } else {
+        usize::MAX
+    };
 
     let mut on_move = |_state: &mut GameState, mv: &Move| match mv {
         Move::Build { .. } => builds += 1,
@@ -211,7 +215,10 @@ fn main() {
     let games: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
     // policy: "random" | "heuristic" | "2ply" | "mcts" | "mcts-vs-2ply" | "mcts-vs-heur"
-    let policy = args.get(3).cloned().unwrap_or_else(|| "heuristic".to_string());
+    let policy = args
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| "heuristic".to_string());
     let mcts_vs_2ply = policy == "mcts-vs-2ply";
     let mcts_vs_heur = policy == "mcts-vs-heur";
     // threads: optional 4th arg to override rayon default pool size
@@ -220,7 +227,10 @@ fn main() {
     let sims: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
 
     let pool = match threads {
-        Some(t) => rayon::ThreadPoolBuilder::new().num_threads(t).build().unwrap(),
+        Some(t) => rayon::ThreadPoolBuilder::new()
+            .num_threads(t)
+            .build()
+            .unwrap(),
         None => rayon::ThreadPoolBuilder::new().build().unwrap(),
     };
 
@@ -328,7 +338,10 @@ fn main() {
     );
     for (p, w) in total.wins.iter().enumerate() {
         if *w > 0 || games <= 4 {
-            println!("Player {p}: {w} wins ({:.1}%)", *w as f64 * 100.0 / games as f64);
+            println!(
+                "Player {p}: {w} wins ({:.1}%)",
+                *w as f64 * 100.0 / games as f64
+            );
         }
     }
 }

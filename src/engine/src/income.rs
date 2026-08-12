@@ -59,7 +59,10 @@ mod tests {
         for space in 0..=99u8 {
             let level = income_level_from_space(space);
             let high = income_highest_space_of_level(level);
-            assert!(high >= space, "space {space} -> level {level} -> high {high}");
+            assert!(
+                high >= space,
+                "space {space} -> level {level} -> high {high}"
+            );
             // The next level's highest space should be below space (level not off-by-one).
             if level < 30 {
                 let next_high = income_highest_space_of_level(level + 1);
