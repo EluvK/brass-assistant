@@ -236,6 +236,9 @@ pub fn end_canal_era(state: &mut GameState) {
     }
 
     // Return wild cards, clear hands (non-wilds go to the discard pile).
+    // All canal-era cards re-enter circulation via `init_deck` below, so both
+    // the anonymous discard pile and the per-player played history are reset
+    // (they only describe the current era).
     for p in state.players.iter_mut() {
         for card in p.hand.drain(..) {
             match card.ctype() {
@@ -250,7 +253,9 @@ pub fn end_canal_era(state: &mut GameState) {
                 _ => state.discard_pile.push(card),
             }
         }
+        p.played.clear();
     }
+    state.discard_pile.clear();
 
     // Rebuild deck, deal new hands.
     // User rulebook ruling: the Rail Era does NOT repeat the per-player

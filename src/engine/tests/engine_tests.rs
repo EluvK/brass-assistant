@@ -699,6 +699,192 @@ fn mcts_determinize_keeps_own_hand_and_hand_size() {
     }
 }
 
+/// The determinized world must be a consistent multiset: every non-wild card
+/// of the era composition appears exactly once across hands + deck + discard
+/// pile, and nothing else. This guards the discard-pile subtraction in
+/// `mcts_ai::determinize` (a played card must never reappear in a hand/deck).
+#[test]
+fn mcts_determinize_pool_is_multiset_consistent() {
+    use brass_engine::mcts_ai::MctsConfig;
+    let mut state = setup(4);
+    // Discard one card per player so the pool actually has out-of-circulation
+    // cards to subtract.
+    let idxs: Vec<usize> = (0..4)
+        .map(|pid| {
+            state.players[pid]
+                .hand
+                .iter()
+                .position(|c| !matches!(c, Card::WildLocation | Card::WildIndustry))
+                .unwrap()
+        })
+        .collect();
+    for pid in 0..4 {
+        brass_engine::rules::discard_card(&mut state, pid, idxs[pid]);
+    }
+
+    let mut rng = StdRng::seed_from_u64(7);
+    let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    let comp = brass_engine::state::deck_composition(state.player_count());
+    let mut all: Vec<Card> = Vec::new();
+    for p in &det.players {
+        for c in &p.hand {
+            if !matches!(*c, Card::WildLocation | Card::WildIndustry) {
+                all.push(c.clone());
+            }
+        }
+    }
+    all.extend(det.deck.clone());
+    all.extend(det.discard_pile.clone());
+    assert_eq!(all.len(), comp.len(), "non-wild cards in play must match composition");
+    for c in &comp {
+        assert_eq!(
+            all.iter().filter(|x| *x == c).count(),
+            comp.iter().filter(|x| *x == c).count(),
+            "multiset mismatch for {c:?}"
+        );
+    }
+}
+
+/// A card the current player has already discarded is out of circulation: it
+/// must not reappear in any opponent hand or the deck after determinization.
+#[test]
+fn determinize_excludes_discarded_cards_from_opponent_hands() {
+    use brass_engine::mcts_ai::MctsConfig;
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let idx = state.players[pid]
+        .hand
+        .iter()
+        .position(|c| !matches!(c, Card::WildLocation | Card::WildIndustry))
+        .unwrap();
+    let discarded = state.players[pid].hand[idx].clone();
+    brass_engine::rules::discard_card(&mut state, pid, idx);
+    assert!(state.discard_pile.contains(&discarded), "setup: card must enter the discard pile");
+
+    let mut rng = StdRng::seed_from_u64(99);
+    let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    for (i, p) in det.players.iter().enumerate() {
+        if i != pid {
+            assert!(!p.hand.contains(&discarded), "discarded card {discarded:?} leaked into P{i}'s hand");
+        }
+    }
+    assert!(!det.deck.contains(&discarded), "discarded card {discarded:?} leaked into the deck");
+    assert!(det.discard_pile.contains(&discarded), "discard pile must keep the card");
+}
+
+/// Era transition re-enters every canal-era card into the rail deck, so both
+/// the anonymous discard pile and the per-player played history must reset.
+#[test]
+fn end_canal_era_resets_discard_pile_and_played() {
+    let mut state = setup(4);
+    let idxs: Vec<usize> = (0..4)
+        .map(|pid| {
+            state.players[pid]
+                .hand
+                .iter()
+                .position(|c| !matches!(c, Card::WildLocation | Card::WildIndustry))
+                .unwrap()
+        })
+        .collect();
+    for pid in 0..4 {
+        brass_engine::rules::discard_card(&mut state, pid, idxs[pid]);
+    }
+    assert!(state.discard_pile.len() >= 4);
+    assert!(state.players.iter().any(|p| !p.played.is_empty()));
+
+    end_canal_era(&mut state);
+    assert!(state.discard_pile.is_empty(), "discard pile must reset at era end");
+    for p in &state.players {
+        assert!(p.played.is_empty(), "played history must reset at era end");
+    }
+}
+
+/// Every hand-card consumption records the card in the player's `played`
+/// history (only non-wild discards; the wilds *gained* by scouting go into
+/// the hand, not the played history).
+#[test]
+fn discard_and_scout_record_per_player_played() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+
+    let idx = state.players[pid]
+        .hand
+        .iter()
+        .position(|c| !matches!(c, Card::WildLocation | Card::WildIndustry))
+        .unwrap();
+    let discarded = state.players[pid].hand[idx].clone();
+    brass_engine::rules::discard_card(&mut state, pid, idx);
+    assert_eq!(state.players[pid].played.len(), 1);
+    assert_eq!(state.players[pid].played[0], discarded);
+
+    let three: [usize; 3] = [0, 1, 2];
+    let res = brass_engine::rules::execute_scout(&mut state, pid, three);
+    assert!(res.is_ok(), "scout failed: {res:?}");
+    let p = &state.players[pid];
+    assert_eq!(p.played.len(), 1 + 3, "1 discard + 3 scout cards recorded");
+    // The two wilds gained by scouting enter the hand, not the played history.
+    assert!(p.hand.contains(&Card::WildLocation));
+    assert!(p.hand.contains(&Card::WildIndustry));
+}
+
+/// Wild cards return to the supply on use: they enter NEITHER the discard pile
+/// NOR the player's played history, and the public holding flags flip to false.
+#[test]
+fn discarding_a_wild_returns_it_to_supply_and_skips_played() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+
+    // Scout to gain both wilds.
+    let res = brass_engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
+    assert!(res.is_ok(), "scout failed: {res:?}");
+    assert!(state.players[pid].has_wild_location);
+    assert!(state.players[pid].has_wild_industry);
+    let before_played = state.players[pid].played.len(); // the 3 scout cards
+    let loc_pile_before = state.wild_location_pile;
+    let discard_before = state.discard_pile.len();
+
+    let wl_idx = state.players[pid]
+        .hand
+        .iter()
+        .position(|c| matches!(c, Card::WildLocation))
+        .unwrap();
+    brass_engine::rules::discard_card(&mut state, pid, wl_idx);
+
+    assert_eq!(state.players[pid].played.len(), before_played, "wild must not enter played");
+    assert_eq!(state.discard_pile.len(), discard_before, "wild must not enter the discard pile");
+    assert_eq!(state.wild_location_pile, loc_pile_before + 1, "wild returns to the supply");
+    assert!(!state.players[pid].has_wild_location, "wild-location holding flag clears");
+    assert!(state.players[pid].has_wild_industry, "wild-industry holding flag unaffected");
+}
+
+/// Holding a wild card is public information: the engine exposes it per player
+/// and the training tensor encodes both flags separately in the global vector.
+#[test]
+fn wild_holding_is_public_and_encoded_in_training_tensor() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let base = 8 + pid * 8;
+    let t = brass_engine::encode::state_to_tensor(&state, pid);
+    assert_eq!(t.global[base + 5], 0.0, "no wilds held before scout");
+    assert_eq!(t.global[base + 6], 0.0, "no wilds held before scout");
+
+    let res = brass_engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
+    assert!(res.is_ok(), "scout failed: {res:?}");
+    let t = brass_engine::encode::state_to_tensor(&state, pid);
+    assert_eq!(t.global[base + 5], 1.0, "wild-location holding encoded separately");
+    assert_eq!(t.global[base + 6], 1.0, "wild-industry holding encoded separately");
+
+    let wl_idx = state.players[pid]
+        .hand
+        .iter()
+        .position(|c| matches!(c, Card::WildLocation))
+        .unwrap();
+    brass_engine::rules::discard_card(&mut state, pid, wl_idx);
+    let t = brass_engine::encode::state_to_tensor(&state, pid);
+    assert_eq!(t.global[base + 5], 0.0, "wild-location flag reflects the discard");
+    assert_eq!(t.global[base + 6], 1.0, "wild-industry flag unaffected");
+}
+
 #[test]
 fn legal_moves_do_not_offer_unaffordable_double_develop() {
     let mut state = setup(4);

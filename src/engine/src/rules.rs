@@ -351,8 +351,11 @@ pub fn discard_card(state: &mut GameState, player_id: usize, card_index: usize) 
             p.has_wild_industry = false;
         }
         _ => {
-            // Non-wild discarded cards join the face-down discard pile.
-            state.discard_pile.push(removed);
+            // Non-wild discarded cards join the face-down discard pile. The
+            // per-player played history mirrors this anonymous pile (wilds
+            // return to the supply instead, so they never enter either).
+            state.discard_pile.push(removed.clone());
+            p.played.push(removed);
         }
     }
     p.hand.remove(card_index);
@@ -1858,8 +1861,13 @@ pub fn execute_scout(
         if idx < p.hand.len() {
             let removed = p.hand[idx].clone();
             match removed.ctype() {
+                // Scout requires the player to hold no wilds, so the three
+                // cards are always non-wild; the arm is defensive only.
                 crate::data::CardType::WildLocation | crate::data::CardType::WildIndustry => {}
-                _ => state.discard_pile.push(removed),
+                _ => {
+                    state.discard_pile.push(removed.clone());
+                    p.played.push(removed);
+                }
             }
             p.hand.remove(idx);
         }

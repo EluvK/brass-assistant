@@ -168,6 +168,9 @@ TTS 官方热门的《伯明翰》Mod 的 **Lua 脚本**，是 TTS 集成与数�
 - **双铁路允许不共享端点（已裁决）**：引擎与 npow 参考实现一致，两条铁路只需都在玩家网络内。因此策略表双铁路域是全部无序铁路对（703），不能用"共享端点"缩小
 - **新 Schema（2026-08，已落地）**：分叉 policy（`type_head 7` + `goal_head 1316`，`logit(s)=type[t(s)]+goal[s]`，`t(s)` 来自 `policy.rs slot_type` 带算术）+ **4 玩家 value 头**（`Linear(256→4)` 去 tanh，单视角预测全部玩家终局 z，因 `encode.rs global` 已含每玩家 money/income/vp、`opp_hands` 含全部手牌）。Rust `nn_mcts::flush_net` 每 request 只发 **1 行**，Rust 侧合并分叉先验 + 直接用 4 向量（省 4× 视角编码）。**`net(batch)` 返回 3 元组 `(type, goal, value)`**；训练 loss 与单线程 `mcts.py` 用 `net.merge_logits` 合并。效果：BC 基线 `new_best.pt` @sims=1000 胜率 0.65/mean 93.3/**min 57（零灾难对局）**，优于旧 best_masked（0.50/77.8/20）
 - **消耗型翻面 ≠ 卖货**：煤/铁/酒被消耗即自动翻面推进收入（`state.rs auto_sell_to_market` 等），无需 Sell 操作。诊断时"翻面数"不等于"Sell 次数"，不要据此误判模型行为
+- **弃牌堆即"本时代已离场牌"缓存，determinize 消费之（2026-08 落地）**：`GameState.discard_pile`（含开局每人埋的 1 张 + 所有非万能弃牌）被 `mcts_ai::determinize` 从隐藏池中扣除，保证每个 determinized world 是多重集一致的真实世界（`deck + hands + discard ≡ deck_composition` 恒等式；debug 下 `determinize` 末尾有 `debug_assert_eq!(det.deck.len(), pool.len())` 自检）。**时代切换 `end_canal_era` 必须清空 `discard_pile`**——运河时代所有牌洗回铁路牌库（与 §9 裁决"铁路时代重洗后直接发 8 张、不再埋牌"一致），否则铁路时代把运河时代的 64 张从池里扣会扣空。**勿在 `determinize` 之外重复构建/消费隐藏池**（`deck_composition` 是唯一构成来源，已在 `OnceLock` 缓存）
+- **per-player 已用牌历史（2026-08 预留）**：`Player.played: Vec<Card>` 记录每位玩家本时代使用过的手牌，**仅非万能牌**（`rules::discard_card` 与 `execute_scout` 同步；万能牌用后直接返回供应堆，不进弃牌堆也不进 played——与物理规则一致）。匿名多重集扣池用 `discard_pile` 就够，**不需要** per-player 归属；`played` 是为后续 NN"每位对手已出过哪些牌"特征/信念建模预留。接入特征会改 `encode.rs` 输入宽度 + 重训，另行立项。时代切换时同步 `clear()`
+- **万能牌持有是公开信息，已在训练维度**：`Player.has_wild_location`/`has_wild_industry`（分开两个 flag，scout 置真、弃牌/时代结束置假），且已编码进 `encode.rs` global 的 `g[base+5]/g[base+6]`，无需再加
 
 ## 9. 已裁决的规则分歧（以用户规则书为准）
 

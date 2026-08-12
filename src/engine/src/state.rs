@@ -168,6 +168,15 @@ pub struct Player {
     pub develops_in_rail: u8,
     pub has_wild_location: bool,
     pub has_wild_industry: bool,
+    /// Cards this player has used (played/discarded) this era, in order.
+    /// Mirrors the anonymous `discard_pile` (which also holds the seeded
+    /// face-down burns): only NON-WILD cards are recorded — wilds return to
+    /// the supply on use (`rules::discard_card` / `execute_scout`), so they
+    /// enter neither this list nor the discard pile. Current wild holding is
+    /// public info tracked separately by `has_wild_location` /
+    /// `has_wild_industry`. Reserved for future NN features / belief modelling;
+    /// cleared at era transition in `engine::end_canal_era`.
+    pub played: Vec<Card>,
 }
 
 /// Expanded per-player industry stacks (identical for all players), built once.
@@ -207,6 +216,7 @@ impl Player {
             develops_in_rail: 0,
             has_wild_location: false,
             has_wild_industry: false,
+            played: Vec::new(),
         }
     }
 
@@ -312,7 +322,13 @@ pub struct GameState {
 
     pub deck: Vec<Card>,
     /// Face-down discard pile (non-wild cards only; wilds return to piles).
-    /// Used to build the hidden-card pool for MCTS determinization.
+    /// Every card here is OUT of circulation this era (seeded face-down burns
+    /// plus non-wild discards). `mcts_ai::determinize` subtracts it from the
+    /// hidden pool so a played card can never reappear in an opponent hand or
+    /// the deck. Reset to empty at the era transition in
+    /// `engine::end_canal_era` (all canal cards are reshuffled into the rail
+    /// deck). Per-player attribution of non-seeded plays lives in
+    /// `Player::played`.
     pub discard_pile: Vec<Card>,
     pub wild_location_pile: u8,
     pub wild_industry_pile: u8,

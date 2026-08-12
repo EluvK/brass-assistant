@@ -2,7 +2,8 @@
 //!
 //! Design (per project decision):
 //! - Each simulation determinizes ONCE at the root: opponent hands are sampled
-//!   from the hidden pool (`deck_composition` minus our known hand), then a
+//!   from the hidden pool (the era deck composition minus our known hand minus
+//!   every card already out of circulation — the face-down discard pile), then a
 //!   shallow 3-5 ply search runs in that sampled world.
 //! - Node selection uses PUCT with the 1-ply heuristic's candidate scores as
 //!   priors (softmax over `candidate_actions` scores).
@@ -194,8 +195,13 @@ fn is_wild(c: &Card) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Sample opponent hands from the hidden pool, leaving our own hand intact.
-/// The pool is the full era deck minus our known (non-wild) hand cards.
-pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {    let mut det = state.clone();
+/// The pool is the full era deck minus our known (non-wild) hand cards minus
+/// every card already out of circulation this era (the face-down discard
+/// pile, which holds the seeded burns plus all non-wild plays). Excluding
+/// those keeps the determinized world a consistent multiset: a card already
+/// discarded/played can never reappear in an opponent hand or the deck.
+pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {
+    let mut det = state.clone();
     let me = det.current_player_id();
 
     let mut pool = deck_composition(det.player_count());
@@ -207,6 +213,15 @@ pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {   
         .cloned()
         .collect();
     for card in &known {
+        if let Some(idx) = pool.iter().position(|c| c == card) {
+            pool.swap_remove(idx);
+        }
+    }
+    // Remove every card already out of circulation this era. (The pile is
+    // reset at the era transition in `engine::end_canal_era`, so it only ever
+    // describes the current era.) Discards are face-down and anonymous, so we
+    // only need the total multiset, not per-player attribution.
+    for card in &det.discard_pile {
         if let Some(idx) = pool.iter().position(|c| c == card) {
             pool.swap_remove(idx);
         }
@@ -234,6 +249,10 @@ pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {   
         }
         det.players[i].hand = new_hand;
     }
+    // Multiset-consistency guard: everything left in the pool IS the deck.
+    // `deck + all hands + discard_pile == deck_composition` holds on any
+    // well-formed state, so the pool always exactly covers the remaining deck.
+    debug_assert_eq!(det.deck.len(), pool.len(), "determinize pool must equal the deck");
     det.deck = pool;
     det
 }
