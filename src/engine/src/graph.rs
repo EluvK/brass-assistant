@@ -9,7 +9,7 @@
 
 use crate::data::IndustryType;
 use crate::map::{city_slots, connections, Loc};
-use crate::state::GameState;
+use crate::state::{BeerCubeEntry, GameState};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -299,93 +299,68 @@ pub struct BeerSource {
 
 /// Find beer for a sale at `loc`. Own breweries anywhere; opponent breweries
 /// connected to `loc`; merchant beer only from `allowed_merchants` indices.
+/// Backed by the `free_beer_cubes` cache (unflipped breweries with cubes);
+/// connectivity for opponent breweries is applied via the component-mask cache.
+/// Output order is preserved exactly: own city breweries by key, then own farms
+/// by index, then connected opponent breweries in ascending location order.
 pub fn find_beer_sources(
     state: &GameState,
     loc: Loc,
     player_id: usize,
     allowed_merchants: &[usize],
 ) -> Vec<BeerSource> {
+    let mask = state.connected_mask(loc);
     let mut sources = Vec::new();
 
-    for (k, tile) in state.city_tiles.iter().enumerate() {
-        if let Some(t) = tile {
-            if t.ind == IndustryType::Brewery
-                && t.player == player_id
-                && !t.flipped
-                && t.resource_cubes > 0
-            {
-                for _ in 0..t.resource_cubes {
-                    sources.push(BeerSource {
-                        kind: BeerSourceKind::Own,
-                        key: k,
-                        farm_idx: None,
-                        merchant_idx: None,
-                    });
-                }
-            }
-        }
-    }
-    for (idx, tile) in state.farm_tiles.iter().enumerate() {
-        if let Some(t) = tile {
-            if t.player == player_id && !t.flipped && t.resource_cubes > 0 {
-                for _ in 0..t.resource_cubes {
-                    sources.push(BeerSource {
-                        kind: BeerSourceKind::Own,
-                        key: usize::MAX,
-                        farm_idx: Some(idx),
-                        merchant_idx: None,
-                    });
-                }
-            }
+    // Own breweries anywhere, in deterministic order (city slots by key, then
+    // farms by index) — identical to the pre-cache full-board scan.
+    let mut own_city: Vec<&BeerCubeEntry> = state
+        .free_beer_cubes
+        .iter()
+        .filter(|b| b.owner == player_id && b.farm_idx.is_none())
+        .collect();
+    own_city.sort_by_key(|b| b.key);
+    let mut own_farm: Vec<&BeerCubeEntry> = state
+        .free_beer_cubes
+        .iter()
+        .filter(|b| b.owner == player_id && b.farm_idx.is_some())
+        .collect();
+    own_farm.sort_by_key(|b| b.farm_idx.unwrap());
+    for b in own_city.into_iter().chain(own_farm) {
+        for _ in 0..b.cubes {
+            sources.push(BeerSource {
+                kind: BeerSourceKind::Own,
+                key: b.key,
+                farm_idx: b.farm_idx,
+                merchant_idx: None,
+            });
         }
     }
 
-    // Connected locations are computed once and reused for both opponent
-    // breweries and merchant beer checks.
-    let connected = connected_locations(state, loc);
-    for reachable in &connected {
-        if reachable.is_city() {
-            for slot in 0..city_slots(*reachable).len() {
-                if let Some(k) = state.city_slot_key(*reachable, slot) {
-                    if let Some(t) = &state.city_tiles[k] {
-                        if t.ind == IndustryType::Brewery
-                            && t.player != player_id
-                            && !t.flipped
-                            && t.resource_cubes > 0
-                        {
-                            for _ in 0..t.resource_cubes {
-                                sources.push(BeerSource {
-                                    kind: BeerSourceKind::Opponent,
-                                    key: k,
-                                    farm_idx: None,
-                                    merchant_idx: None,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(idx) = farm_index(*reachable) {
-            if let Some(t) = &state.farm_tiles[idx] {
-                if t.player != player_id && !t.flipped && t.resource_cubes > 0 {
-                    for _ in 0..t.resource_cubes {
-                        sources.push(BeerSource {
-                            kind: BeerSourceKind::Opponent,
-                            key: usize::MAX,
-                            farm_idx: Some(idx),
-                            merchant_idx: None,
-                        });
-                    }
-                }
-            }
+    // Opponent breweries connected to `loc`, in ascending location order (then
+    // slot/farm order within a location) — identical to the pre-cache
+    // connected-locations scan.
+    let mut opp: Vec<&BeerCubeEntry> = state
+        .free_beer_cubes
+        .iter()
+        .filter(|b| b.owner != player_id && mask & (1u32 << (b.loc as u8)) != 0)
+        .collect();
+    opp.sort_by_key(|b| (b.loc as u8, b.farm_idx.unwrap_or(usize::MAX), b.key));
+    for b in opp {
+        for _ in 0..b.cubes {
+            sources.push(BeerSource {
+                kind: BeerSourceKind::Opponent,
+                key: b.key,
+                farm_idx: b.farm_idx,
+                merchant_idx: None,
+            });
         }
     }
 
     if !allowed_merchants.is_empty() {
         for &mi in allowed_merchants {
             if let Some(mt) = state.merchants.get(mi) {
-                if mt.has_beer && connected.contains(&mt.loc) {
+                if mt.has_beer && mask & (1u32 << (mt.loc as u8)) != 0 {
                     sources.push(BeerSource {
                         kind: BeerSourceKind::Merchant,
                         key: usize::MAX,
@@ -398,14 +373,6 @@ pub fn find_beer_sources(
     }
 
     sources
-}
-
-fn farm_index(loc: Loc) -> Option<usize> {
-    match loc {
-        Loc::BreweryNorth => Some(0),
-        Loc::BrewerySouth => Some(1),
-        _ => None,
-    }
 }
 
 /// Cheapest coal source reachable from either endpoint of a connection.

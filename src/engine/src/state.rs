@@ -101,6 +101,20 @@ pub(crate) struct IronWorksEntry {
     pub cubes: u8,
 }
 
+/// A free (unflipped, beer cubes > 0) brewery on the board — city slot or farm.
+/// Kept in sync with `city_tiles` / `farm_tiles`; own breweries need no
+/// connectivity filter at query time, opponent breweries are filtered by the
+/// component-mask cache (`connected_mask`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BeerCubeEntry {
+    /// City slot key; `usize::MAX` for a farm.
+    pub key: usize,
+    pub farm_idx: Option<usize>,
+    pub loc: Loc,
+    pub owner: usize,
+    pub cubes: u8,
+}
+
 // ---------------------------------------------------------------------------
 // Merchant tiles
 // ---------------------------------------------------------------------------
@@ -272,6 +286,10 @@ pub struct GameState {
     pub(crate) free_coal_mines: Vec<CoalMineEntry>,
     /// Unflipped iron works with cubes (location-independent).
     pub(crate) free_iron_works: Vec<IronWorksEntry>,
+    /// Unflipped breweries with beer cubes (city + farm). Connectivity for
+    /// opponent breweries is applied at query time via `connected_mask`; own
+    /// breweries are reachable anywhere.
+    pub(crate) free_beer_cubes: Vec<BeerCubeEntry>,
     /// Connected-component cache over built links:
     /// `component_masks[loc]` = bitmask of every location in `loc`'s component.
     /// Lazily rebuilt whenever the set of built links changes (fingerprint).
@@ -314,6 +332,7 @@ impl Clone for GameState {
             links: self.links.clone(),
             free_coal_mines: self.free_coal_mines.clone(),
             free_iron_works: self.free_iron_works.clone(),
+            free_beer_cubes: self.free_beer_cubes.clone(),
             component_cache,
             coal_market: self.coal_market,
             iron_market: self.iron_market,
@@ -415,6 +434,7 @@ impl GameState {
             links: vec![None; connections().len()],
             free_coal_mines: Vec::new(),
             free_iron_works: Vec::new(),
+            free_beer_cubes: Vec::new(),
             component_cache: std::sync::RwLock::new((u64::MAX, [0u32; 27])),
             coal_market: COAL_MARKET_INITIAL,
             iron_market: IRON_MARKET_INITIAL,
@@ -579,6 +599,7 @@ impl GameState {
             }
         } else if let Some(idx) = farm_index(loc) {
             self.farm_tiles[idx] = Some(tile);
+            self.sync_farm_beer(idx);
         }
     }
 
@@ -595,6 +616,7 @@ impl GameState {
     pub fn remove_farm_by_idx(&mut self, idx: usize) {
         if idx < self.farm_tiles.len() {
             self.farm_tiles[idx] = None;
+            self.drop_farm_beer(idx);
         }
     }
 
@@ -606,18 +628,24 @@ impl GameState {
             }
         } else if let Some(idx) = farm_index(loc) {
             self.farm_tiles[idx] = None;
+            self.drop_farm_beer(idx);
         }
     }
 
     // --- free-resource & connectivity caches -------------------------------
 
-    /// Rescan `city_tiles` and rebuild the free coal/iron caches from scratch.
-    /// Called after bulk board changes (era end) or direct tile writes (tests).
+    /// Rescan `city_tiles` and rebuild the free coal/iron/beer caches from
+    /// scratch. Called after bulk board changes (era end) or direct tile writes
+    /// (tests).
     pub fn rebuild_free_sources(&mut self) {
         self.free_coal_mines.clear();
         self.free_iron_works.clear();
+        self.free_beer_cubes.clear();
         for k in 0..self.city_tiles.len() {
             self.sync_free_source(k);
+        }
+        for idx in 0..self.farm_tiles.len() {
+            self.sync_farm_beer(idx);
         }
     }
 
@@ -625,10 +653,16 @@ impl GameState {
     fn drop_free_source(&mut self, key: usize) {
         self.free_coal_mines.retain(|e| e.key != key);
         self.free_iron_works.retain(|e| e.key != key);
+        self.free_beer_cubes.retain(|e| e.key != key);
+    }
+
+    /// Drop any cached beer entry for a farm index.
+    fn drop_farm_beer(&mut self, idx: usize) {
+        self.free_beer_cubes.retain(|e| e.farm_idx != Some(idx));
     }
 
     /// Re-derive the cached free-source entry for one city slot key from the
-    /// tile's current state (an unflipped coal/iron tile with cubes).
+    /// tile's current state (an unflipped coal/iron/brewery tile with cubes).
     fn sync_free_source(&mut self, key: usize) {
         self.drop_free_source(key);
         let Some(tile) = &self.city_tiles[key] else {
@@ -652,8 +686,38 @@ impl GameState {
                 owner: tile.player,
                 cubes: tile.resource_cubes,
             }),
+            IndustryType::Brewery => self.free_beer_cubes.push(BeerCubeEntry {
+                key,
+                farm_idx: None,
+                loc,
+                owner: tile.player,
+                cubes: tile.resource_cubes,
+            }),
             _ => {}
         }
+    }
+
+    /// Re-derive the cached beer entry for a farm index from the tile's current
+    /// state (farms are always breweries).
+    fn sync_farm_beer(&mut self, idx: usize) {
+        self.drop_farm_beer(idx);
+        let Some(tile) = &self.farm_tiles[idx] else {
+            return;
+        };
+        if tile.flipped || tile.resource_cubes == 0 {
+            return;
+        }
+        self.free_beer_cubes.push(BeerCubeEntry {
+            key: usize::MAX,
+            farm_idx: Some(idx),
+            loc: if idx == 0 {
+                Loc::BreweryNorth
+            } else {
+                Loc::BrewerySouth
+            },
+            owner: tile.player,
+            cubes: tile.resource_cubes,
+        });
     }
 
     /// Bitmask of every location connected to `loc` via any built link
@@ -711,12 +775,14 @@ impl GameState {
         masks
     }
 
-    /// Verify the free-source caches match a full rescan of `city_tiles`.
-    /// Cheap (47 slots); used by tests and, in debug builds, by `apply_move`
-    /// to catch any mutation site that bypassed the cache.
+    /// Verify the free-source caches match a full rescan of `city_tiles` and
+    /// `farm_tiles`. Cheap (47 slots + 2 farms); used by tests and, in debug
+    /// builds, by `apply_move` to catch any mutation site that bypassed the
+    /// cache.
     pub fn assert_caches_consistent(&self) {
         let mut coal = Vec::new();
         let mut iron = Vec::new();
+        let mut beer = Vec::new();
         for (k, tile) in self.city_tiles.iter().enumerate() {
             let Some(t) = tile else { continue };
             if t.flipped || t.resource_cubes == 0 {
@@ -735,19 +801,47 @@ impl GameState {
                     owner: t.player,
                     cubes: t.resource_cubes,
                 }),
+                IndustryType::Brewery => beer.push(BeerCubeEntry {
+                    key: k,
+                    farm_idx: None,
+                    loc,
+                    owner: t.player,
+                    cubes: t.resource_cubes,
+                }),
                 _ => {}
             }
+        }
+        for (idx, tile) in self.farm_tiles.iter().enumerate() {
+            let Some(t) = tile else { continue };
+            if t.flipped || t.resource_cubes == 0 {
+                continue;
+            }
+            beer.push(BeerCubeEntry {
+                key: usize::MAX,
+                farm_idx: Some(idx),
+                loc: if idx == 0 {
+                    Loc::BreweryNorth
+                } else {
+                    Loc::BrewerySouth
+                },
+                owner: t.player,
+                cubes: t.resource_cubes,
+            });
         }
         // Compare order-insensitively: incremental syncs can reorder the live
         // cache (e.g. overbuilding a lower-key mine re-pushes it last).
         coal.sort_by_key(|e| e.key);
         iron.sort_by_key(|e| e.key);
+        beer.sort_by_key(|e| (e.farm_idx.unwrap_or(usize::MAX), e.key));
         let mut live_coal = self.free_coal_mines.clone();
         let mut live_iron = self.free_iron_works.clone();
+        let mut live_beer = self.free_beer_cubes.clone();
         live_coal.sort_by_key(|e| e.key);
         live_iron.sort_by_key(|e| e.key);
+        live_beer.sort_by_key(|e| (e.farm_idx.unwrap_or(usize::MAX), e.key));
         assert_eq!(live_coal, coal, "free coal cache drifted");
         assert_eq!(live_iron, iron, "free iron cache drifted");
+        assert_eq!(live_beer, beer, "free beer cache drifted");
     }
 
     // --- money & income ----------------------------------------------------
@@ -818,6 +912,7 @@ impl GameState {
         };
         let _ = already;
         self.advance_income_spaces(player, income);
+        self.sync_free_source(key);
     }
 
     pub fn flip_farm(&mut self, idx: usize) {
@@ -832,6 +927,7 @@ impl GameState {
             (tile.player, tile.def.income)
         };
         self.advance_income_spaces(player, income);
+        self.sync_farm_beer(idx);
     }
 
     // --- resources ---------------------------------------------------------
@@ -913,6 +1009,7 @@ impl GameState {
         if self.farm_tiles[idx].as_ref().map_or(false, |t| t.flipped) {
             self.advance_income_spaces(player, income);
         }
+        self.sync_farm_beer(idx);
         true
     }
 
