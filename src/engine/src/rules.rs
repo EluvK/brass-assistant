@@ -436,6 +436,7 @@ fn vacant_single_icon_exists(state: &GameState, ind: IndustryType) -> bool {
 }
 
 pub fn get_valid_build_targets(state: &GameState, pid: usize) -> Vec<BuildTarget> {
+    state.ensure_network_masks();
     // Precompute once per call: which industries still have a vacant
     // single-icon slot somewhere (used to deprioritize multi-icon slots).
     let mut single_icon_available = [false; 6];
@@ -823,6 +824,7 @@ pub fn execute_build(
 // ---------------------------------------------------------------------------
 
 pub fn get_valid_network_targets(state: &GameState, pid: usize) -> Vec<usize> {
+    state.ensure_network_masks();
     let player = &state.players[pid];
     let mut out = Vec::new();
     let has_no_presence = !player_has_presence(state, pid);
@@ -922,10 +924,7 @@ pub fn execute_network(
         }
     }
 
-    state.links[conn_id] = Some(crate::state::Link {
-        player: pid,
-        is_canal: state.era == Era::Canal,
-    });
+    state.set_link(conn_id, pid);
 
     discard_card(state, pid, card_index);
     Ok(format!("Built link {} - {}", conn.a.name(), conn.b.name()))
@@ -986,6 +985,7 @@ pub fn get_second_rail_options(
     first_conn: usize,
     coal1: CoalSource,
 ) -> Vec<SecondRailOption> {
+    state.ensure_network_masks();
     if state.era != Era::Rail {
         return Vec::new();
     }
@@ -1048,9 +1048,9 @@ pub fn get_second_rail_options(
             continue;
         }
         // Place the second link so beer connectivity matches execution time.
-        tx.state().links[conn.id] = Some(crate::state::Link { player: pid, is_canal: false });
+        tx.state().set_link(conn.id, pid);
         let beers = beer_sources_for_link(tx.state_ref(), pid, conn);
-        tx.state().links[conn.id] = None;
+        tx.state().remove_link(conn.id);
         if beers.is_empty() {
             continue;
         }
@@ -1150,7 +1150,7 @@ impl<'a> RailTx<'a> {
     }
 
     fn place_link(&mut self, id: usize, pid: usize) {
-        self.state().links[id] = Some(crate::state::Link { player: pid, is_canal: false });
+        self.state().set_link(id, pid);
         self.links.push(id);
     }
 
@@ -1181,7 +1181,7 @@ impl Drop for RailTx<'_> {
                 rollback_double_rail_coal(state, *undo);
             }
             for &link in self.links.iter().rev() {
-                state.links[link] = None;
+                state.remove_link(link);
             }
         }
     }
@@ -1919,6 +1919,7 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
 /// decides whether source/card choices are enumerated fully or truncated to
 /// their first representative.
 fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
+    state.ensure_network_masks();
     let pid = state.current_player_id();
 
     if let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {

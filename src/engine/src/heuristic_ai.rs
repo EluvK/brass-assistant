@@ -315,6 +315,10 @@ pub fn candidate_actions(state: &mut GameState) -> Vec<Decision> {
 /// Build and Network get up to `k` candidates each; other action types keep
 /// their single best (develop/sell/loan/scout/pass).
 pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
+    // Network masks are (re)validated inside `get_valid_build_targets` /
+    // `get_valid_network_targets` / `get_second_rail_options`, which every
+    // scoring path below enters before any direct `is_in_network` read — no
+    // redundant ensure here (hot path: MCTS calls this once per tree node).
     let pid = state.current_player_id();
 
     if let Some(PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {

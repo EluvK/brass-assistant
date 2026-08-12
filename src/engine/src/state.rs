@@ -297,6 +297,15 @@ pub struct GameState {
     /// a single game is single-threaded, so the lock is uncontended.
     pub(crate) component_cache: std::sync::RwLock<(u64, [u32; 27])>,
 
+    /// Cached per-player "own network" location masks (bitmask over the 27
+    /// locations): bit `l` set iff `graph::is_in_network(pid, loc)` holds (own
+    /// tile at `loc`, or own link touching `loc` incl. via-farm). Maintained
+    /// incrementally at every board-mutation site and lazily self-healed
+    /// against any direct `links`/`city_tiles`/`farm_tiles` write via the
+    /// fingerprint in the first tuple element (per-player: own links in bits
+    /// 0..39, own tile locations in bits 39..66).
+    pub(crate) network_cache: std::sync::RwLock<([u128; 4], [u32; 4])>,
+
     pub coal_market: usize,
     pub iron_market: usize,
     pub merchants: Vec<MerchantTile>,
@@ -315,6 +324,7 @@ impl Clone for GameState {
         // `RwLock` is not Clone; copy the cached (fingerprint, masks) pair.
         let component_cache =
             std::sync::RwLock::new(*self.component_cache.read().expect("component cache"));
+        let network_cache = std::sync::RwLock::new(*self.network_cache.read().expect("network cache"));
         GameState {
             rng: self.rng.clone(),
             era: self.era,
@@ -334,6 +344,7 @@ impl Clone for GameState {
             free_iron_works: self.free_iron_works.clone(),
             free_beer_cubes: self.free_beer_cubes.clone(),
             component_cache,
+            network_cache,
             coal_market: self.coal_market,
             iron_market: self.iron_market,
             merchants: self.merchants.clone(),
@@ -393,7 +404,23 @@ fn loc_from_key_table() -> &'static [(Loc, usize)] {
 // ---------------------------------------------------------------------------
 
 /// Full multiset of cards dealt this era for `player_count` (before shuffling).
+/// Deterministic in `player_count` only (no era dependence); the composition is
+/// cached once per player count and cloned on every call — `init_deck` and
+/// each MCTS determinization (`mcts_ai::determinize`) share the cache instead
+/// of rebuilding the ~64-card Vec from the static tables every time.
 pub fn deck_composition(player_count: usize) -> Vec<Card> {
+    static CACHE: OnceLock<[Vec<Card>; 5]> = OnceLock::new();
+    let comps = CACHE.get_or_init(|| {
+        let mut arr: [Vec<Card>; 5] = Default::default();
+        for n in 2..=4 {
+            arr[n] = build_deck_composition(n);
+        }
+        arr
+    });
+    comps[player_count].clone()
+}
+
+fn build_deck_composition(player_count: usize) -> Vec<Card> {
     let mut cards = Vec::new();
     for (loc, count) in location_cards(player_count) {
         for _ in 0..*count {
@@ -436,6 +463,7 @@ impl GameState {
             free_iron_works: Vec::new(),
             free_beer_cubes: Vec::new(),
             component_cache: std::sync::RwLock::new((u64::MAX, [0u32; 27])),
+            network_cache: std::sync::RwLock::new(([0u128; 4], [0u32; 4])),
             coal_market: COAL_MARKET_INITIAL,
             iron_market: IRON_MARKET_INITIAL,
             merchants: Vec::new(),
@@ -592,14 +620,17 @@ impl GameState {
 
     /// Place a tile at a location (city slot or farm), overwriting any existing.
     pub fn place_tile(&mut self, loc: Loc, slot_index: usize, tile: BoardTile) {
+        let player = tile.player;
         if loc.is_city() {
             if let Some(k) = self.city_slot_key(loc, slot_index) {
                 self.city_tiles[k] = Some(tile);
                 self.sync_free_source(k);
+                self.mark_network(player, loc);
             }
         } else if let Some(idx) = farm_index(loc) {
             self.farm_tiles[idx] = Some(tile);
             self.sync_farm_beer(idx);
+            self.mark_network(player, loc);
         }
     }
 
@@ -607,28 +638,47 @@ impl GameState {
     /// sync). Used by shortfall repayment.
     pub fn remove_city_tile_by_key(&mut self, key: usize) {
         if key < self.city_tiles.len() {
+            let owner = self.city_tiles[key].as_ref().map(|t| t.player);
             self.city_tiles[key] = None;
             self.drop_free_source(key);
+            if let Some(owner) = owner {
+                if let Some((loc, _)) = loc_from_key(key) {
+                    self.clear_network_location(owner, loc);
+                }
+            }
         }
     }
 
     /// Remove a farm tile by index.
     pub fn remove_farm_by_idx(&mut self, idx: usize) {
         if idx < self.farm_tiles.len() {
+            let owner = self.farm_tiles[idx].as_ref().map(|t| t.player);
             self.farm_tiles[idx] = None;
             self.drop_farm_beer(idx);
+            if let Some(owner) = owner {
+                let loc = if idx == 0 { Loc::BreweryNorth } else { Loc::BrewerySouth };
+                self.clear_network_location(owner, loc);
+            }
         }
     }
 
     pub fn remove_tile(&mut self, loc: Loc, slot_index: usize) {
         if loc.is_city() {
             if let Some(k) = self.city_slot_key(loc, slot_index) {
+                let owner = self.city_tiles[k].as_ref().map(|t| t.player);
                 self.city_tiles[k] = None;
                 self.drop_free_source(k);
+                if let Some(owner) = owner {
+                    self.clear_network_location(owner, loc);
+                }
             }
         } else if let Some(idx) = farm_index(loc) {
+            let owner = self.farm_tiles[idx].as_ref().map(|t| t.player);
             self.farm_tiles[idx] = None;
             self.drop_farm_beer(idx);
+            if let Some(owner) = owner {
+                self.clear_network_location(owner, loc);
+            }
         }
     }
 
@@ -775,6 +825,183 @@ impl GameState {
         masks
     }
 
+    // --- per-player network mask cache --------------------------------------
+
+    /// Bitmask of locations in player `pid`'s own network: own tile at the
+    /// location, or an own link touching it (incl. via-farm). Backed by the
+    /// cached `network_cache` masks; `ensure_network_masks` keeps them fresh.
+    pub(crate) fn network_mask(&self, pid: usize) -> u32 {
+        self.network_cache.read().expect("network cache").1[pid]
+    }
+
+    /// Lazily validate/rebuild the cached network masks against the current
+    /// board. Called once per legal-move / heuristic batch (NOT per location
+    /// query): the fingerprint scan is O(links+tiles), and a recompute only
+    /// happens when a direct `links`/`city_tiles`/`farm_tiles` write (tests,
+    /// dry-runs) bypassed the incremental maintenance.
+    pub(crate) fn ensure_network_masks(&self) {
+        let fp = self.network_fingerprint();
+        let mut cache = self.network_cache.write().expect("network cache");
+        if cache.0 != fp {
+            for pid in 0..cache.1.len() {
+                cache.1[pid] = self.compute_network_mask(pid);
+            }
+            cache.0 = fp;
+        }
+    }
+
+    /// Recompute all network masks from scratch and store the fresh fingerprint.
+    /// Used after bulk board clears (era end) that bypass per-tile hooks.
+    pub fn rebuild_network_masks(&mut self) {
+        let fp = self.network_fingerprint();
+        let mut cache = self.network_cache.write().expect("network cache");
+        for pid in 0..cache.1.len() {
+            cache.1[pid] = self.compute_network_mask(pid);
+        }
+        cache.0 = fp;
+    }
+
+    /// Per-player fingerprint of the board data the network masks derive from:
+    /// own links in bits 0..39, own tile locations in bits 39..66. Any change
+    /// to an own link or to the tile occupying any location flips it.
+    fn network_fingerprint(&self) -> [u128; 4] {
+        let mut fp = [0u128; 4];
+        for (i, link) in self.links.iter().enumerate() {
+            if let Some(l) = link {
+                fp[l.player] |= 1u128 << i;
+            }
+        }
+        for (k, tile) in self.city_tiles.iter().enumerate() {
+            if let Some(t) = tile {
+                if let Some((loc, _)) = loc_from_key(k) {
+                    fp[t.player] |= 1u128 << (39 + loc as u8);
+                }
+            }
+        }
+        for (idx, tile) in self.farm_tiles.iter().enumerate() {
+            if let Some(t) = tile {
+                let loc = if idx == 0 { Loc::BreweryNorth } else { Loc::BrewerySouth };
+                fp[t.player] |= 1u128 << (39 + loc as u8);
+            }
+        }
+        fp
+    }
+
+    /// Recompute one player's network mask from scratch, mirroring
+    /// `graph::is_in_network` exactly: every location with an own tile, plus
+    /// every location touched by an own link (endpoint or via-farm).
+    fn compute_network_mask(&self, pid: usize) -> u32 {
+        let mut mask = 0u32;
+        for (k, tile) in self.city_tiles.iter().enumerate() {
+            if let Some(t) = tile {
+                if t.player == pid {
+                    if let Some((loc, _)) = loc_from_key(k) {
+                        mask |= 1u32 << (loc as u8);
+                    }
+                }
+            }
+        }
+        for (idx, tile) in self.farm_tiles.iter().enumerate() {
+            if let Some(t) = tile {
+                if t.player == pid {
+                    let loc = if idx == 0 { Loc::BreweryNorth } else { Loc::BrewerySouth };
+                    mask |= 1u32 << (loc as u8);
+                }
+            }
+        }
+        for (i, link) in self.links.iter().enumerate() {
+            if let Some(l) = link {
+                if l.player == pid {
+                    let c = &connections()[i];
+                    mask |= 1u32 << (c.a as u8);
+                    mask |= 1u32 << (c.b as u8);
+                    if let Some(f) = c.via_farm {
+                        mask |= 1u32 << (f as u8);
+                    }
+                }
+            }
+        }
+        mask
+    }
+
+    /// Set the "own network" bit for a location of a player (place tile / link).
+    fn mark_network(&mut self, pid: usize, loc: Loc) {
+        self.network_cache
+            .write()
+            .expect("network cache")
+            .1[pid] |= 1u32 << (loc as u8);
+    }
+
+    /// Recompute one location's bit for a player after a tile/link removal:
+    /// keep it only while an own tile or an own touching link remains there.
+    fn clear_network_location(&mut self, pid: usize, loc: Loc) {
+        let mut keep = false;
+        if loc.is_city() {
+            for slot in 0..crate::map::city_slots(loc).len() {
+                if let Some(k) = self.city_slot_key(loc, slot) {
+                    if let Some(t) = &self.city_tiles[k] {
+                        if t.player == pid {
+                            keep = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if !keep {
+            if let Some(t) = self.farm_tile(loc) {
+                keep = t.player == pid;
+            }
+        }
+        if !keep {
+            for &conn_id in &crate::map::loc_connections()[loc as usize] {
+                if let Some(l) = &self.links[conn_id] {
+                    if l.player == pid {
+                        keep = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !keep {
+            self.network_cache
+                .write()
+                .expect("network cache")
+                .1[pid] &= !(1u32 << (loc as u8));
+        }
+    }
+
+    /// Place a link owned by `pid`, keeping the network mask in sync (endpoints
+    /// + via-farm all enter the player's network). Centralizes every link
+    /// write so RailTx dry-runs and era-end cleanup stay consistent.
+    pub fn set_link(&mut self, conn_id: usize, pid: usize) {
+        let c = &connections()[conn_id];
+        self.links[conn_id] = Some(Link {
+            player: pid,
+            is_canal: self.era == Era::Canal,
+        });
+        self.mark_network(pid, c.a);
+        self.mark_network(pid, c.b);
+        if let Some(f) = c.via_farm {
+            self.mark_network(pid, f);
+        }
+    }
+
+    /// Remove a link, clearing the affected network-mask bits for its former
+    /// owner (unless another own link/tile still covers them).
+    pub fn remove_link(&mut self, conn_id: usize) {
+        let owner = self.links[conn_id].map(|l| l.player);
+        self.links[conn_id] = None;
+        if let Some(owner) = owner {
+            let c = &connections()[conn_id];
+            self.clear_network_location(owner, c.a);
+            self.clear_network_location(owner, c.b);
+            if let Some(f) = c.via_farm {
+                self.clear_network_location(owner, f);
+            }
+        }
+    }
+
     /// Verify the free-source caches match a full rescan of `city_tiles` and
     /// `farm_tiles`. Cheap (47 slots + 2 farms); used by tests and, in debug
     /// builds, by `apply_move` to catch any mutation site that bypassed the
@@ -842,6 +1069,19 @@ impl GameState {
         assert_eq!(live_coal, coal, "free coal cache drifted");
         assert_eq!(live_iron, iron, "free iron cache drifted");
         assert_eq!(live_beer, beer, "free beer cache drifted");
+
+        // Network masks: each cached mask must match a from-scratch recompute
+        // of the current board. (The fingerprint is only a laziness marker for
+        // `ensure_network_masks`; incremental maintenance keeps masks correct
+        // without touching it, so it is not compared here.)
+        let cache = self.network_cache.read().expect("network cache");
+        for pid in 0..cache.1.len() {
+            assert_eq!(
+                cache.1[pid],
+                self.compute_network_mask(pid),
+                "network mask drifted for P{pid}"
+            );
+        }
     }
 
     // --- money & income ----------------------------------------------------

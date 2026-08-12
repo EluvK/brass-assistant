@@ -8,27 +8,19 @@
 //! coal/iron cubes, so the hot paths below are O(free sources + market slots).
 
 use crate::data::IndustryType;
-use crate::map::{city_slots, connections, Loc};
+use crate::map::{Loc, ALL_LOCATIONS};
 use crate::state::{BeerCubeEntry, GameState};
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
-const LOC_COUNT: usize = 27;
-
-/// Connection ids touching each location (for cheap `is_in_network` checks).
-fn loc_connections() -> &'static [Vec<usize>] {
-    static LC: OnceLock<Vec<Vec<usize>>> = OnceLock::new();
-    LC.get_or_init(|| {
-        let mut v = vec![Vec::new(); LOC_COUNT];
-        for c in connections() {
-            v[c.a as usize].push(c.id);
-            v[c.b as usize].push(c.id);
-            if let Some(f) = c.via_farm {
-                v[f as usize].push(c.id);
-            }
-        }
-        v
-    })
+/// Locations in player `pid`'s own network (own tile, or reachable through the
+/// player's own links). O(1) mask iteration via the `GameState` network-mask
+/// cache.
+pub fn network_locations(state: &GameState, pid: usize) -> Vec<Loc> {
+    let mask = state.network_mask(pid);
+    (0..27u8)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| ALL_LOCATIONS[i as usize])
+        .collect()
 }
 
 /// Locations reachable from `start` by following ANY built link (regardless
@@ -43,53 +35,15 @@ pub fn connected_locations(state: &GameState, start: Loc) -> Vec<Loc> {
 }
 
 /// Is `loc` in player `pid`'s own network (own tile there, or own link touching)?
+/// O(1) via the cached per-player network mask.
 pub fn is_in_network(state: &GameState, pid: usize, loc: Loc) -> bool {
-    // Own industry at the location
-    if loc.is_city() {
-        for slot in 0..city_slots(loc).len() {
-            if let Some(k) = state.city_slot_key(loc, slot) {
-                if let Some(t) = &state.city_tiles[k] {
-                    if t.player == pid {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    if let Some(t) = state.farm_tile(loc) {
-        if t.player == pid {
-            return true;
-        }
-    }
-    // Own link touching the location
-    for &conn_id in &loc_connections()[loc as usize] {
-        if let Some(link) = &state.links[conn_id] {
-            if link.player == pid {
-                return true;
-            }
-        }
-    }
-    false
+    state.network_mask(pid) & (1u32 << (loc as u8)) != 0
 }
 
-/// Does the player have any tile or link on the board?
+/// Does the player have any tile or link on the board? O(1) via the cached
+/// per-player network mask (any presence implies a non-empty network).
 pub fn player_has_presence(state: &GameState, pid: usize) -> bool {
-    if state
-        .city_tiles
-        .iter()
-        .flatten()
-        .any(|t| t.player == pid)
-    {
-        return true;
-    }
-    if state.farm_tiles.iter().flatten().any(|t| t.player == pid) {
-        return true;
-    }
-    state
-        .links
-        .iter()
-        .flatten()
-        .any(|l| l.player == pid)
+    state.network_mask(pid) != 0
 }
 
 /// Given a connection (a,b,via) and the node you're at, which nodes can you

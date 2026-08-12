@@ -366,6 +366,23 @@ pub fn adjacency() -> &'static [Vec<(Loc, usize)>] {
     })
 }
 
+/// Connection ids touching each location (endpoint or via-farm). Used by the
+/// per-player network-mask maintenance (`GameState::clear_network_location`).
+pub(crate) fn loc_connections() -> &'static [Vec<usize>] {
+    static LC: OnceLock<Vec<Vec<usize>>> = OnceLock::new();
+    LC.get_or_init(|| {
+        let mut v = vec![Vec::new(); ALL_LOCATIONS.len()];
+        for c in connections() {
+            v[c.a as usize].push(c.id);
+            v[c.b as usize].push(c.id);
+            if let Some(f) = c.via_farm {
+                v[f as usize].push(c.id);
+            }
+        }
+        v
+    })
+}
+
 // Translated verbatim from CONNECTIONS in gameData.js.
 // via_farm only for kidderminster-worcester (via southern brewery).
 pub fn connections() -> &'static [Connection] {

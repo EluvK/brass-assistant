@@ -1405,3 +1405,52 @@ fn connectivity_cache_self_heals_after_direct_link_writes() {
     state.links[17] = None;
     assert_eq!(free(&state, Loc::Oxford), 0);
 }
+
+#[test]
+fn network_mask_is_kept_by_moves_and_self_heals_after_direct_link_writes() {
+    let mut state = setup(4);
+    let pid = 0;
+
+    // Maintained path: a placed tile enters the player's network immediately.
+    place_test_presence_tile(&mut state, Loc::Stafford, pid);
+    assert!(brass_engine::graph::is_in_network(&state, pid, Loc::Stafford));
+    assert!(!brass_engine::graph::is_in_network(&state, pid, Loc::Birmingham));
+    assert!(brass_engine::graph::player_has_presence(&state, pid));
+    assert!(!brass_engine::graph::player_has_presence(&state, 1));
+
+    // Direct link writes bypass the maintenance hooks; the mask must self-heal
+    // on the next batch entry (get_valid_network_targets) and, once healed,
+    // direct is_in_network reads agree with the scan.
+    state.links[15] = Some(brass_engine::state::Link { player: pid, is_canal: false }); // Cannock-Stafford
+    let _ = get_valid_network_targets(&state, pid);
+    assert!(
+        brass_engine::graph::is_in_network(&state, pid, Loc::Cannock),
+        "network mask must self-heal after a direct link write"
+    );
+    state.links[8] = Some(brass_engine::state::Link { player: pid, is_canal: false }); // Walsall-Birmingham
+    let _ = get_valid_network_targets(&state, pid);
+    assert!(
+        brass_engine::graph::is_in_network(&state, pid, Loc::Birmingham),
+        "network mask must reflect chained direct link writes"
+    );
+
+    // Removing the last touching link severs the location again.
+    state.links[15] = None;
+    state.links[8] = None;
+    let _ = get_valid_network_targets(&state, pid);
+    assert!(
+        !brass_engine::graph::is_in_network(&state, pid, Loc::Birmingham),
+        "removing the last link must sever the location from the network"
+    );
+    // The own tile keeps its own location in the network.
+    assert!(brass_engine::graph::is_in_network(&state, pid, Loc::Stafford));
+
+    // A committed network move updates the mask through the rules layer.
+    let conn_id = get_valid_network_targets(&state, pid)[0];
+    execute_network(&mut state, pid, conn_id, None, 0).expect("network must succeed");
+    let c = &connections()[conn_id];
+    assert!(
+        brass_engine::graph::is_in_network(&state, pid, c.a) && brass_engine::graph::is_in_network(&state, pid, c.b),
+        "executed network must extend the player's network mask"
+    );
+}

@@ -220,6 +220,7 @@ pub fn end_canal_era(state: &mut GameState) {
 
     // Bulk board clears above bypassed the per-tile cache hooks; rescan.
     state.rebuild_free_sources();
+    state.rebuild_network_masks();
 
     state.era = Era::Rail;
     state.round = 1;
