@@ -56,6 +56,7 @@ lib.rs（模块根，仅声明 mod；无 src/engine/baselines/ 残留内容）
 │   ├─ rules.rs    Move 枚举(9 变体) + 资源源选择/校验（免费优先）
 │   │              + 合法动作生成（`generate_moves` 单一生成器，`MoveExpansion` All/OnePerSlot）
 │   │              + 7 种行动执行 + apply_move 分发 + RailTx 双铁路事务（dry-run/回滚）+ 多卖货计划
+│   │              + raw/canonical move 防御式校验；失败动作对 GameState 保持原子性（回滚）
 │   ├─ engine.rs   回合/轮次推进、收入阶段、短差偿付、时代切换 + `handle_turn_result`
 │   ├─ game_loop.rs 共享全局驱动：`play(state, max_moves, hooks, choose)` 统一游戏循环
 │   └─ scoring.rs  时代计分（连接 VP + 板块 VP）+ 终局排名

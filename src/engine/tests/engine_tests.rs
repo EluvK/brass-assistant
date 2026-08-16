@@ -1,9 +1,9 @@
 use brass_engine::data::{Era, IndustryType, industry_tiles};
-use brass_engine::engine::{advance_turn, end_canal_era};
+use brass_engine::engine::{advance_turn, end_canal_era, step};
 use brass_engine::map::*;
 use brass_engine::rules::{
-    execute_build, execute_network, execute_network_double, execute_sell, get_valid_build_targets,
-    get_valid_network_targets, get_valid_second_rail_links, legal_moves,
+    Move, execute_build, execute_network, execute_network_double, execute_sell,
+    get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links, legal_moves,
 };
 use brass_engine::scoring;
 use brass_engine::state::{BoardTile, Card, GameState};
@@ -270,6 +270,98 @@ fn execute_network_places_link() {
     let res = execute_network(&mut state, pid, conn_id, None, 0);
     assert!(res.is_ok(), "network failed: {:?}", res);
     assert!(state.links[conn_id].is_some());
+}
+
+#[test]
+fn raw_invalid_actions_are_rejected_without_state_changes() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let hand_before = state.players[pid].hand.len();
+    let money_before = state.players[pid].money;
+
+    assert!(execute_network(&mut state, pid, 0, None, hand_before).is_err());
+    assert_eq!(state.players[pid].hand.len(), hand_before);
+    assert_eq!(state.players[pid].money, money_before);
+    assert!(state.links.iter().all(Option::is_none));
+
+    // Slot 99 must not consume a tile, resources, money, or a card.
+    let target = get_valid_build_targets(&state, pid)
+        .into_iter()
+        .next()
+        .expect("expected an initial build target");
+    let card = brass_engine::rules::valid_build_cards(
+        &state,
+        &state.players[pid],
+        pid,
+        target.loc,
+        target.ind,
+    )[0];
+    let coal =
+        brass_engine::rules::coal_source_options(&state, target.loc, target.cost_coal as usize)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+    let iron = brass_engine::rules::iron_source_options(&state, target.cost_iron as usize)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    assert!(
+        execute_build(
+            &mut state, pid, target.loc, 99, target.ind, &coal, &iron, card,
+        )
+        .is_err()
+    );
+    assert_eq!(state.players[pid].hand.len(), hand_before);
+    assert_eq!(state.players[pid].money, money_before);
+    assert!(state.links.iter().all(Option::is_none));
+}
+
+#[test]
+fn raw_scout_and_double_rail_reject_malformed_indices() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let hand_before = state.players[pid].hand.clone();
+    assert!(brass_engine::rules::execute_scout(&mut state, pid, [0, 0, 1]).is_err());
+    assert_eq!(state.players[pid].hand, hand_before);
+
+    let mut rail = setup_clean_rail_state(2);
+    let rail_pid = 0;
+    let invalid_coal = test_coal_from_cannock(&rail);
+    assert!(
+        execute_network_double(
+            &mut rail,
+            rail_pid,
+            usize::MAX,
+            0,
+            invalid_coal,
+            invalid_coal,
+            brass_engine::graph::BeerSource {
+                kind: brass_engine::graph::BeerSourceKind::Merchant,
+                key: usize::MAX,
+                farm_idx: None,
+                merchant_idx: Some(usize::MAX),
+            },
+            0,
+        )
+        .is_err()
+    );
+    assert!(rail.links.iter().all(Option::is_none));
+}
+
+#[test]
+fn failed_step_does_not_advance_turn() {
+    let mut state = setup(4);
+    let before = state.current_index;
+    let invalid_card_index = state.players[state.current_player_id()].hand.len();
+    let (result, turn) = step(
+        &mut state,
+        &Move::Pass {
+            card_index: invalid_card_index,
+        },
+    );
+    assert!(result.is_err());
+    assert!(matches!(turn, brass_engine::engine::TurnResult::Continue));
+    assert_eq!(state.current_index, before);
 }
 
 #[test]

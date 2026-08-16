@@ -280,7 +280,11 @@ pub fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
 /// Returns the result of the action + turn advancement.
 pub fn step(state: &mut GameState, mv: &Move) -> (Result<String, String>, TurnResult) {
     let result = crate::rules::apply_move(state, mv);
-    let tr = advance_turn(state);
+    let tr = if result.is_ok() {
+        advance_turn(state)
+    } else {
+        TurnResult::Continue
+    };
     (result, tr)
 }
 

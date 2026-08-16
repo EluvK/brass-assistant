@@ -370,6 +370,13 @@ pub fn discard_card(state: &mut GameState, player_id: usize, card_index: usize) 
     p.hand.remove(card_index);
 }
 
+fn require_card_index(state: &GameState, pid: usize, card_index: usize) -> Result<(), String> {
+    if card_index >= state.players[pid].hand.len() {
+        return Err("Invalid card index".into());
+    }
+    Ok(())
+}
+
 /// Indices of cards in `player`'s hand valid for a BUILD at `loc`/`ind`.
 /// `loc` being a farm restricts to industry/wild-industry cards.
 pub fn valid_build_cards(
@@ -692,6 +699,27 @@ pub fn execute_build(
     iron: &[IronSource],
     card_index: usize,
 ) -> Result<String, String> {
+    require_card_index(state, pid, card_index)?;
+
+    let existing = if loc.is_city() {
+        let allowed = city_slots(loc).get(slot_index).ok_or("Invalid city slot")?;
+        if !allowed.contains(&ind) {
+            return Err("Industry is not allowed in this city slot".into());
+        }
+        let key = state
+            .city_slot_key(loc, slot_index)
+            .ok_or("Invalid city slot")?;
+        state.city_tiles[key].as_ref()
+    } else {
+        if !matches!(loc, Loc::BreweryNorth | Loc::BrewerySouth)
+            || slot_index != 0
+            || ind != IndustryType::Brewery
+        {
+            return Err("Invalid brewery farm slot".into());
+        }
+        state.farm_tile(loc)
+    };
+
     // Determine how much coal/iron this tile needs and validate the chosen set.
     let tile_def = state.players[pid]
         .next_tile(ind)
@@ -713,6 +741,21 @@ pub fn execute_build(
             ind.name(),
             tile_def.level
         ));
+    }
+
+    // A raw move must obey the same occupancy and overbuild rules as generated
+    // moves. `place_tile` intentionally overwrites, so this check must happen
+    // before consuming money, resources, or a tile from the player mat.
+    if let Some(ex) = existing {
+        if ex.ind != ind || tile_def.level <= ex.def.level {
+            return Err("Target slot cannot be overbuilt by this tile".into());
+        }
+        if ex.player != pid
+            && (ex.ind != IndustryType::CoalMine && ex.ind != IndustryType::IronWorks
+                || !is_resource_depleted(state, ex.ind))
+        {
+            return Err("Cannot overbuild this opponent tile".into());
+        }
     }
 
     // Canal era: only one tile per location per player (defense in depth;
@@ -920,6 +963,7 @@ pub fn execute_network(
     coal: Option<CoalSource>,
     card_index: usize,
 ) -> Result<String, String> {
+    require_card_index(state, pid, card_index)?;
     let conn = connections()
         .iter()
         .find(|c| c.id == conn_id)
@@ -928,25 +972,48 @@ pub fn execute_network(
         return Err("Connection already built".into());
     }
 
+    let has_no_presence = !player_has_presence(state, pid);
+    if !has_no_presence && !is_in_network(state, pid, conn.a) && !is_in_network(state, pid, conn.b)
+    {
+        return Err("Link is not adjacent to your network".into());
+    }
+
     match state.era {
         Era::Canal => {
+            if !conn.canal {
+                return Err("Connection is not available in the canal era".into());
+            }
+            if state.players[pid].canal_links == 0 {
+                return Err("No canal links remaining".into());
+            }
             if coal.is_some() {
                 return Err("Canal links do not consume coal".into());
+            }
+            if CANAL_LINK_COST > state.players[pid].money {
+                return Err("Cannot afford this link".into());
             }
             state.spend_money(pid, CANAL_LINK_COST);
             let p = &mut state.players[pid];
             p.canal_links -= 1;
         }
         Era::Rail => {
+            if !conn.rail {
+                return Err("Connection is not available in the rail era".into());
+            }
+            if state.players[pid].rail_links == 0 {
+                return Err("No rail links remaining".into());
+            }
             let coal = coal.ok_or("A coal source is required for a rail link")?;
             validate_connection_coal_choice(state, conn, &[coal])?;
-            let mut total = RAIL_LINK_COST;
+            let total = RAIL_LINK_COST + if coal.free { 0 } else { coal.price as i32 };
+            if total > state.players[pid].money {
+                return Err("Cannot afford this link".into());
+            }
             match coal.kind {
                 CoalSourceKind::Mine => {
                     state.consume_from_city(coal.key);
                 }
                 CoalSourceKind::Market => {
-                    total += coal.price as i32;
                     state.take_market_coal();
                 }
             }
@@ -1325,17 +1392,30 @@ pub fn execute_network_double(
     beer: BeerSource,
     card_index: usize,
 ) -> Result<String, String> {
+    require_card_index(state, pid, card_index)?;
     if state.era != Era::Rail {
         return Err("Double links are Rail Era only".into());
     }
     if state.players[pid].rail_links < 2 {
         return Err("Not enough rail links".into());
     }
+    if conn1 == conn2 {
+        return Err("Double links must use distinct connections".into());
+    }
+    let c1 = connections()
+        .iter()
+        .find(|c| c.id == conn1)
+        .ok_or("Invalid first connection")?;
+    let c2 = connections()
+        .iter()
+        .find(|c| c.id == conn2)
+        .ok_or("Invalid second connection")?;
+    if !c1.rail || !c2.rail {
+        return Err("Both connections must be rail-enabled".into());
+    }
     if state.links[conn1].is_some() || state.links[conn2].is_some() {
         return Err("Connection already built".into());
     }
-    let c1 = connections().iter().find(|c| c.id == conn1).unwrap();
-    let c2 = connections().iter().find(|c| c.id == conn2).unwrap();
 
     let has_no_presence = !player_has_presence(state, pid);
 
@@ -1455,7 +1535,24 @@ pub fn execute_develop(
     iron: &[IronSource],
     card_index: usize,
 ) -> Result<String, String> {
+    require_card_index(state, pid, card_index)?;
     let tiles_to_develop = if ind2.is_some() { 2 } else { 1 };
+    let available: Vec<IndustryType> = state.players[pid]
+        .developable_types()
+        .into_iter()
+        .map(|(ind, _)| ind)
+        .collect();
+    if !available.contains(&ind1) {
+        return Err("First industry is not developable".into());
+    }
+    if let Some(ind2) = ind2 {
+        if !available.contains(&ind2) {
+            return Err("Second industry is not developable".into());
+        }
+        if ind1 == ind2 && state.players[pid].remaining_count(ind1) < 2 {
+            return Err("Not enough tiles remaining to develop this industry twice".into());
+        }
+    }
     validate_iron_choice(state, tiles_to_develop, iron)?;
 
     // Pre-check affordability of market iron
@@ -1631,8 +1728,58 @@ pub fn execute_sell(
     use_merchant_beer: &[bool],
     card_index: usize,
 ) -> Result<String, String> {
+    let snapshot = state.clone();
+    let result = execute_sell_inner(
+        state,
+        pid,
+        keys,
+        merchant_indices,
+        use_merchant_beer,
+        card_index,
+    );
+    if result.is_err() {
+        *state = snapshot;
+    }
+    result
+}
+
+fn execute_sell_inner(
+    state: &mut GameState,
+    pid: usize,
+    keys: &[usize],
+    merchant_indices: &[usize],
+    use_merchant_beer: &[bool],
+    card_index: usize,
+) -> Result<String, String> {
+    require_card_index(state, pid, card_index)?;
     if merchant_indices.len() != keys.len() || use_merchant_beer.len() != keys.len() {
         return Err("Sell move shape mismatch".into());
+    }
+    if keys.is_empty() {
+        return Err("Sell move must include at least one tile".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (entry_idx, &key) in keys.iter().enumerate() {
+        if !seen.insert(key) {
+            return Err("Sell move contains the same tile more than once".into());
+        }
+        let tile = state
+            .city_tiles
+            .get(key)
+            .and_then(Option::as_ref)
+            .ok_or("Invalid sell tile")?;
+        if tile.player != pid || tile.flipped || !tile.ind.is_sellable() {
+            return Err("Tile cannot be sold".into());
+        }
+        let loc = crate::state::loc_from_key(key)
+            .map(|(loc, _)| loc)
+            .ok_or("Invalid sell tile")?;
+        let merchant = *merchant_indices
+            .get(entry_idx)
+            .ok_or("Sell move shape mismatch")?;
+        if !sell_merchants_for(state, pid, loc, tile.ind).contains(&merchant) {
+            return Err("Chosen merchant is not a valid buyer".into());
+        }
     }
 
     let mut sold = 0usize;
@@ -1857,6 +2004,7 @@ pub fn execute_loan(
     pid: usize,
     card_index: usize,
 ) -> Result<String, String> {
+    require_card_index(state, pid, card_index)?;
     if !state.can_take_loan(pid) {
         return Err("A loan cannot take your income below -10".into());
     }
@@ -1885,6 +2033,16 @@ pub fn execute_scout(
     pid: usize,
     card_indices: [usize; 3],
 ) -> Result<String, String> {
+    let mut unique = card_indices.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    if unique.len() != 3
+        || unique
+            .iter()
+            .any(|&idx| idx >= state.players[pid].hand.len())
+    {
+        return Err("Scout requires three distinct valid card indices".into());
+    }
     let p = &mut state.players[pid];
     if p.hand.len() < 3 {
         return Err("Must have 3 cards to scout".into());
@@ -1927,6 +2085,7 @@ pub fn execute_pass(
     pid: usize,
     card_index: usize,
 ) -> Result<String, String> {
+    require_card_index(state, pid, card_index)?;
     discard_card(state, pid, card_index);
     Ok("Passed".into())
 }
@@ -2331,6 +2490,9 @@ fn build_multi_sell_plans(
 }
 
 pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
+    // The public canonical-move boundary accepts decoded, potentially stale
+    // input. Keep it atomic even if a future executor adds a late validation.
+    let snapshot = state.clone();
     let pid = state.current_player_id();
     let res = match mv {
         Move::Build {
@@ -2389,9 +2551,15 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
         Move::Scout { card_indices } => execute_scout(state, pid, *card_indices),
         Move::Pass { card_index } => execute_pass(state, pid, *card_index),
     };
-    #[cfg(debug_assertions)]
-    if res.is_ok() {
-        state.assert_caches_consistent();
+    match res {
+        Ok(summary) => {
+            #[cfg(debug_assertions)]
+            state.assert_caches_consistent();
+            Ok(summary)
+        }
+        Err(err) => {
+            *state = snapshot;
+            Err(err)
+        }
     }
-    res
 }
