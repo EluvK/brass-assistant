@@ -16,8 +16,9 @@
 //!   Loan / Scout / Pass 1 each
 
 use crate::data::IndustryType;
+use crate::gameplay::legal_moves::legal_policy_representatives;
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, MAX_SLOTS_PER_CITY, connections};
-use crate::rules::{Move, legal_slot_moves};
+use crate::r#move::Move;
 use crate::state::GameState;
 use std::sync::OnceLock;
 
@@ -197,6 +198,28 @@ pub fn move_slots(mv: &Move) -> Vec<usize> {
         Move::Scout { .. } => vec![loan_offset() + 1],
         Move::Pass { .. } => vec![pass_offset()],
     }
+}
+
+/// A policy slot together with one executable representative move. Source and
+/// card choices are folded by gameplay before policy encoding.
+pub struct SlotMove {
+    pub slot: usize,
+    pub mv: Move,
+}
+
+/// Legal actions at policy-slot granularity. This mapping belongs here because
+/// the fixed slot table is an AI/bridge concern, not a gameplay rule.
+pub fn legal_slot_moves(state: &mut GameState) -> Vec<SlotMove> {
+    let mut out = Vec::new();
+    for mv in legal_policy_representatives(state) {
+        for slot in move_slots(&mv) {
+            out.push(SlotMove {
+                slot,
+                mv: mv.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// The set of policy slots reachable by at least one legal move (the mask).

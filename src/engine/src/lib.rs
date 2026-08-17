@@ -14,4 +14,4 @@ pub use ai::{heuristic_ai, mcts_ai, nn_mcts, random_ai, search_ai};
 pub use bridge::{encode, move_codec, policy, pymod, replay_fmt};
 pub use game_state::{graph, income, state};
 pub use gameplay::{engine, game_loop, rules, scoring};
-pub use model::{data, map};
+pub use model::{data, map, r#move};
