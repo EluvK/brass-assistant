@@ -1,19 +1,17 @@
-pub mod data;
-pub mod encode;
-pub mod engine;
-pub mod game_loop;
-pub mod graph;
-pub mod heuristic_ai;
-pub mod income;
-pub mod map;
-pub mod mcts_ai;
-pub mod move_codec;
-pub mod nn_mcts;
-pub mod policy;
-pub mod pymod;
-pub mod random_ai;
-pub mod replay_fmt;
-pub mod rules;
-pub mod scoring;
-pub mod search_ai;
-pub mod state;
+//! Brass game engine organized by architectural responsibility.
+//!
+//! The flat module paths below are re-exported for compatibility with existing
+//! Rust callers and the Python binding. New code should prefer the layer paths
+//! (`model`, `game_state`, `gameplay`, `ai`, and `bridge`).
+
+pub mod ai;
+pub mod bridge;
+pub mod game_state;
+pub mod gameplay;
+pub mod model;
+
+pub use ai::{heuristic_ai, mcts_ai, nn_mcts, random_ai, search_ai};
+pub use bridge::{encode, move_codec, policy, pymod, replay_fmt};
+pub use game_state::{graph, income, state};
+pub use gameplay::{engine, game_loop, rules, scoring};
+pub use model::{data, map};
