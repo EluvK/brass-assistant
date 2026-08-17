@@ -1,8 +1,8 @@
 //! Heuristic AI baseline: translated from reference/npow-brass-birmingham/js/aiPlayer.js
 //!
-//! Stateless greedy evaluator. Reads GameState/legal moves (never mutates the
-//! state beyond what action generation needs) and returns the Move with the
-//! highest VP-equivalent score. One-ply, no search.
+//! Stateless heuristic evaluator and 1-ply candidate generator. Reads
+//! GameState/legal moves (never mutates the state beyond what action generation
+//! needs) and returns VP-equivalent scores used by the 2-ply policy.
 
 use crate::data::{Era, IndustryType};
 use crate::engine::{TurnResult, advance_turn};
@@ -297,10 +297,9 @@ pub struct Decision {
     pub score: f64,
 }
 
-/// The single default AI entry point (the "teacher"). Currently delegates to the
-/// 2-ply lookahead, which is the strongest available policy; all external
-/// callers (Python BC teacher, `brass-engine` heuristic policy, replays) share
-/// this one implementation so there is no separate weaker heuristic variant.
+/// Compatibility entry point for the default policy (historically called
+/// "heuristic"). It delegates to the 2-ply lookahead; there is no separate
+/// single-step decision policy.
 pub fn choose_action(state: &mut GameState) -> Decision {
     crate::search_ai::choose_action_2ply(state)
 }

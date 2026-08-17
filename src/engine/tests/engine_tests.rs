@@ -16,6 +16,17 @@ fn setup(players: usize) -> GameState {
     GameState::new(rng, players)
 }
 
+#[test]
+fn default_heuristic_entry_point_is_the_2ply_policy() {
+    let mut heuristic_state = setup(4);
+    let mut two_ply_state = heuristic_state.clone();
+    let heuristic = brass_engine::heuristic_ai::choose_action(&mut heuristic_state);
+    let two_ply = brass_engine::search_ai::choose_action_2ply(&mut two_ply_state);
+
+    assert_eq!(format!("{:?}", heuristic.mv), format!("{:?}", two_ply.mv));
+    assert_eq!(heuristic.score, two_ply.score);
+}
+
 fn setup_clean_rail_state(players: usize) -> GameState {
     let mut state = setup(players);
     state.era = Era::Rail;

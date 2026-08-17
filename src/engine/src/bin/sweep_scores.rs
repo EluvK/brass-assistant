@@ -4,12 +4,12 @@
 //! Usage:
 //!   cargo run --release --bin sweep_scores -- <start_seed> <end_seed> <policy> [sims] [full|canal] > out.csv
 //!
-//!   policy: heuristic | 2ply | mcts
-//!   mcts uses sims (default 200). heuristic/2ply ignore sims.
+//!   policy: 2ply | heuristic | mcts
+//!   `heuristic` is a backwards-compatible alias for `2ply`.
+//!   mcts uses sims (default 200); 2ply/heuristic ignore sims.
 
 use brass_engine::data::Era;
 use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
-use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::search_ai;
 use brass_engine::state::GameState;
@@ -95,7 +95,7 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
     };
     let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
         Some(match policy {
-            "2ply" => search_ai::choose_action_2ply(state).mv,
+            "2ply" | "heuristic" => search_ai::choose_action_2ply(state).mv,
             "mcts" => {
                 let cfg = MctsConfig {
                     simulations: sims,
@@ -103,7 +103,7 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
                 };
                 mcts_ai::choose_action_mcts(state, &cfg).mv
             }
-            _ => heuristic_ai::choose_action(state).mv,
+            _ => search_ai::choose_action_2ply(state).mv,
         })
     });
     if !canal_only {

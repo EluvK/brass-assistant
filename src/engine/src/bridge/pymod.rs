@@ -405,7 +405,8 @@ impl PyGame {
         crate::scoring::final_ranking(&self.state)
     }
 
-    /// Heuristic (1-ply) choice: returns (canonical, describe, score).
+    /// Compatibility name for the default 2-ply choice: returns
+    /// (canonical, describe, score).
     fn choose_heuristic(&self) -> (String, String, f64) {
         let mut state = self.state.clone();
         let d = heuristic_ai::choose_action(&mut state);
