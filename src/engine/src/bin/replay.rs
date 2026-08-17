@@ -6,7 +6,7 @@
 //! driver (`src/ai/experiments/replay_net.py`) uses, so both produce
 //! byte-identical log structure.
 //!
-//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only]
+//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary]
 //!   canal-only: "1"/"true" stops after the canal era (no rail era played).
 
 use brass_engine::data::Era;
@@ -52,11 +52,14 @@ fn main() {
         .get(5)
         .map(|s| matches!(s.as_str(), "1" | "true" | "canal"))
         .unwrap_or(false);
+    // `summary` retains the era-end diagnostics without printing every move.
+    // It supersedes the former `stat_game` binary.
+    let verbose = !matches!(args.get(6).map(String::as_str), Some("summary"));
 
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     // RNG for the random baseline (state.rng is setup-only).
-    let mut rand_rng = rand::rngs::StdRng::from_entropy();
+    let mut rand_rng = rand::rngs::StdRng::seed_from_u64(seed ^ 0x5245_504C_4159);
 
     let mut prev_round = state.round;
     let mut prev_era = state.era;
@@ -67,50 +70,55 @@ fn main() {
     let rail_stats: RefCell<Vec<replay_fmt::PStats>> =
         RefCell::new(vec![replay_fmt::PStats::default(); players]);
 
-    println!("======================================================================");
     println!(
-        "Replay: {players}玩家 {policy}AI, seed={seed} | 起始顺位: {:?}",
-        state.turn_order
+        "Replay: {players}玩家 {policy}AI, seed={seed} | 模式={}",
+        if verbose { "full" } else { "summary" }
     );
-    println!("======================================================================");
-    for pid in 0..players {
-        println!(
-            "开局 玩家{pid}: {} | 手牌: {}",
-            replay_fmt::player_state(&state, pid),
-            replay_fmt::hand_display(&state, pid)
-        );
+    if verbose {
+        println!("起始顺位: {:?}", state.turn_order);
+        for pid in 0..players {
+            println!(
+                "开局 玩家{pid}: {} | 手牌: {}",
+                replay_fmt::player_state(&state, pid),
+                replay_fmt::hand_display(&state, pid)
+            );
+        }
+        println!("商家: {}", replay_fmt::merchant_state(&state));
+        println!("{}", replay_fmt::board_state(&state));
     }
-    println!("商家: {}", replay_fmt::merchant_state(&state));
-    println!("{}", replay_fmt::board_state(&state));
 
     let mut on_before = |state: &mut GameState, mv: &Move| {
         let pid = state.current_player_id();
-        let detail = replay_fmt::move_detail(state, mv);
-        let before = replay_fmt::player_state(state, pid);
-        let hand_before = replay_fmt::hand_display(state, pid);
         let stat_target = if state.era == Era::Canal {
             &mut canal_stats.borrow_mut()[pid]
         } else {
             &mut rail_stats.borrow_mut()[pid]
         };
         stat_target.record(mv);
-        println!("玩家{pid} [{detail}]");
-        println!("    之前: {before}");
-        println!("    手牌前: {hand_before}");
+        if verbose {
+            let detail = replay_fmt::move_detail(state, mv);
+            let before = replay_fmt::player_state(state, pid);
+            let hand_before = replay_fmt::hand_display(state, pid);
+            println!("玩家{pid} [{detail}]");
+            println!("    之前: {before}");
+            println!("    手牌前: {hand_before}");
+        }
     };
     let mut on_after = |state: &mut GameState, _mv: &Move, res: &Result<String, String>| {
         let pid = state.current_player_id();
-        let after = replay_fmt::player_state(state, pid);
-        let hand_after = replay_fmt::hand_display(state, pid);
-        let status = match res {
-            Ok(msg) => msg.clone(),
-            Err(e) => format!("!!失败: {e}"),
-        };
-        println!("    结果: {status}");
-        println!("    之后: {after}");
-        println!("    手牌后: {hand_after}");
-        println!("    盘面: {}", replay_fmt::board_state(state));
-        println!("    商家: {}", replay_fmt::merchant_state(state));
+        if verbose {
+            let after = replay_fmt::player_state(state, pid);
+            let hand_after = replay_fmt::hand_display(state, pid);
+            let status = match res {
+                Ok(msg) => msg.clone(),
+                Err(e) => format!("!!失败: {e}"),
+            };
+            println!("    结果: {status}");
+            println!("    之后: {after}");
+            println!("    手牌后: {hand_after}");
+            println!("    盘面: {}", replay_fmt::board_state(state));
+            println!("    商家: {}", replay_fmt::merchant_state(state));
+        }
     };
     let mut on_era = |state: &mut GameState, era: Era| -> AfterEra {
         if era == Era::Canal {
@@ -130,12 +138,14 @@ fn main() {
                 }
                 return AfterEra::StopBeforeCleanup;
             }
-            println!("{}", replay_fmt::canal_cleanup_detail(state));
+            if verbose {
+                println!("{}", replay_fmt::canal_cleanup_detail(state));
+            }
         }
         AfterEra::Continue
     };
     let mut on_era_after = |_state: &mut GameState, era: Era| {
-        if era == Era::Canal {
+        if era == Era::Canal && verbose {
             println!("\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---");
         }
     };
@@ -147,7 +157,7 @@ fn main() {
     };
     let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
         // Era / round header change
-        if state.era != prev_era {
+        if verbose && state.era != prev_era {
             println!(
                 "\n------ 时代切换: {} -> {} ------",
                 replay_fmt::era_label(prev_era),
@@ -155,7 +165,7 @@ fn main() {
             );
             prev_era = state.era;
         }
-        if state.round != prev_round {
+        if verbose && state.round != prev_round {
             println!(
                 "\n===== {}时代 第{}轮 | 顺位: {:?} =====",
                 replay_fmt::era_label(state.era),
