@@ -18,15 +18,7 @@ import os
 import time
 
 import numpy as np
-import torch
-
-import brass_engine as be
-
-from brass_ai.evaluate import evaluate_mcts_vs_baseline
-from brass_ai.net import PolicyValueNet
-from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.selfplay import generate_imitation_samples
-from brass_ai.train import TrainConfig, Trainer
 
 
 def main():
@@ -38,14 +30,24 @@ def main():
     ap.add_argument("--eval_games", type=int, default=2)
     ap.add_argument("--eval_sims", type=int, default=60)
     ap.add_argument("--ckpt", type=str, default="checkpoints/bootstrap.pt")
+    ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
+                    help="heuristic-game worker processes (use 1 for serial)")
     args = ap.parse_args()
+
+    # Windows spawn re-imports this script in every imitation worker.  Keep
+    # CUDA Torch and MCTS imports here so workers do not load GPU DLLs.
+    import torch
+    from brass_ai.evaluate import evaluate_mcts_vs_baseline
+    from brass_ai.net import PolicyValueNet
+    from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
+    from brass_ai.train import TrainConfig, Trainer
 
     torch.manual_seed(0)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}")
 
     t0 = time.time()
-    samples = generate_imitation_samples(args.games)
+    samples = generate_imitation_samples(args.games, workers=args.workers)
     print(f"generated {len(samples)} imitation samples from {args.games} heuristic games "
           f"({time.time()-t0:.0f}s)")
 

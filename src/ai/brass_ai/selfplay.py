@@ -10,7 +10,11 @@ the same 4-vector (the value head predicts all players from one perspective).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+import multiprocessing as mp
+import os
 
+from .progress import Progress
 import numpy as np
 
 import brass_engine as be
@@ -195,43 +199,103 @@ def _normalize(vps: np.ndarray) -> np.ndarray:
     return (vps - vps.mean()) / std
 
 
-def generate_imitation_samples(n_games: int, players: int = 4, max_moves: int = 600):
+def _generate_imitation_game(args):
+    """Generate one heuristic game in a worker process."""
+    seed, players, max_moves = args
+
+    state = be.GameState(seed=seed, players=players)
+    local = []
+    table = be.policy_table_size
+    moves = 0
+    while not state.game_over and moves < max_moves:
+        moves += 1
+        canon, _, _ = state.choose_heuristic()
+        if canon is None:
+            break
+        pid = state.current_player_id
+        slot = be.moves_to_slots(canon)[0]
+        policy = np.zeros(table, dtype=np.float32)
+        policy[slot] = 1.0
+        board, links, g, oh, op = state.state_to_tensor()
+        local.append(
+            Sample(pid=pid, board=board, links=links, global_vec=g,
+                   own_hand=oh, opp_hands=op, policy=policy, value=0.0,
+                   legal=_legal_mask_bool(state, table), era=state.era)
+        )
+        try:
+            state.apply_move(canon)
+        except ValueError:
+            break
+
+    z = _normalize(np.asarray(state.player_vps(), dtype=np.float64))
+    final_econ = {p: e for p, e in enumerate(state.final_econ())}
+    for sample in local:
+        sample.value = z
+        sample.econ = np.asarray(final_econ[sample.pid], dtype=np.float32)
+    return local
+
+def generate_imitation_samples(
+    n_games: int,
+    players: int = 4,
+    max_moves: int = 600,
+    workers: int | None = None,
+):
     """Heuristic-vs-heuristic games: one-hot imitation samples (cheap, no MCTS).
 
     Each move records the state + the heuristic's chosen policy slot (one-hot)
     with the game's normalized VP as the value target and the player's FINAL
-    (income, money) as the econ target. ~0.5s/game."""
+    (income, money) as the econ target. Games are independent and therefore
+    generated in parallel by default; pass ``workers=1`` to force serial
+    execution. The automatic worker count is capped at 8 to bound memory use
+    while large sample batches are in flight."""
     samples: list[Sample] = []
-    table = be.policy_table_size
-    for gi in range(n_games):
-        state = be.GameState(seed=gi, players=players)
-        local = []
-        moves = 0
-        while not state.game_over and moves < max_moves:
-            moves += 1
-            canon, _, _ = state.choose_heuristic()
-            if canon is None:
-                break
-            pid = state.current_player_id
-            slot = be.moves_to_slots(canon)[0]
-            policy = np.zeros(table, dtype=np.float32)
-            policy[slot] = 1.0
-            board, links, g, oh, op = state.state_to_tensor()
-            local.append(
-                Sample(pid=pid, board=board, links=links, global_vec=g,
-                       own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                       legal=_legal_mask_bool(state, table), era=state.era)
-            )
-            try:
-                state.apply_move(canon)
-            except ValueError:
-                break
-        z = _normalize(np.asarray(state.player_vps(), dtype=np.float64))
-        final_econ = {p: e for p, e in enumerate(state.final_econ())}
-        for s in local:
-            s.value = z
-            s.econ = np.asarray(final_econ[s.pid], dtype=np.float32)
-        samples.extend(local)
+    if n_games <= 0:
+        return samples
+    if workers is not None and workers < 1:
+        raise ValueError("workers must be >= 1")
+    # A single game is faster in-process; for batches, independent games scale
+    # well across processes because the Rust engine and tensor encoding are CPU
+    # bound. ``spawn`` is required for Windows and avoids inheriting Rust state.
+    worker_count = min(n_games, workers if workers is not None else min(8, os.cpu_count() or 1))
+    jobs = [(gi, players, max_moves) for gi in range(n_games)]
+        
+    progress = Progress(total=n_games, label="imitation sample game")
+
+    if worker_count == 1:
+        results = map(_generate_imitation_game, jobs)
+        for gi, local in enumerate(results, 1):
+            samples.extend(local)
+            progress.update(gi, extra=f"current samples: {len(samples)}")
+    else:
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=mp.get_context("spawn"),
+        ) as pool:
+            # Keep only one task per worker in flight.  ``Executor.map`` can
+            # eagerly submit thousands of jobs, which increases the peak
+            # memory used by serialized game results on large batches.
+            pending = {}
+            next_submit = 0
+            while next_submit < worker_count:
+                pending[pool.submit(_generate_imitation_game, jobs[next_submit])] = next_submit
+                next_submit += 1
+            completed = {}
+            next_emit = 0
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = pending.pop(future)
+                    completed[index] = future.result()
+                    if next_submit < n_games:
+                        pending[pool.submit(_generate_imitation_game, jobs[next_submit])] = next_submit
+                        next_submit += 1
+                while next_emit in completed:
+                    local = completed.pop(next_emit)
+                    samples.extend(local)
+                    next_emit += 1
+                    progress.update(next_emit, extra=f"current samples: {len(samples)}, workers: {worker_count}")
+                    
+    progress.done()
     return samples
 
 
