@@ -82,13 +82,67 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
     └─ pymod.rs      PyO3 绑定 brass_engine（GameState 类 + search_net + stepwise replay）
 ```
 
-依赖方向大体单向：`model` → `game_state` → `gameplay` → AI / bridge。`gameplay` 只生成规则意义上的
-合法动作，策略槽编码属于 `bridge::policy`，因此规则层不依赖 bridge。
+依赖方向大体单向：`model` → `game_state` → `gameplay` → AI / bridge。`gameplay` 只生成规则意义上的合法动作，策略槽编码属于 `bridge::policy`，因此规则层不依赖 bridge。
 唯一反向边：`bridge/encode.rs`（桥接层）依赖 `ai/heuristic_ai::estimate_rounds_remaining`（AI 层）——属"胶水层依赖全部"的既有设计，非漂移。
 
-为保持 Rust 调用方、二进制工具及 PyO3 绑定的兼容性，`lib.rs` 仍公开再导出
-`brass_engine::rules`、`brass_engine::state` 等原有平铺路径；新代码应使用对应的职责层路径。
+为保持 Rust 调用方、二进制工具及 PyO3 绑定的兼容性，`lib.rs` 仍公开再导出 `brass_engine::rules`、`brass_engine::state` 等原有平铺路径；新代码应使用对应的职责层路径。
 
 ### Python AI 训练
 
-待补充
+Python 侧位于 `src/ai/`，负责训练编排与模型推理，不重复实现游戏规则、合法动作生成或搜索树。规则执行、信息集确定化、状态特征编码和网络引导 ISMCTS 均以 Rust `brass_engine` 为唯一权威实现。
+
+```
+src/ai/
+├─ brass_ai/
+│  ├─ net.py          Policy-Value 网络：动作类型头 + 1316 槽位头 + 4 玩家价值头
+│  ├─ rust_mcts.py    `GameState.search_net` 的 PyTorch 回调适配器
+│  ├─ selfplay.py     完整自博弈、访问次数策略目标和终局价值目标采集
+│  ├─ dataset.py      replay 样本的压缩 NPZ 分片读写
+│  ├─ train.py        损失函数、Trainer、优化器和学习率调度器
+│  ├─ mp_selfplay.py  常驻 multiprocessing worker 池
+│  ├─ evaluate.py     固定种子、轮换座位的对局评测
+│  └─ progress.py     长任务进度与 ETA 输出
+├─ train_mp.py        正式多进程训练入口
+├─ bootstrap_imitation.py
+│                     用 Rust 启发式教师生成行为克隆预训练数据
+├─ experiments/       benchmark、diagnose、replay_net 等诊断工具
+└─ tests/             Rust bridge、搜索、自博弈、训练和 replay 分片测试
+```
+
+#### Rust-Python 契约
+
+`brass_engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
+
+- `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为  `board`、`links`、`global`、`own_hand`、`opp_hands` 的二维 `float32` 数组，返回 `(type_logits, goal_logits, values)`。
+- `state_to_tensor()`：供训练样本采集使用的单状态特征；维度固定为 board `(17, 49)`、links `(6, 39)`、global `(50,)`、own hand `(35,)`、 opponent hands `(105,)`。
+- `legal_mask()`：当前局面合法的策略槽。网络训练和推理均只在这些槽上执行 softmax 或 argmax。
+
+策略空间由 Rust `bridge::policy` 定义，固定为 1316 个槽。网络的完整槽位 logit 为 `type_logits[slot_type(slot)] + goal_logits[slot]`；禁止在 Python 重新实现槽位映射或动作合法性判断。
+
+#### 自博弈与训练循环
+
+正式路径为：
+
+```
+当前模型权重
+  -> RustISMCTS 自博弈（worker 进程）
+  -> 完整对局 Sample
+  -> replay/iter-xxxxx.npz
+  -> 有界 replay buffer
+  -> Trainer (AdamW + CosineAnnealingLR)
+  -> checkpoint + metrics
+  -> 固定种子 benchmark / gate
+```
+
+每个 `Sample` 包含当前视角状态、合法槽掩码、根节点访问次数形成的策略分布、四位玩家的标准化终局 VP 向量，以及经济辅助监督目标。只有正常到达 `game_over` 的完整对局可以入库；达到 `max_moves` 的截断局会被丢弃，不能以当前盘面伪造终局价值。
+
+`train_mp.py` 的 `--run_dir` 是一次训练的持久化边界：
+
+- `manifest.json`：Rust 特征/策略空间契约和本次参数快照；
+- `replay/iter-xxxxx.npz`：逐轮压缩样本分片；
+- `metrics.jsonl`：每轮样本数、损失、学习率和可选 benchmark；
+- `checkpoints/latest.pt`：模型、AdamW、scheduler 和 epoch 状态。
+
+传入 `--resume` 时，入口从 `checkpoints/latest.pt` 恢复训练器状态，并从 replay 分片重建受 `--replay_size` 限制的缓冲区。worker 默认使用 CPU；主训练进程会在可用时使用 CUDA，避免多个 worker 争用单张 GPU。
+
+旧的纯 Python MCTS 已移除，不能作为训练或评测路径。任何新训练入口必须使用 `RustISMCTS`，任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。
