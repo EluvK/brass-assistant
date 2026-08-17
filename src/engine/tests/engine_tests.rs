@@ -2049,3 +2049,52 @@ fn double_develop_rechecks_the_uncovered_same_industry_tile() {
     assert_eq!(state.players[pid].hand.len(), before_hand_len);
     assert_eq!(state.iron_market, before_iron_market);
 }
+
+#[test]
+fn heuristic_keeps_same_industry_double_develop_as_a_candidate() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = state.current_player_id();
+
+    // Leave Brewery as the only developable industry. Its first two tiles are
+    // both developable, so the heuristic must be able to choose Brewery +
+    // Brewery rather than falling back to a single develop.
+    for ind in IndustryType::ALL {
+        if ind != IndustryType::Brewery {
+            state.players[pid].industry_next[ind as usize] =
+                industry_tiles(ind).iter().map(|tile| tile.count).sum();
+        }
+    }
+
+    let candidates = brass_engine::heuristic_ai::candidate_actions(&mut state);
+    let candidate_moves: Vec<String> = candidates
+        .iter()
+        .map(|decision| format!("{:?}", decision.mv))
+        .collect();
+    assert!(
+        candidates.iter().any(|decision| matches!(
+            decision.mv,
+            Move::Develop {
+                ind1: IndustryType::Brewery,
+                ind2: Some(IndustryType::Brewery),
+                ..
+            }
+        )),
+        "heuristic must retain a legal same-industry double develop; candidates: {candidate_moves:?}"
+    );
+
+    state.pending_bonus = Some(brass_engine::state::PendingBonus::FreeDevelop {
+        player_id: pid,
+        count: 2,
+    });
+    let free_candidates = brass_engine::heuristic_ai::candidate_actions(&mut state);
+    assert!(
+        free_candidates.iter().any(|decision| matches!(
+            decision.mv,
+            Move::ResolveFreeDevelop {
+                ind1: IndustryType::Brewery,
+                ind2: Some(IndustryType::Brewery),
+            }
+        )),
+        "free-develop heuristic must retain a legal same-industry double develop"
+    );
+}

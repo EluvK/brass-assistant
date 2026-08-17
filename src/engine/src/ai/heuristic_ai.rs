@@ -379,51 +379,58 @@ fn score_pending_free_develop(state: &GameState, pid: usize, count: u8) -> Optio
         return None;
     }
 
+    let score_target = |ind: IndustryType, tile: crate::data::TileDef, unlock_offset: usize| {
+        let unlocked = state.players[pid].tile_after(ind, unlock_offset);
+        let mut v = if tile.rail_era { 0.35 } else { 0.12 };
+        v += 0.18 * tile.level as f64;
+        if let Some(ut) = unlocked {
+            if ut.rail_era {
+                v += 0.25;
+            }
+        }
+        if ind == IndustryType::Brewery {
+            v += 0.55;
+        }
+        if state.era == Era::Canal {
+            v += 0.15;
+        }
+        if player_has_buildable_card(state, pid, ind) {
+            v += 0.3;
+        }
+        v - develop_guardrail_penalty(ind, tile.level)
+    };
     let mut scored: Vec<(IndustryType, f64)> = types
         .into_iter()
-        .map(|(ind, tile)| {
-            let unlocked = state.players[pid].tile_after(ind, 1);
-            let mut v = if tile.rail_era { 0.35 } else { 0.12 };
-            v += 0.18 * tile.level as f64;
-            if let Some(ut) = unlocked {
-                if ut.rail_era {
-                    v += 0.25;
-                }
-            }
-            if ind == IndustryType::Brewery {
-                v += 0.55;
-            }
-            if state.era == Era::Canal {
-                v += 0.15;
-            }
-            if player_has_buildable_card(state, pid, ind) {
-                v += 0.3;
-            }
-            v -= develop_guardrail_penalty(ind, tile.level);
-            (ind, v)
-        })
+        .map(|(ind, tile)| (ind, score_target(ind, tile, 1)))
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
     let first = scored[0].0;
     let second = if count >= 2 {
-        let rem1 = state.players[pid].remaining_count(first);
-        scored[1..]
-            .iter()
-            .find(|s| s.0 != first || rem1 > 1)
-            .map(|s| s.0)
+        let best_other = scored.iter().skip(1).map(|s| (s.0, s.1)).next();
+        let same_industry = state.players[pid]
+            .tile_after(first, 1)
+            .filter(|tile| {
+                tile.can_develop
+                    && !(BAN_DEVELOP_IRON_LV2_PLUS
+                        && first == IndustryType::IronWorks
+                        && tile.level >= 2)
+            })
+            .map(|tile| (first, score_target(first, tile, 2)));
+        [best_other, same_industry]
+            .into_iter()
+            .flatten()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
     } else {
         None
     };
 
-    let second_score = second
-        .and_then(|ind| scored.iter().find(|s| s.0 == ind).map(|s| s.1 * 0.4))
-        .unwrap_or(0.0);
+    let second_score = second.map(|(_, score)| score * 0.4).unwrap_or(0.0);
 
     Some(Decision {
         mv: Move::ResolveFreeDevelop {
             ind1: first,
-            ind2: second,
+            ind2: second.map(|(ind, _)| ind),
         },
         score: scored[0].1 + second_score,
     })
@@ -1668,60 +1675,58 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
         return None;
     }
 
-    let mut scored: Vec<(IndustryType, f64, u8)> = types
+    let score_target = |ind: IndustryType, tile: crate::data::TileDef, unlock_offset: usize| {
+        // Develop removes a level-1 tile and reveals the NEXT (level-2+)
+        // tile. Its payoff is the unlocked rail-era tile that double-scores
+        // flipped VP, but develop must stay well below an immediate build.
+        let unlocked = state.players[pid].tile_after(ind, unlock_offset);
+        let mut v = if tile.rail_era { 0.35 } else { 0.12 };
+        v += 0.18 * tile.level as f64;
+        if let Some(ut) = unlocked {
+            // Small premium for unlocking a double-scoring rail-era tile.
+            if ut.rail_era {
+                v += 0.25;
+            }
+        }
+        // Breweries are the economic engine (develop 1 -> build 2/3/4).
+        // In Canal-Early, grabbing the beer spot early is almost a must —
+        // but it must stay rational: developing costs iron, so only develop
+        // the brewery when iron is cheap (£1-2). At £3+ the iron is better
+        // spent building/supplying iron first instead.
+        if ind == IndustryType::Brewery {
+            v += 0.55;
+            if era_phase(state) == Phase::CanalEarly {
+                let iron_price = state.iron_price();
+                if iron_price <= 2 {
+                    v += 1.0;
+                } else if iron_price >= 3 {
+                    v -= 1.5;
+                }
+            }
+        }
+        // Canal-era develop wins the cross-era bonus; nudge it.
+        if state.era == Era::Canal {
+            v += 0.15;
+        }
+        // Plan ("流派") soft bonus: developing toward the target industry
+        // aligns with the production plan (unlock higher-level tiles of the
+        // goods we intend to sell).
+        if plan.industry == ind {
+            v += 0.3;
+        }
+        // Only meaningful if we actually hold a card to build it next.
+        if player_has_buildable_card(state, pid, ind) {
+            v += 0.3;
+        }
+        v - develop_guardrail_penalty(ind, tile.level)
+    };
+    let mut scored: Vec<(IndustryType, f64)> = types
         .into_iter()
-        .map(|(ind, tile)| {
-            // Develop removes a level-1 tile and reveals the NEXT (level-2+)
-            // tile. Its payoff is the unlocked rail-era tile that double-scores
-            // flipped VP, but develop must stay well below an immediate build.
-            let unlocked = state.players[pid].tile_after(ind, 1);
-            let mut v = if tile.rail_era { 0.35 } else { 0.12 };
-            v += 0.18 * tile.level as f64;
-            if let Some(ut) = unlocked {
-                // Small premium for unlocking a double-scoring rail-era tile.
-                if ut.rail_era {
-                    v += 0.25;
-                }
-            }
-            // Breweries are the economic engine (develop 1 -> build 2/3/4).
-            // In Canal-Early, grabbing the beer spot early is almost a must —
-            // but it must stay rational: developing costs iron, so only develop
-            // the brewery when iron is cheap (£1-2). At £3+ the iron is better
-            // spent building/supplying iron first instead.
-            if ind == IndustryType::Brewery {
-                v += 0.55;
-                if era_phase(state) == Phase::CanalEarly {
-                    let iron_price = state.iron_price();
-                    if iron_price <= 2 {
-                        v += 1.0;
-                    } else if iron_price >= 3 {
-                        v -= 1.5;
-                    }
-                }
-            }
-            // Canal-era develop wins the cross-era bonus; nudge it.
-            if state.era == Era::Canal {
-                v += 0.15;
-            }
-            // Plan ("流派") soft bonus: developing toward the target industry
-            // aligns with the production plan (unlock higher-level tiles of the
-            // goods we intend to sell).
-            if plan.industry == ind {
-                v += 0.3;
-            }
-            // Only meaningful if we actually hold a card to build it next.
-            if player_has_buildable_card(state, pid, ind) {
-                v += 0.3;
-            }
-            v -= develop_guardrail_penalty(ind, tile.level);
-            (ind, v, tile.level)
-        })
+        .map(|(ind, tile)| (ind, score_target(ind, tile, 1)))
         .collect();
     scored.sort_by(|a, b| (b.1).partial_cmp(&a.1).unwrap());
 
     let first = scored[0];
-    let rem_first = state.players[pid].remaining_count(first.0);
-    let can_do_second_same = rem_first > 1;
     let two_source_cost: i32 = iron
         .iter()
         .take(2)
@@ -1729,15 +1734,24 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
         .sum();
     let can_afford_second = iron.len() >= 2 && two_source_cost <= player.money;
 
-    let mut second: Option<IndustryType> = None;
-    if can_afford_second {
-        if let Some(s) = scored[1..]
-            .iter()
-            .find(|s| s.0 != first.0 || can_do_second_same)
-        {
-            second = Some(s.0);
-        }
-    }
+    let second = if can_afford_second {
+        let best_other = scored.iter().skip(1).map(|s| (s.0, s.1)).next();
+        let same_industry = state.players[pid]
+            .tile_after(first.0, 1)
+            .filter(|tile| {
+                tile.can_develop
+                    && !(BAN_DEVELOP_IRON_LV2_PLUS
+                        && first.0 == IndustryType::IronWorks
+                        && tile.level >= 2)
+            })
+            .map(|tile| (first.0, score_target(first.0, tile, 2)));
+        [best_other, same_industry]
+            .into_iter()
+            .flatten()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+    } else {
+        None
+    };
 
     let iron_cost: i32 = iron
         .iter()
@@ -1747,11 +1761,7 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
     // Iron is scarce and the develop action burns a full turn; charge a real
     // opportunity cost so develop isn't a free high-score default.
     let iron_scarcity = if iron[0].free { 0.0 } else { 0.6 };
-    let second_value = if let Some(_) = second {
-        scored[1].1 * 0.4
-    } else {
-        0.0
-    };
+    let second_value = second.map(|(_, score)| score * 0.4).unwrap_or(0.0);
 
     let mut score =
         vp_equivalent(state, first.1 + second_value, 0.0, -(iron_cost as f64), 0.0) - iron_scarcity;
@@ -1791,7 +1801,7 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
     Some(Decision {
         mv: Move::Develop {
             ind1: first.0,
-            ind2: second,
+            ind2: second.map(|(ind, _)| ind),
             iron: iron_choice,
             card_index,
         },
