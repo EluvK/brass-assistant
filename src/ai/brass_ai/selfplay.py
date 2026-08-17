@@ -227,18 +227,29 @@ def _generate_imitation_game(args):
         except ValueError:
             break
 
-    z = _normalize(np.asarray(state.player_vps(), dtype=np.float64))
+    if not state.game_over:
+        raise RuntimeError(
+            f"heuristic game seed={seed} exceeded max_moves={max_moves}; samples discarded"
+        )
+
+    vps = np.asarray(state.player_vps(), dtype=np.float64)
+    z = _normalize(vps)
     final_econ = {p: e for p, e in enumerate(state.final_econ())}
     for sample in local:
         sample.value = z
         sample.econ = np.asarray(final_econ[sample.pid], dtype=np.float32)
-    return local
+    # Keep unnormalised scores until the parent process has decided whether
+    # this game belongs in a quality-filtered imitation batch.
+    return local, vps
 
 def generate_imitation_samples(
     n_games: int,
     players: int = 4,
     max_moves: int = 600,
     workers: int | None = None,
+    min_avg_vp: float | None = None,
+    min_vp: float | None = None,
+    max_attempts: int | None = None,
 ):
     """Heuristic-vs-heuristic games: one-hot imitation samples (cheap, no MCTS).
 
@@ -247,25 +258,65 @@ def generate_imitation_samples(
     (income, money) as the econ target. Games are independent and therefore
     generated in parallel by default; pass ``workers=1`` to force serial
     execution. The automatic worker count is capped at 8 to bound memory use
-    while large sample batches are in flight."""
+    while large sample batches are in flight.
+
+    When ``min_avg_vp`` or ``min_vp`` is set, ``n_games`` is the number of
+    *accepted* games. A game is accepted only when its mean VP and every
+    player's VP are strictly greater than the supplied thresholds. Generation
+    stops with an error after ``max_attempts`` candidates (default: 10x the
+    requested accepted games), so an overly strict filter cannot run forever.
+    """
     samples: list[Sample] = []
     if n_games <= 0:
         return samples
     if workers is not None and workers < 1:
         raise ValueError("workers must be >= 1")
+    if min_avg_vp is not None and not np.isfinite(min_avg_vp):
+        raise ValueError("min_avg_vp must be finite")
+    if min_vp is not None and not np.isfinite(min_vp):
+        raise ValueError("min_vp must be finite")
+
+    quality_filter = min_avg_vp is not None or min_vp is not None
+    if max_attempts is None:
+        max_attempts = n_games * 10 if quality_filter else n_games
+    if max_attempts < n_games:
+        raise ValueError("max_attempts must be >= n_games")
+
+    def accepted(vps: np.ndarray) -> bool:
+        return (
+            (min_avg_vp is None or float(vps.mean()) > min_avg_vp)
+            and (min_vp is None or float(vps.min()) > min_vp)
+        )
+
     # A single game is faster in-process; for batches, independent games scale
     # well across processes because the Rust engine and tensor encoding are CPU
     # bound. ``spawn`` is required for Windows and avoids inheriting Rust state.
-    worker_count = min(n_games, workers if workers is not None else min(8, os.cpu_count() or 1))
-    jobs = [(gi, players, max_moves) for gi in range(n_games)]
+    worker_count = min(max_attempts, workers if workers is not None else min(8, os.cpu_count() or 1))
+    jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
         
-    progress = Progress(total=n_games, label="imitation sample game")
+    progress = Progress(total=n_games, label="accepted imitation game")
+    accepted_games = 0
+    attempted_games = 0
+
+    def consume(result) -> bool:
+        nonlocal accepted_games, attempted_games
+        attempted_games += 1
+        local, vps = result
+        if accepted(vps):
+            samples.extend(local)
+            accepted_games += 1
+        progress.update(
+            accepted_games,
+            extra=(f"accepted: {accepted_games}/{n_games}, attempted: {attempted_games}, "
+                   f"samples: {len(samples)}"),
+        )
+        return accepted_games == n_games
 
     if worker_count == 1:
         results = map(_generate_imitation_game, jobs)
-        for gi, local in enumerate(results, 1):
-            samples.extend(local)
-            progress.update(gi, extra=f"current samples: {len(samples)}")
+        for result in results:
+            if consume(result):
+                break
     else:
         with ProcessPoolExecutor(
             max_workers=worker_count,
@@ -281,19 +332,24 @@ def generate_imitation_samples(
                 next_submit += 1
             completed = {}
             next_emit = 0
-            while pending:
+            while pending and accepted_games < n_games:
                 done, _ = wait(pending, return_when=FIRST_COMPLETED)
                 for future in done:
                     index = pending.pop(future)
                     completed[index] = future.result()
-                    if next_submit < n_games:
+                    if next_submit < max_attempts:
                         pending[pool.submit(_generate_imitation_game, jobs[next_submit])] = next_submit
                         next_submit += 1
-                while next_emit in completed:
-                    local = completed.pop(next_emit)
-                    samples.extend(local)
+                while next_emit in completed and accepted_games < n_games:
+                    result = completed.pop(next_emit)
                     next_emit += 1
-                    progress.update(next_emit, extra=f"current samples: {len(samples)}, workers: {worker_count}")
+                    consume(result)
+
+    if accepted_games != n_games:
+        raise RuntimeError(
+            f"only accepted {accepted_games}/{n_games} imitation games after "
+            f"{attempted_games} attempts; relax min_avg_vp/min_vp or increase max_attempts"
+        )
                     
     progress.done()
     return samples

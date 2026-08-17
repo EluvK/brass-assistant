@@ -1,7 +1,9 @@
 import numpy as np
+import pytest
 import torch
 
 from brass_ai.net import PolicyValueNet
+from brass_ai import selfplay
 from brass_ai.selfplay import generate_imitation_samples
 from brass_ai.train import TrainConfig, Trainer, compute_loss
 
@@ -62,3 +64,36 @@ def test_trainer_state_roundtrip():
     # loaded weights are identical
     for p1, p2 in zip(trainer.net.parameters(), trainer2.net.parameters()):
         assert torch.equal(p1.detach().cpu(), p2.detach().cpu())
+
+
+def test_imitation_quality_filter_retries_until_it_has_requested_games(monkeypatch):
+    seen_seeds = []
+
+    def fake_game(args):
+        seed, _, _ = args
+        seen_seeds.append(seed)
+        # Both thresholds are strict: seed 0 fails at exactly 60 VP; seed 1
+        # qualifies with mean 81 and minimum 81.
+        vps = np.asarray([60, 90, 90, 90] if seed == 0 else [81, 81, 81, 81])
+        return [seed], vps
+
+    monkeypatch.setattr(selfplay, "_generate_imitation_game", fake_game)
+    samples = generate_imitation_samples(
+        1, workers=1, min_avg_vp=80, min_vp=60, max_attempts=2,
+    )
+
+    assert samples == [1]
+    assert seen_seeds == [0, 1]
+
+
+def test_imitation_quality_filter_reports_exhausted_attempts(monkeypatch):
+    monkeypatch.setattr(
+        selfplay,
+        "_generate_imitation_game",
+        lambda _args: (["rejected"], np.asarray([60, 90, 90, 90])),
+    )
+
+    with pytest.raises(RuntimeError, match="only accepted 0/1"):
+        generate_imitation_samples(
+            1, workers=1, min_avg_vp=80, min_vp=60, max_attempts=2,
+        )

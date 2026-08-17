@@ -23,15 +23,21 @@ from brass_ai.selfplay import generate_imitation_samples
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--games", type=int, default=80)
+    ap.add_argument("--games", type=int, default=1000)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--eval_games", type=int, default=2)
+    ap.add_argument("--eval_games", type=int, default=20)
     ap.add_argument("--eval_sims", type=int, default=60)
     ap.add_argument("--ckpt", type=str, default="checkpoints/bootstrap.pt")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
                     help="heuristic-game worker processes (use 1 for serial)")
+    ap.add_argument("--min-avg-vp", type=float, default=None,
+                    help="only keep games whose mean final VP is strictly above this value")
+    ap.add_argument("--min-vp", type=float, default=None,
+                    help="only keep games whose lowest final VP is strictly above this value")
+    ap.add_argument("--max-attempts", type=int, default=None,
+                    help="candidate-game cap when a VP quality filter is enabled (default: 10x --games)")
     args = ap.parse_args()
 
     # Windows spawn re-imports this script in every imitation worker.  Keep
@@ -47,7 +53,13 @@ def main():
     print(f"device: {device}")
 
     t0 = time.time()
-    samples = generate_imitation_samples(args.games, workers=args.workers)
+    samples = generate_imitation_samples(
+        args.games,
+        workers=args.workers,
+        min_avg_vp=args.min_avg_vp,
+        min_vp=args.min_vp,
+        max_attempts=args.max_attempts,
+    )
     print(f"generated {len(samples)} imitation samples from {args.games} heuristic games "
           f"({time.time()-t0:.0f}s)")
 
