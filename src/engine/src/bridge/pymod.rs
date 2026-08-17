@@ -201,12 +201,12 @@ impl PyGame {
     /// Run the canal-era score + cleanup + reshuffle (the driver calls this
     /// AFTER printing the era score detail / cleanup log).
     fn finish_canal_era(&mut self) {
-        crate::engine::end_canal_era(&mut self.state);
+        crate::engine::handle_turn_result(&mut self.state, crate::engine::TurnResult::EndCanalEra);
     }
 
     /// Run the end-of-game scoring (the driver calls this after the final move).
     fn finish_game(&mut self) {
-        crate::engine::end_game(&mut self.state);
+        crate::engine::handle_turn_result(&mut self.state, crate::engine::TurnResult::EndGame);
     }
 
     // ------------------------------------------------------- replay (logging)

@@ -238,7 +238,7 @@ pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {
         }
     }
     // Remove every card already out of circulation this era. (The pile is
-    // reset at the era transition in `engine::end_canal_era`, so it only ever
+    // reset at the era transition handled by `engine::handle_turn_result`, so it only ever
     // describes the current era.) Discards are face-down and anonymous, so we
     // only need the total multiset, not per-player attribution.
     for card in &det.discard_pile {

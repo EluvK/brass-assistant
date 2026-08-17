@@ -2,8 +2,8 @@
 //!
 //! Every binary that plays a game (`main.rs`, replay, stat_game, sweep_scores,
 //! sweep_canal, bench_mcts, sweep_mcts, debug_mcts) used to hand-write the same
-//! loop — guard check, `apply_move`, `advance_turn`, era/game-end transitions,
-//! `end_game` on exit. This module owns that loop once; binaries supply only
+//! loop — guard check, `apply_move`, `advance_turn`, `handle_turn_result`...
+//! This module owns that loop once; binaries supply only
 //! the move policy and the (optional) per-move / era hooks they need.
 //!
 //! Hooks run at fixed points:

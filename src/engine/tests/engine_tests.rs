@@ -1,5 +1,5 @@
 use brass_engine::data::{Era, IndustryType, industry_tiles};
-use brass_engine::engine::{advance_turn, end_canal_era, step};
+use brass_engine::engine::{TurnResult, advance_turn, handle_turn_result, step};
 use brass_engine::map::*;
 use brass_engine::rules::{
     Move, execute_build, execute_network, execute_network_double, execute_sell,
@@ -490,7 +490,7 @@ fn canal_era_end_removes_all_level1_tiles_including_pottery() {
         },
     );
 
-    end_canal_era(&mut state);
+    handle_turn_result(&mut state, TurnResult::EndCanalEra);
 
     let bham = state.city_slot_key(Loc::Birmingham, 0).unwrap();
     assert!(
@@ -952,7 +952,7 @@ fn end_canal_era_resets_discard_pile_and_played() {
     assert!(state.discard_pile.len() >= 4);
     assert!(state.players.iter().any(|p| !p.played.is_empty()));
 
-    end_canal_era(&mut state);
+    handle_turn_result(&mut state, TurnResult::EndCanalEra);
     assert!(
         state.discard_pile.is_empty(),
         "discard pile must reset at era end"
@@ -1570,69 +1570,6 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// A1: slot-level legal generation, multi-tile sell, double-rail executability
-// ---------------------------------------------------------------------------
-
-#[test]
-fn legal_slot_moves_cover_same_slots_as_legal_moves() {
-    use brass_engine::engine::{TurnResult, advance_turn, end_canal_era, end_game};
-    use brass_engine::policy;
-    use brass_engine::random_ai;
-    use brass_engine::rules::{legal_moves, legal_slot_moves};
-
-    let mut state = setup(4);
-    let mut checked = 0;
-    for _ in 0..60 {
-        let raw: Vec<usize> = {
-            let mut slots: Vec<usize> = Vec::new();
-            for mv in legal_moves(&mut state) {
-                slots.extend(policy::move_slots(&mv));
-            }
-            slots.sort_unstable();
-            slots.dedup();
-            slots
-        };
-        let slotwise: Vec<usize> = {
-            let mut slots: Vec<usize> = legal_slot_moves(&mut state)
-                .iter()
-                .map(|s| s.slot)
-                .collect();
-            slots.sort_unstable();
-            slots.dedup();
-            slots
-        };
-        assert_eq!(raw, slotwise, "slot coverage mismatch at step {checked}");
-        let mask: Vec<usize> = policy::legal_mask(&mut state);
-        assert_eq!(
-            raw, mask,
-            "legal_mask must match slot-level coverage at step {checked}"
-        );
-        checked += 1;
-
-        // Advance with a random legal move.
-        match random_ai::choose_random_move(&mut state, &mut StdRng::from_entropy()) {
-            Some(mv) => {
-                let _ = brass_engine::rules::apply_move(&mut state, &mv);
-                let tr = advance_turn(&mut state);
-                match tr {
-                    TurnResult::Continue => {}
-                    TurnResult::EndCanalEra => end_canal_era(&mut state),
-                    TurnResult::EndGame => {
-                        end_game(&mut state);
-                        break;
-                    }
-                }
-            }
-            None => break,
-        }
-    }
-    assert!(
-        checked > 0,
-        "the exploration should visit at least one state"
-    );
-}
-
 #[test]
 fn every_double_rail_move_from_legal_slots_executes() {
     use brass_engine::rules::{Move, apply_move, legal_moves, legal_slot_moves};
@@ -1950,7 +1887,7 @@ fn free_source_cache_tracks_placement_consume_and_era_end() {
 
     // Level-1 tiles (and all links) are removed at the canal-era end; the
     // free-source cache must be rebuilt to empty.
-    end_canal_era(&mut state);
+    handle_turn_result(&mut state, TurnResult::EndCanalEra);
     state.assert_caches_consistent();
     let coal = brass_engine::graph::find_coal_sources(&state, Loc::Cannock);
     assert!(

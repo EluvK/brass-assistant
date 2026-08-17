@@ -8,12 +8,22 @@ use crate::map::*;
 use crate::rules::Move;
 use crate::state::GameState;
 
+/// The boundary reached while advancing the game clock.
+///
+/// Era cleanup is deliberately deferred to [`handle_turn_result`] so callers
+/// can inspect or report the scored Canal-era board before it is cleared.
 pub enum TurnResult {
     Continue,
     EndCanalEra,
     EndGame,
 }
 
+/// Record one completed action and advance to the next action or player.
+///
+/// Call this only after a successful action. A pending merchant bonus is a
+/// continuation of the same action, so it must be resolved before the clock
+/// advances. Normal game states always give the active player a card to play;
+/// an empty hand is not treated as an implicit pass.
 pub fn advance_turn(state: &mut GameState) -> TurnResult {
     if state.pending_bonus.is_some() {
         return TurnResult::Continue;
@@ -39,55 +49,15 @@ pub fn advance_turn(state: &mut GameState) -> TurnResult {
                 other => return other,
             }
         }
-        // Skip players with no cards
-        if let Some(r) = skip_empty_hand_players(state) {
-            return r;
-        }
-    } else {
-        // If current player has no cards, end their turn early.
-        let pid = state.current_player_id();
-        if state.players[pid].hand.is_empty() {
-            state.draw_cards(pid);
-            if state.players[pid].hand.is_empty() {
-                state.actions_this_turn = 0;
-                state.current_index += 1;
-                if state.current_index >= state.player_count() {
-                    state.current_index = 0;
-                    match end_round(state) {
-                        TurnResult::Continue => {}
-                        other => return other,
-                    }
-                }
-                if let Some(r) = skip_empty_hand_players(state) {
-                    return r;
-                }
-            }
-        }
     }
 
     TurnResult::Continue
 }
 
-fn skip_empty_hand_players(state: &mut GameState) -> Option<TurnResult> {
-    let mut safety = 0;
-    while {
-        let pid = state.current_player_id();
-        state.players[pid].hand.is_empty() && state.deck.is_empty()
-    } && safety < state.player_count()
-    {
-        state.current_index += 1;
-        safety += 1;
-        if state.current_index >= state.player_count() {
-            state.current_index = 0;
-            match end_round(state) {
-                TurnResult::Continue => {}
-                other => return Some(other),
-            }
-        }
-    }
-    None
-}
-
+/// Resolve the round boundary: income, turn order, and first-round setup.
+///
+/// This function reports an era/game boundary but intentionally does not
+/// mutate the board for the next era; see [`handle_turn_result`].
 pub fn end_round(state: &mut GameState) -> TurnResult {
     let all_hands_empty = state.players.iter().all(|p| p.hand.is_empty());
     let era_ending = all_hands_empty && state.deck.is_empty();
@@ -123,16 +93,27 @@ pub fn end_round(state: &mut GameState) -> TurnResult {
         state.actions_per_turn = ACTIONS_PER_TURN;
     }
 
-    if era_ending {
-        return if state.era == Era::Canal {
-            TurnResult::EndCanalEra
-        } else {
-            TurnResult::EndGame
-        };
-    }
-    TurnResult::Continue
+    return match (era_ending, is_final_round) {
+        (true, true) => TurnResult::EndGame,
+        (true, false) => TurnResult::EndCanalEra,
+        _ => TurnResult::Continue,
+    };
+
+    // if era_ending {
+    //     return if state.era == Era::Canal {
+    //         TurnResult::EndCanalEra
+    //     } else {
+    //         TurnResult::EndGame
+    //     };
+    // }
+    // TurnResult::Continue
 }
 
+/// Apply the income-phase bankruptcy rule for one player.
+///
+/// Tiles are removed in the rule-defined priority, then any remaining deficit
+/// is paid with VP. The player always leaves this function with non-negative
+/// money.
 fn resolve_shortfall(state: &mut GameState, pid: usize) {
     // Give up unflipped low-VP tiles first.
     let mut candidates: Vec<(usize, bool)> = Vec::new(); // (key, is_farm)
@@ -186,7 +167,11 @@ fn resolve_shortfall(state: &mut GameState, pid: usize) {
     }
 }
 
-pub fn end_canal_era(state: &mut GameState) {
+/// Score the Canal era and construct the initial Rail-era state.
+///
+/// This is the destructive half of the Canal-to-Rail transition and must run
+/// only after [`advance_turn`] or [`end_round`] returns `EndCanalEra`.
+fn end_canal_era(state: &mut GameState) {
     // Score canal era, remove canal links, remove Level I tiles, reshuffle.
     crate::scoring::score_era(state);
 
@@ -261,23 +246,23 @@ pub fn end_canal_era(state: &mut GameState) {
     state.deal_cards();
 }
 
-pub fn end_game(state: &mut GameState) {
-    crate::scoring::score_era(state);
-    state.game_over = true;
-}
-
 /// Apply the era-end / game-end transitions reported by `advance_turn` /
 /// `end_round` to a state (no-op for `Continue`).
 pub fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
     match tr {
         TurnResult::Continue => {}
         TurnResult::EndCanalEra => end_canal_era(state),
-        TurnResult::EndGame => end_game(state),
+        TurnResult::EndGame => {
+            crate::scoring::score_era(state);
+            state.game_over = true;
+        }
     }
 }
 
-/// Apply a move to the current player, then advance the turn.
-/// Returns the result of the action + turn advancement.
+/// Convenience API for a complete action: apply it, then advance the clock.
+///
+/// The caller still owns the returned era/game transition and may pass it to
+/// [`handle_turn_result`] immediately.
 pub fn step(state: &mut GameState, mv: &Move) -> (Result<String, String>, TurnResult) {
     let result = crate::rules::apply_move(state, mv);
     let tr = if result.is_ok() {
@@ -286,13 +271,4 @@ pub fn step(state: &mut GameState, mv: &Move) -> (Result<String, String>, TurnRe
         TurnResult::Continue
     };
     (result, tr)
-}
-
-/// Force-pass for an empty-handed current player (no legal moves).
-pub fn force_pass(state: &mut GameState) -> TurnResult {
-    advance_turn(state)
-}
-
-pub fn is_game_over(state: &GameState) -> bool {
-    state.game_over
 }

@@ -176,7 +176,7 @@ pub struct Player {
     /// enter neither this list nor the discard pile. Current wild holding is
     /// public info tracked separately by `has_wild_location` /
     /// `has_wild_industry`. Reserved for future NN features / belief modelling;
-    /// cleared at era transition in `engine::end_canal_era`.
+    /// cleared at the Canal-to-Rail transition in `engine::handle_turn_result`.
     pub played: Vec<Card>,
 }
 
@@ -327,7 +327,7 @@ pub struct GameState {
     /// plus non-wild discards). `mcts_ai::determinize` subtracts it from the
     /// hidden pool so a played card can never reappear in an opponent hand or
     /// the deck. Reset to empty at the era transition in
-    /// `engine::end_canal_era` (all canal cards are reshuffled into the rail
+    /// `engine::handle_turn_result` (all canal cards are reshuffled into the rail
     /// deck). Per-player attribution of non-seeded plays lives in
     /// `Player::played`.
     pub discard_pile: Vec<Card>,
