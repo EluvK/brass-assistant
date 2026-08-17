@@ -1,12 +1,13 @@
 //! BUILD action legality, costs, and execution.
 
 use super::{
-    discard_card, require_card_index, valid_build_cards, validate_coal_choice, validate_iron_choice,
+    discard_card, require_card_index, source_purchase_cost, valid_build_cards,
+    validate_coal_choice, validate_iron_choice,
 };
 use crate::data::{Era, IndustryType};
 use crate::graph::{
-    CoalSource, CoalSourceKind, IronSource, connected_locations, find_coal_sources,
-    find_iron_sources, is_resource_depleted,
+    CoalSource, IronSource, connected_locations, find_coal_sources, find_iron_sources,
+    is_resource_depleted,
 };
 use crate::map::*;
 use crate::state::{BoardTile, GameState};
@@ -221,46 +222,10 @@ fn calculate_build_cost_with_sources(
     let tile = player.next_tile(ind)?;
 
     let money = tile.cost;
-    let mut coal_cost = 0i32;
-    let mut iron_cost = 0i32;
-
     let coal_needed = tile.cost_coal;
-    if coal_needed > 0 {
-        let mut remaining = coal_needed;
-        for src in coal_sources {
-            if remaining == 0 {
-                break;
-            }
-            if src.free {
-                remaining -= 1;
-            } else {
-                coal_cost += src.price as i32;
-                remaining -= 1;
-            }
-        }
-        if remaining > 0 {
-            return None; // not enough coal
-        }
-    }
-
     let iron_needed = tile.cost_iron;
-    if iron_needed > 0 {
-        let mut remaining = iron_needed;
-        for src in iron_sources {
-            if remaining == 0 {
-                break;
-            }
-            if src.free {
-                remaining -= 1;
-            } else {
-                iron_cost += src.price as i32;
-                remaining -= 1;
-            }
-        }
-        if remaining > 0 {
-            return None; // not enough iron
-        }
-    }
+    let coal_cost = source_purchase_cost(coal_sources, coal_needed as usize)?;
+    let iron_cost = source_purchase_cost(iron_sources, iron_needed as usize)?;
 
     let total = money + coal_cost + iron_cost;
     if total > player.money {
@@ -380,17 +345,11 @@ pub fn execute_build(
     validate_iron_choice(state, iron_needed, iron)?;
 
     // Cost = tile cost + market prices of the chosen market sources.
-    let mut total = tile_def.cost;
-    for s in coal {
-        if !s.free {
-            total += s.price as i32;
-        }
-    }
-    for s in iron {
-        if !s.free {
-            total += s.price as i32;
-        }
-    }
+    let total = tile_def.cost
+        + source_purchase_cost(coal, coal_needed)
+            .expect("validated coal choice must contain every required source")
+        + source_purchase_cost(iron, iron_needed)
+            .expect("validated iron choice must contain every required source");
     if total > state.players[pid].money {
         return Err("Cannot afford this build".into());
     }
@@ -404,23 +363,12 @@ pub fn execute_build(
 
     // Consume exactly the chosen coal sources.
     for s in coal {
-        match s.kind {
-            CoalSourceKind::Mine => {
-                state.consume_from_city(s.key);
-            }
-            CoalSourceKind::Market => {
-                state.take_market_coal();
-            }
-        }
+        state.consume_coal_source(s);
     }
 
     // Consume exactly the chosen iron sources.
     for s in iron {
-        if s.free {
-            state.consume_from_city(s.key);
-        } else {
-            state.take_market_iron();
-        }
+        state.consume_iron_source(s);
     }
 
     // Breweries produce 1 beer (canal) / 2 (rail); mines/works use tile cubes.

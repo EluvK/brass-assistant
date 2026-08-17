@@ -8,6 +8,71 @@ use crate::graph::{
 use crate::map::{Connection, Loc};
 use crate::state::{Card, GameState, Player};
 use std::collections::HashMap;
+
+/// A coal or iron source that may be free on the board or paid from supply.
+pub(crate) trait PricedResourceSource {
+    fn is_free(self) -> bool;
+    fn price(self) -> i32;
+}
+
+impl PricedResourceSource for CoalSource {
+    fn is_free(self) -> bool {
+        self.free
+    }
+
+    fn price(self) -> i32 {
+        self.price as i32
+    }
+}
+
+impl PricedResourceSource for IronSource {
+    fn is_free(self) -> bool {
+        self.free
+    }
+
+    fn price(self) -> i32 {
+        self.price as i32
+    }
+}
+
+/// Cost of taking `needed` sources in their rules-defined order (free sources
+/// first, then cheapest supply slots). `None` means too few sources exist.
+pub(crate) fn source_purchase_cost<T: PricedResourceSource + Copy>(
+    sources: &[T],
+    needed: usize,
+) -> Option<i32> {
+    if sources.len() < needed {
+        return None;
+    }
+    Some(
+        sources
+            .iter()
+            .take(needed)
+            .map(|source| if source.is_free() { 0 } else { source.price() })
+            .sum(),
+    )
+}
+
+/// Count affordable sources, stopping at the action's maximum requirement.
+pub(crate) fn affordable_source_count<T: PricedResourceSource + Copy>(
+    sources: &[T],
+    mut money: i32,
+    maximum: usize,
+) -> usize {
+    let mut count = 0;
+    for source in sources.iter().take(maximum) {
+        if source.is_free() {
+            count += 1;
+        } else if money >= source.price() {
+            money -= source.price();
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
 pub(crate) fn log_loc_label(loc: Loc) -> String {
     format!("{}({})", loc.zh_name(), loc.name())
 }

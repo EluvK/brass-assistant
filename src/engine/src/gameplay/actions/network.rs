@@ -2,7 +2,7 @@
 
 use super::{
     coal_options_for_connection, discard_card, log_loc_label, require_card_index,
-    validate_connection_coal_choice,
+    source_purchase_cost, validate_connection_coal_choice,
 };
 use crate::data::Era;
 use crate::graph::{
@@ -127,18 +127,12 @@ pub fn execute_network(
             }
             let coal = coal.ok_or("A coal source is required for a rail link")?;
             validate_connection_coal_choice(state, conn, &[coal])?;
-            let total = RAIL_LINK_COST + if coal.free { 0 } else { coal.price as i32 };
+            let total = RAIL_LINK_COST
+                + source_purchase_cost(&[coal], 1).expect("validated coal source must be present");
             if total > state.players[pid].money {
                 return Err("Cannot afford this link".into());
             }
-            match coal.kind {
-                CoalSourceKind::Mine => {
-                    state.consume_from_city(coal.key);
-                }
-                CoalSourceKind::Market => {
-                    state.take_market_coal();
-                }
-            }
+            state.consume_coal_source(&coal);
             state.spend_money(pid, total);
             let p = &mut state.players[pid];
             p.rail_links -= 1;
@@ -311,14 +305,14 @@ fn consume_coal_for_double_rail(state: &mut GameState, coal: CoalSource) -> Reso
                 owner: tile.player,
                 prev_income_space: state.players[tile.player].income_space,
             };
-            state.consume_from_city(coal.key);
+            state.consume_coal_source(&coal);
             undo
         }
         CoalSourceKind::Market => {
             let undo = ResourceUndo::Market {
                 prev_market: state.coal_market,
             };
-            state.take_market_coal();
+            state.consume_coal_source(&coal);
             undo
         }
     }
@@ -559,7 +553,8 @@ pub fn execute_network_double(
     if !legal_coal1.iter().any(|opt| opt.as_slice() == [coal1]) {
         return Err("Chosen coal source is not legal for the first link".into());
     }
-    let mut total = RAIL_DOUBLE_LINK_COST + if coal1.free { 0 } else { coal1.price as i32 };
+    let mut total = RAIL_DOUBLE_LINK_COST
+        + source_purchase_cost(&[coal1], 1).expect("chosen coal source must be present");
     tx.consume_coal(coal1);
 
     // Link 2 adjacency (with link1 on board)
@@ -573,7 +568,7 @@ pub fn execute_network_double(
     if !legal_coal2.iter().any(|opt| opt.as_slice() == [coal2]) {
         return Err("Chosen coal source is not legal for the second link".into());
     }
-    total += if coal2.free { 0 } else { coal2.price as i32 };
+    total += source_purchase_cost(&[coal2], 1).expect("chosen coal source must be present");
     tx.consume_coal(coal2);
 
     // The player must explicitly choose a legal beer source for the second link.

@@ -204,13 +204,18 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
                     }
                 }
             }
-            // Double develop (two distinct types, or same type if count>1)
+            // Double develop: the second choice is evaluated after removing
+            // the first tile, which matters when both choices use one industry.
             if affordable_iron >= 2 {
-                let rem1 = state.players[pid].remaining_count(ind1);
-                let mut second_types: Vec<IndustryType> = types.clone();
-                if rem1 < 2 {
-                    second_types.retain(|&x| x != ind1);
-                }
+                let mut player_after_first = state.players[pid].clone();
+                player_after_first
+                    .consume_tile(ind1)
+                    .expect("developable first tile must be present");
+                let second_types: Vec<IndustryType> = player_after_first
+                    .developable_types()
+                    .into_iter()
+                    .map(|(ind, _)| ind)
+                    .collect();
                 let iron_opts = iron_source_options(state, 2);
                 for &ind2 in &second_types {
                     for iron in exp.each(&iron_opts) {

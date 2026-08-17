@@ -2,8 +2,9 @@ use brass_engine::data::{Era, IndustryType, industry_tiles};
 use brass_engine::engine::{TurnResult, advance_turn, handle_turn_result, step};
 use brass_engine::map::*;
 use brass_engine::rules::{
-    Move, execute_build, execute_network, execute_network_double, execute_sell,
-    get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links, legal_moves,
+    Move, apply_move, execute_build, execute_network, execute_network_double, execute_sell,
+    get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links,
+    iron_source_options, legal_moves,
 };
 use brass_engine::scoring;
 use brass_engine::state::{BoardTile, Card, GameState};
@@ -2001,4 +2002,50 @@ fn network_mask_is_kept_by_moves_and_self_heals_after_direct_link_writes() {
             && brass_engine::graph::is_in_network(&state, pid, c.b),
         "executed network must extend the player's network mask"
     );
+}
+
+#[test]
+fn double_develop_rechecks_the_uncovered_same_industry_tile() {
+    let mut state = setup_clean_rail_state(2);
+    let pid = state.current_player_id();
+    // Pottery Lv2 may be developed, but the Lv3 tile exposed afterwards may
+    // not. A same-industry double develop must therefore be illegal.
+    state.players[pid].industry_next[IndustryType::Pottery as usize] = 1;
+    let iron = iron_source_options(&state, 2)
+        .into_iter()
+        .next()
+        .expect("two iron sources must be available");
+    let mv = Move::Develop {
+        ind1: IndustryType::Pottery,
+        ind2: Some(IndustryType::Pottery),
+        iron,
+        card_index: 0,
+    };
+
+    assert!(
+        !legal_moves(&mut state).iter().any(|candidate| matches!(
+            candidate,
+            Move::Develop {
+                ind1: IndustryType::Pottery,
+                ind2: Some(IndustryType::Pottery),
+                ..
+            }
+        )),
+        "the invalid same-industry double develop must not be generated"
+    );
+
+    let before_money = state.players[pid].money;
+    let before_hand_len = state.players[pid].hand.len();
+    let before_iron_market = state.iron_market;
+    assert_eq!(
+        apply_move(&mut state, &mv),
+        Err("Second industry is not developable".into())
+    );
+    assert_eq!(
+        state.players[pid].industry_next[IndustryType::Pottery as usize],
+        1
+    );
+    assert_eq!(state.players[pid].money, before_money);
+    assert_eq!(state.players[pid].hand.len(), before_hand_len);
+    assert_eq!(state.iron_market, before_iron_market);
 }

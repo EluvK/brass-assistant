@@ -1213,6 +1213,27 @@ impl GameState {
         }
     }
 
+    /// Consume one explicitly selected coal source. Pricing belongs to the
+    /// action; this method only applies the physical resource-state change.
+    pub fn consume_coal_source(&mut self, src: &crate::graph::CoalSource) {
+        match src.kind {
+            crate::graph::CoalSourceKind::Mine => {
+                self.consume_from_city(src.key);
+            }
+            crate::graph::CoalSourceKind::Market => self.take_market_coal(),
+        }
+    }
+
+    /// Consume one explicitly selected iron source. Pricing belongs to the
+    /// action; this method only applies the physical resource-state change.
+    pub fn consume_iron_source(&mut self, src: &crate::graph::IronSource) {
+        if src.free {
+            self.consume_from_city(src.key);
+        } else {
+            self.take_market_iron();
+        }
+    }
+
     /// Consume one cube from a city tile or farm (key prefixes handled by caller).
     pub fn consume_from_city(&mut self, key: usize) -> bool {
         let (player, income) = {
