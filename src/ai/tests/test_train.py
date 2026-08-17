@@ -1,9 +1,8 @@
 import numpy as np
 import torch
 
-from brass_ai.mcts import ISMCTS, MCTSConfig
 from brass_ai.net import PolicyValueNet
-from brass_ai.selfplay import SelfPlayConfig, play_game
+from brass_ai.selfplay import generate_imitation_samples
 from brass_ai.train import TrainConfig, Trainer, compute_loss
 
 
@@ -11,10 +10,7 @@ def test_trainer_reduces_loss_and_is_persistent():
     torch.manual_seed(0)
     torch.set_num_threads(2)
     net = PolicyValueNet()
-    mcts = ISMCTS(net, MCTSConfig(c_puct=1.5, max_depth=8))
-    samples, _ = play_game(
-        mcts, SelfPlayConfig(players=4, sims=20, max_moves=120, seed=3)
-    )
+    samples = generate_imitation_samples(1, players=4, max_moves=600)
     assert len(samples) >= 10
 
     cfg = TrainConfig(device="cpu", epochs=3, batch_size=32, lr=1e-3)

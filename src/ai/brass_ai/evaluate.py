@@ -9,7 +9,6 @@ import numpy as np
 
 import brass_engine as be
 
-from .mcts import ISMCTS
 from .progress import Progress
 
 
@@ -60,7 +59,7 @@ def play_game_with_policies(policies, seed: int, players: int = 4, max_moves: in
 
 
 def evaluate_mcts_vs_baseline(
-    mcts: ISMCTS,
+    mcts,
     n_games: int,
     sims: int,
     players: int = 4,

@@ -2,9 +2,9 @@
 
 The search tree lives entirely in Rust (`GameState.search_net` in the
 `brass_engine` extension); the network is queried through a batched Python
-callback. This class is a drop-in replacement for the pure-Python `ISMCTS`
-used by self-play / evaluation, with the same `search(...) -> SearchResult`
-contract (`.best`, `.visits`, `.canon_by_slot`).
+callback. This is the supported search implementation for self-play and
+evaluation. Its `search(...) -> SearchResult` contract exposes `.best`,
+`.visits`, and `.canon_by_slot`.
 
 Callback contract (Rust side builds the arrays, ONE row per request = the
 request's current-player perspective):

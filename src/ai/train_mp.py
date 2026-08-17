@@ -24,11 +24,15 @@ Run from the repo root (spawn requires the __main__ guard, present here):
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
+from pathlib import Path
 
 import torch
+import brass_engine as be
 
+from brass_ai.dataset import load_samples, save_samples
 from brass_ai.evaluate import benchmark_mcts_vs_heuristic
 from brass_ai.mp_selfplay import SelfPlayPool
 from brass_ai.net import PolicyValueNet
@@ -50,7 +54,7 @@ def main():
                     help="gradient steps per iteration over the replay buffer")
     ap.add_argument("--replay_size", type=int, default=6000,
                     help="samples kept in the replay buffer (data reuse across iters)")
-    ap.add_argument("--worker_device", type=str, default="cuda",
+    ap.add_argument("--worker_device", type=str, default="cpu",
                     help="device for self-play workers (Rust MCTS batched inference)")
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--c_puct", type=float, default=2.5)
@@ -73,9 +77,33 @@ def main():
     ap.add_argument("--ckpt", type=str, default="checkpoints/bootstrap.pt")
     ap.add_argument("--resume", action="store_true",
                     help="resume optimizer+scheduler from a full trainer-state ckpt")
-    ap.add_argument("--out", type=str, default="checkpoints/train_mp.pt")
+    ap.add_argument("--run_dir", type=str, default="runs/train_mp",
+                    help="directory containing manifest, replay shards, metrics and checkpoints")
+    ap.add_argument("--out", type=str, default=None,
+                    help="optional checkpoint path; defaults to <run_dir>/checkpoints/latest.pt")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+
+    run_dir = Path(args.run_dir)
+    data_dir = run_dir / "replay"
+    checkpoint_dir = run_dir / "checkpoints"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(exist_ok=True)
+    checkpoint_dir.mkdir(exist_ok=True)
+    out_path = Path(args.out) if args.out else checkpoint_dir / "latest.pt"
+    manifest_path = run_dir / "manifest.json"
+    manifest = {
+        "format": 1,
+        "engine": {
+            "policy_table_size": be.policy_table_size,
+            "board": [be.BOARD_PLANES, be.BOARD_CELLS],
+            "links": [be.LINK_PLANES, be.LINK_CELLS],
+            "global_len": be.GLOBAL_LEN,
+            "hand_len": be.HAND_LEN,
+        },
+        "args": vars(args),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     import multiprocessing as mp
     mp.set_start_method("spawn", force=True)
@@ -91,20 +119,20 @@ def main():
         t_max=max(args.iters, 1),
     ))
 
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    if os.path.exists(args.ckpt):
-        sd = torch.load(args.ckpt, map_location=device)
+    load_path = out_path if args.resume and out_path.exists() else Path(args.ckpt)
+    if load_path.exists():
+        sd = torch.load(load_path, map_location=device)
         model = sd["model"] if "model" in sd else sd
         net.load_state_dict(model)
         if args.resume and "model" in sd:
             trainer.load_state_dict(sd)
-            print(f"resumed trainer state from {args.ckpt} "
+            print(f"resumed trainer state from {load_path} "
                   f"(epoch={trainer.epoch_count})")
         else:
-            print(f"loaded weights from {args.ckpt} (fresh optimizer, "
+            print(f"loaded weights from {load_path} (fresh optimizer, "
                   f"t_max={max(args.iters, 1)})")
     else:
-        print(f"warning: {args.ckpt} not found; starting from random weights")
+        print(f"warning: {load_path} not found; starting from random weights")
 
     mcts_cfg = {
         "c_puct": args.c_puct,
@@ -121,6 +149,12 @@ def main():
         mm_pool.append(_as_pool_weights(net.state_dict()))
 
     replay = []
+    if args.resume:
+        for shard in sorted(data_dir.glob("iter-*.npz")):
+            replay.extend(load_samples(shard))
+        if len(replay) > args.replay_size:
+            replay = replay[-args.replay_size:]
+        print(f"restored {len(replay)} replay samples from {data_dir}")
     best_win, best_median = -1.0, -1.0
     best_state = None
     print(f"{'iter':>4} {'samples':>7} {'pol':>6} {'val':>6} {'lr':>8} "
@@ -137,12 +171,15 @@ def main():
             sp_t = time.time() - t0
             n_games = len(counts)
 
+            shard_path = data_dir / f"iter-{it:05d}.npz"
+            written = save_samples(shard_path, samples)
+
             replay.extend(samples)
             if len(replay) > args.replay_size:
                 replay = replay[-args.replay_size:]
             losses = trainer.train_steps(list(replay), args.train_steps, args.batch)
             trainer.step_lr()
-            torch.save(trainer.state_dict(), args.out)
+            torch.save(trainer.state_dict(), out_path)
 
             line = (
                 f"{it:>4} {len(samples):>7} {losses['policy']:>6.3f} "
@@ -164,7 +201,7 @@ def main():
                         best_win = r["win_rate"]
                         best_median = r["mcts_median"]
                         best_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
-                        torch.save(trainer.state_dict(), args.out)
+                        torch.save(trainer.state_dict(), out_path)
                         if args.mm_prob > 0.0:
                             mm_pool.append(_as_pool_weights(best_state))
                             if len(mm_pool) > args.pool_size:
@@ -175,14 +212,27 @@ def main():
                         status = "(reverted)"
                 line += f" {status:>10}"
             print(line)
+            metric = {
+                "iteration": it,
+                "samples": written,
+                "replay_samples": len(replay),
+                "selfplay_seconds": sp_t,
+                "games": n_games,
+                "losses": losses,
+                "lr": trainer.current_lr(),
+            }
+            if it % args.eval_every == 0:
+                metric["benchmark"] = r
+            with (run_dir / "metrics.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(metric) + "\n")
 
     if args.gate and best_state is not None:
         net.load_state_dict(best_state)
-        torch.save(trainer.state_dict(), args.out)
+        torch.save(trainer.state_dict(), out_path)
         print(f"final weights reverted to best (win {best_win:.2f}, "
               f"median VP {best_median:.1f})")
 
-    print(f"\nsaved trainer state: {args.out}")
+    print(f"\nsaved trainer state: {out_path}")
     if best_state is not None:
         print(f"final benchmarked best: win={best_win:.2f} medianVP={best_median:.1f}")
 

@@ -61,22 +61,26 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
 
         cfg = SelfPlayConfig(players=4, sims=sims, temperature=temperature, max_moves=600)
         for gi in range(games):
-            cfg.seed = seed_base + worker_id * 100_000 + seed_offset + gi
-            if mm_prob > 0.0 and pool:
-                # Rotating learner seat; opponents = historical pool (with
-                # probability mm_prob) else the current net.
-                learner = gi % 4
-                roles = [mcts.search] * 4
-                for seat in range(4):
-                    if seat == learner:
-                        continue
-                    if np.random.rand() < mm_prob:
-                        opp = pool[np.random.randint(len(pool))]
-                        roles[seat] = opp.search
-                samples, _ = play_game_with_roles(roles, cfg, collect={learner})
-            else:
-                samples, _ = play_game_with_roles([mcts.search] * 4, cfg)
-            result_queue.put(("SAMPLES", _pack_samples(samples)))
+            try:
+                cfg.seed = seed_base + worker_id * 100_000 + seed_offset + gi
+                if mm_prob > 0.0 and pool:
+                    # Rotating learner seat; opponents = historical pool (with
+                    # probability mm_prob) else the current net.
+                    learner = gi % 4
+                    roles = [mcts.search] * 4
+                    for seat in range(4):
+                        if seat == learner:
+                            continue
+                        if np.random.rand() < mm_prob:
+                            opp = pool[np.random.randint(len(pool))]
+                            roles[seat] = opp.search
+                    samples, _ = play_game_with_roles(roles, cfg, collect={learner})
+                else:
+                    samples, _ = play_game_with_roles([mcts.search] * 4, cfg)
+                result_queue.put(("SAMPLES", _pack_samples(samples)))
+            except Exception as exc:
+                result_queue.put(("ERROR", f"worker={worker_id} game={gi}: {exc!r}"))
+                break
         result_queue.put(("DONE", worker_id))
 
 
@@ -195,6 +199,8 @@ class SelfPlayPool:
             tag, payload = item
             if tag == "DONE":
                 done += 1
+            elif tag == "ERROR":
+                raise RuntimeError(f"self-play worker failed: {payload}")
             else:  # "SAMPLES"
                 samples.extend(unpack_samples(payload))
                 counts.append(payload["count"])

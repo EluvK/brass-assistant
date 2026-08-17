@@ -23,8 +23,8 @@ import torch
 import brass_engine as be
 
 from brass_ai.evaluate import evaluate_mcts_vs_baseline
-from brass_ai.mcts import ISMCTS, MCTSConfig
 from brass_ai.net import PolicyValueNet
+from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.selfplay import generate_imitation_samples
 from brass_ai.train import TrainConfig, Trainer
 
@@ -61,7 +61,7 @@ def main():
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
     torch.save(net.state_dict(), args.ckpt)
 
-    mcts = ISMCTS(net, MCTSConfig(c_puct=1.5, max_depth=8), device=device)
+    mcts = RustISMCTS(net, RustMCTSConfig(c_puct=2.5, max_depth=10, device=device))
     for baseline in ("heuristic", "2ply"):
         wr, mvp, bvp = evaluate_mcts_vs_baseline(
             mcts, args.eval_games, args.eval_sims, baseline=baseline

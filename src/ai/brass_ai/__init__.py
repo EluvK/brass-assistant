@@ -1,7 +1,6 @@
 """Brass: Birmingham AI layer (Python).
 
-Phase-3 research stack: a Policy-Value network (PyTorch) guiding an ISMCTS
-search over the Rust game engine (`brass_engine` bindings). The MCTS runs in
-Python for fast iteration; the engine (legal moves / step / tensor encoding /
-determinization) stays in Rust.
+Phase-3 training stack: a PyTorch Policy-Value network guiding Rust ISMCTS
+through the `brass_engine` bindings. Python owns data generation, training and
+evaluation; Rust owns game rules, information-set search and tensor encoding.
 """

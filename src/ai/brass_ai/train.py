@@ -227,9 +227,9 @@ def run_loop(net: PolicyValueNet, loop: LoopConfig, on_iters=None):
 
     `on_iters(iter, trainer, stats)` is a callback (e.g. evaluation/logging);
     return True from it to stop early."""
-    from .mcts import ISMCTS, MCTSConfig
+    from .rust_mcts import RustISMCTS, RustMCTSConfig
 
-    mcts = ISMCTS(net, MCTSConfig(c_puct=1.5, max_depth=10))
+    mcts = RustISMCTS(net, RustMCTSConfig(c_puct=2.5, max_depth=10))
     sp_cfg = loop.selfplay or SelfPlayConfig(sims=loop.mcts_sims)
     trainer = Trainer(net, loop.train or TrainConfig())
 

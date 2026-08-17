@@ -15,7 +15,17 @@ import numpy as np
 
 import brass_engine as be
 
-from .mcts import ISMCTS, SearchResult
+from typing import Callable, Protocol
+
+
+class SearchResultLike(Protocol):
+    best: str | None
+    visits: dict
+    canon_by_slot: dict
+
+
+class SearchLike(Protocol):
+    def search(self, state, sims: int, add_root_noise: bool = False) -> SearchResultLike: ...
 
 
 @dataclass
@@ -59,7 +69,7 @@ def _dense_policy(visits: dict, table_size: int) -> np.ndarray:
     return p
 
 
-def _sample_move(result: SearchResult, temperature: float):
+def _sample_move(result: SearchResultLike, temperature: float):
     """Return the canonical for a slot sampled from the visit distribution."""
     if not result.visits:
         return result.best
@@ -78,7 +88,7 @@ def _sample_move(result: SearchResult, temperature: float):
 
 
 def play_game(
-    mcts: ISMCTS,
+    mcts: SearchLike,
     cfg: SelfPlayConfig | None = None,
 ) -> tuple[list, list]:
     """Play one self-play game; returns (samples, final_vps)."""
@@ -159,7 +169,12 @@ def play_game_with_roles(
             state.finish_game()
 
     if not state.game_over:
-        state.finish_game()
+        # A partial game has no valid final-VP target.  Treating the current
+        # board as terminal previously emitted all-zero or otherwise corrupt
+        # value/economy labels into the replay buffer.
+        raise RuntimeError(
+            f"self-play game exceeded max_moves={cfg.max_moves}; samples discarded"
+        )
 
     vps = state.player_vps()
     z = _normalize(np.asarray(vps, dtype=np.float64))
@@ -221,7 +236,7 @@ def generate_imitation_samples(n_games: int, players: int = 4, max_moves: int = 
 
 
 def play_batch(
-    mcts: ISMCTS,
+    mcts: SearchLike,
     n_games: int,
     cfg: SelfPlayConfig | None = None,
 ) -> tuple[list, np.ndarray, list]:
