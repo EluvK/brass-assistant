@@ -318,6 +318,7 @@ impl PyGame {
             loan,
             pass: pass_,
             scout,
+            actions: Vec::new(),
         };
         for (i, v) in build.iter().take(6).enumerate() {
             stats.build[i] = *v;

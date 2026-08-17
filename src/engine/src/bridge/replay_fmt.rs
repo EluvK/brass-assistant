@@ -485,10 +485,13 @@ pub struct PStats {
     pub loan: u32,
     pub pass: u32,
     pub scout: u32,
+    /// Ordered, compact action labels for era-end replay summaries.
+    pub actions: Vec<String>,
 }
 
 impl PStats {
-    pub fn record(&mut self, mv: &Move) {
+    pub fn record(&mut self, mv: &Move, era: Era) {
+        self.actions.push(action_abbrev(mv, era));
         match mv {
             Move::Build { ind, .. } => self.build[*ind as usize] += 1,
             Move::Network { .. } => self.network += 1,
@@ -502,8 +505,50 @@ impl PStats {
     }
 }
 
+fn action_abbrev(mv: &Move, era: Era) -> String {
+    const IND_ABBREVS: [&str; 6] = ["棉", "煤", "铁", "箱", "陶", "酒"];
+    let ind = |ind: IndustryType| IND_ABBREVS[ind as usize];
+
+    match mv {
+        Move::Build { ind: industry, .. } => ind(*industry).to_string(),
+        Move::Network { .. } => match era {
+            Era::Canal => "路".to_string(),
+            Era::Rail => "路".to_string(),
+        },
+        Move::NetworkDouble { .. } => "双修".to_string(),
+        Move::Develop { ind1, ind2, .. } | Move::ResolveFreeDevelop { ind1, ind2, .. } => {
+            let mut label = format!("研{}", ind(*ind1));
+            if let Some(ind2) = ind2 {
+                label.push_str(ind(*ind2));
+            }
+            label
+        }
+        Move::Sell { .. } => "卖".to_string(),
+        Move::Loan { .. } => "贷".to_string(),
+        Move::Pass { .. } => "过".to_string(),
+        Move::Scout { .. } => "斥".to_string(),
+    }
+}
+
+pub fn fmt_action_sequence(stats: &PStats, first: bool) -> String {
+    if stats.actions.is_empty() {
+        "无".to_string()
+    } else {
+        let mut actions = stats.actions.clone();
+        if first {
+            actions.insert(0, "".to_string());
+        }
+        let chunks: Vec<String> = actions
+            .chunks(2)
+            .map(|chunk| chunk.join("+"))
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        chunks.join(" ")
+    }
+}
+
 pub fn fmt_stats_line(stats: &PStats) -> String {
-    let ind_names = ["棉", "煤", "铁", "制造", "陶", "酒"];
+    let ind_names = ["棉", "煤", "铁", "箱", "陶", "酒"];
     let builds: Vec<String> = (0..6)
         .map(|i| format!("{}x{}", ind_names[i], stats.build[i]))
         .filter(|x| !x.ends_with('0'))

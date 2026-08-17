@@ -27,6 +27,10 @@ fn print_era_snapshot(state: &GameState, era_name: &str, action_stats: &[replay_
     for (pid, stats) in action_stats.iter().enumerate() {
         println!("玩家{pid} 动作: {}", replay_fmt::fmt_stats_line(stats));
         println!(
+            "玩家{pid} 动作序列: {}",
+            replay_fmt::fmt_action_sequence(stats, era_name == "运河")
+        );
+        println!(
             "玩家{pid} 在场板块: {}",
             replay_fmt::player_tiles_detail(state, pid, false)
         );
@@ -94,7 +98,7 @@ fn main() {
         } else {
             &mut rail_stats.borrow_mut()[pid]
         };
-        stat_target.record(mv);
+        stat_target.record(mv, state.era);
         if verbose {
             let detail = replay_fmt::move_detail(state, mv);
             let before = replay_fmt::player_state(state, pid);
