@@ -68,7 +68,16 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   └─ scoring.rs  时代计分（连接 VP + 板块 VP）+ 终局排名
 │
 ├─ ai/ AI 决策层
-│   ├─ heuristic_ai.rs  启发式策略（候选评分 + 确定性 2-ply 同回合 combo 前瞻，含时代分档/生产计划/局面估值）
+│   ├─ heuristic_ai.rs  启发式候选生成与各类行动评分
+│   ├─ heuristic_ai/
+│   │   ├─ lookahead.rs 确定性 2-ply 同回合 combo 前瞻
+│   │   ├─ plan.rs      时代分档与生产计划选择
+│   │   ├─ build.rs     Build 评分与候选生成
+│   │   ├─ network.rs   Network / Double-Rail 评分与候选生成
+│   │   ├─ develop.rs   Develop 评分与候选生成
+│   │   ├─ sell.rs      Sell 评分与候选生成
+│   │   ├─ loan.rs      Loan 评分
+│   │   └─ scout_pass.rs Scout / Pass 评分
 │   ├─ mcts_ai.rs       启发式引导 ISMCTS（determinize + PUCT + MaxN 值向量）
 │   ├─ nn_mcts.rs       网络引导 ISMCTS（slot 树、批量 Python 推理、分叉 policy 合并、4 玩家 value）
 │   └─ random_ai.rs     随机基线

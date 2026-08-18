@@ -256,7 +256,7 @@ fn main() {
         }
     }
     eprintln!(
-        "[sweep_scores] scope={} games={} policy={} illegal={} stuck={} unique_winner_rate={:.3} winner_mean={:.3} winner_variance={:.3} player_mean={:.3} player_variance={:.3} game_mean={:.3} game_variance={:.3} time_mean_us={:.1} time_variance_us={:.1}",
+        "[sweep_scores]:\n\nscope={} games={} policy={} illegal={} stuck={}\nunique_winner_rate={:.3} winner_mean={:.3} winner_variance={:.3}\nplayer_mean={:.3} player_variance={:.3}\ngame_mean={:.3} game_variance={:.3}\ntime_mean_us={:.1} time_variance_us={:.1}",
         if canal_only { "canal" } else { "full" },
         results.len(),
         policy,
