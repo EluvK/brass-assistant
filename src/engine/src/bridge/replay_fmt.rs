@@ -213,7 +213,10 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
             let s = format!("研发 {} Lv{}", industry_label(*ind1), lv1);
             let s = if let Some(i2) = ind2 {
                 let lv2 = state.players[pid]
-                    .next_tile(*i2)
+                    // A double develop removes ind1 before resolving ind2.
+                    // Read the following tile when both choices are the same
+                    // industry, rather than reporting the first tile twice.
+                    .tile_after(*i2, usize::from(*ind1 == *i2))
                     .map(|t| t.level)
                     .unwrap_or(0);
                 format!("{s} + {} Lv{}", industry_label(*i2), lv2)
@@ -230,7 +233,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
             let s = format!("结算免费研发 {} Lv{}", industry_label(*ind1), lv1);
             if let Some(i2) = ind2 {
                 let lv2 = state.players[pid]
-                    .next_tile(*i2)
+                    .tile_after(*i2, usize::from(*ind1 == *i2))
                     .map(|t| t.level)
                     .unwrap_or(0);
                 format!("{s} + {} Lv{}", industry_label(*i2), lv2)
@@ -594,5 +597,38 @@ pub fn player_tiles_detail(state: &GameState, pid: usize, flipped_only: bool) ->
         "无".to_string()
     } else {
         entries.join(" ; ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::move_detail;
+    use crate::data::IndustryType;
+    use crate::rules::Move;
+    use crate::state::GameState;
+    use rand::{SeedableRng, rngs::StdRng};
+
+    #[test]
+    fn same_industry_double_develop_reports_consecutive_tile_levels() {
+        let state = GameState::new(StdRng::seed_from_u64(1), 2);
+        let develop = Move::Develop {
+            ind1: IndustryType::CoalMine,
+            ind2: Some(IndustryType::CoalMine),
+            iron: Vec::new(),
+            card_index: 0,
+        };
+        let free_develop = Move::ResolveFreeDevelop {
+            ind1: IndustryType::CoalMine,
+            ind2: Some(IndustryType::CoalMine),
+        };
+
+        assert!(
+            move_detail(&state, &develop).contains("煤矿 Lv1 + 煤矿 Lv2"),
+            "double develop must report both consecutively removed tiles"
+        );
+        assert!(
+            move_detail(&state, &free_develop).contains("煤矿 Lv1 + 煤矿 Lv2"),
+            "free double develop must report both consecutively removed tiles"
+        );
     }
 }

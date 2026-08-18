@@ -62,6 +62,34 @@ pub fn era_profile(state: &GameState) -> EraProfile {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use super::*;
+    use rand::SeedableRng;
+    #[test]
+    fn show_era_profile() {
+        let mut state = crate::state::GameState::new(rand::rngs::StdRng::seed_from_u64(7), 4);
+        for era in [Era::Canal, Era::Rail] {
+            state.era = era;
+            for round in 1..=8 {
+                state.round = round;
+                let profile = era_profile(&state);
+                println!(
+                    "era={:?} round={} phase={:?} income_w={:.3} money_w={:.3} network_w={:.3} alpha={:.3}",
+                    era,
+                    round,
+                    profile.phase,
+                    profile.income_w,
+                    profile.money_w,
+                    profile.network_w,
+                    profile.alpha
+                );
+            }
+        }
+    }
+}
+
 /// The player's target sellable industry, achievable tile count, and beer need.
 #[derive(Clone, Copy, Debug)]
 pub struct Plan {

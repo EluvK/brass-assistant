@@ -9,6 +9,7 @@
 ```
 src/engine/src/bin/
 ├─ replay.rs        # 单局中文回放或摘要诊断
+├─ heuristic_trace.rs # 单局回放 + 每步 heuristic 候选与分数
 ├─ sweep_scores.rs  # 批量 seed 扫描，输出 CSV
 └─ mcts_lab.rs      # MCTS 基准、局面检查、参数扫描
 ```
@@ -35,6 +36,22 @@ cargo run --release --bin replay -- 7 4 heuristic 300 canal summary
 `policy` 可为 `heuristic`（默认）、`mcts`、`random`、`mcts-vs-random` 或 `mcts-vs-heur`。混合策略中 MCTS 座位由 `seed % players` 决定。`sims` 仅用于含 MCTS 的策略。
 
 最后一个参数为 `summary` 时，隐藏逐动作的盘面、手牌和商家日志，但保留时代结算、各玩家动作统计、翻面板块和终局排名。
+
+## `heuristic_trace`：逐步候选调试
+
+```sh
+cargo run --release --bin heuristic_trace -- [seed] [players] [candidate-k] [max-moves]
+```
+
+默认运行 seed `7` 的完整四人局，并在每个决策点输出当前手牌、按分数降序排列的 `candidate_actions_k` 结果、2-ply 最终选择及实际执行结果。默认 `candidate-k=30`。
+
+```sh
+# 默认调试局
+cargo run --release --bin heuristic_trace
+
+# 只观察 seed 42 的前 20 步，每类 Build/Network 最多展示 10 个候选
+cargo run --release --bin heuristic_trace -- 42 4 10 20
+```
 
 ## `sweep_scores`：批量评测
 
