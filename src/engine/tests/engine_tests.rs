@@ -244,6 +244,22 @@ fn build_target_respects_money() {
 }
 
 #[test]
+fn build_targets_include_multi_icon_slots_when_single_icon_slot_exists_elsewhere() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::WildIndustry];
+
+    let targets = get_valid_build_targets(&state, pid);
+
+    // Worcester has an empty CottonMill-only slot, but that must not suppress
+    // the legal CottonMill build in Derby's CottonMill/Brewery slot.
+    assert!(targets.iter().any(|target| {
+        target.loc == Loc::Derby && target.slot_index == 0 && target.ind == IndustryType::CottonMill
+    }));
+}
+
+#[test]
 fn network_targets_are_canal_or_rail_only() {
     let state = setup(4);
     let pid = state.current_player_id();

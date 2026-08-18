@@ -26,32 +26,8 @@ pub struct BuildTarget {
     pub cost_iron: u8,
 }
 
-/// Is there a vacant single-icon slot anywhere for this industry type?
-fn vacant_single_icon_exists(state: &GameState, ind: IndustryType) -> bool {
-    for loc in ALL_LOCATIONS.iter().take(CITY_COUNT) {
-        let slots = city_slots(*loc);
-        for (slot_idx, allowed) in slots.iter().enumerate() {
-            let key = match state.city_slot_key(*loc, slot_idx) {
-                Some(k) => k,
-                None => continue,
-            };
-            if state.city_tiles[key].is_none() && allowed.len() == 1 && allowed[0] == ind {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 pub fn get_valid_build_targets(state: &GameState, pid: usize) -> Vec<BuildTarget> {
     state.ensure_network_masks();
-    // Precompute once per call: which industries still have a vacant
-    // single-icon slot somewhere (used to deprioritize multi-icon slots).
-    let mut single_icon_available = [false; 6];
-    for (i, ind) in IndustryType::ALL.iter().enumerate() {
-        single_icon_available[i] = vacant_single_icon_exists(state, *ind);
-    }
-
     let mut targets = Vec::new();
 
     // Iron sources are location-independent: compute once for the whole call.
@@ -66,11 +42,6 @@ pub fn get_valid_build_targets(state: &GameState, pid: usize) -> Vec<BuildTarget
             let existing = state.city_tiles[key].as_ref();
 
             for &ind in allowed.iter() {
-                // Slot preference: skip multi-icon vacant slots when a vacant
-                // single-icon slot exists for this industry.
-                if existing.is_none() && allowed.len() > 1 && single_icon_available[ind as usize] {
-                    continue;
-                }
                 if let Some(t) = check_build_target(
                     state,
                     pid,
