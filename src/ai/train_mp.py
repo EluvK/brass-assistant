@@ -95,7 +95,8 @@ def main():
     manifest = {
         "format": 1,
         "engine": {
-            "policy_table_size": be.policy_table_size,
+            "action_feature_dim": be.ACTION_FEATURE_DIM,
+            "action_feature_schema_version": be.ACTION_FEATURE_SCHEMA_VERSION,
             "board": [be.BOARD_PLANES, be.BOARD_CELLS],
             "links": [be.LINK_PLANES, be.LINK_CELLS],
             "global_len": be.GLOBAL_LEN,

@@ -4,6 +4,7 @@ import torch
 import brass_engine as be
 
 from brass_ai import build_input
+from brass_ai.hierarchical_policy import encode_legal_candidates, pad_candidate_features
 from brass_ai.net import PolicyValueNet
 
 
@@ -41,17 +42,12 @@ def test_net_forward():
     net = PolicyValueNet()
     g = be.GameState(seed=5, players=4)
     batch = build_input.encode_states([g, g, g, g])
-    type_logits, goal_logits, value, econ = net(batch)
-    assert type_logits.shape == (4, 7)
-    assert goal_logits.shape == (4, be.policy_table_size)
-    assert value.shape == (4, 4)
-    assert econ.shape == (4, 2)
-    assert bool(torch.isfinite(value).all())
-    assert bool(torch.isfinite(econ).all())
-    # merge: logit(s) = type[t(s)] + goal[s] reproduces a full policy row
-    merged = net.merge_logits(type_logits, goal_logits)
-    assert merged.shape == (4, be.policy_table_size)
-    st = be.slot_types
-    assert len(st) == be.policy_table_size
-    for t in st:
-        assert 0 <= t < 7
+    _, candidates = encode_legal_candidates(g)
+    features, mask = pad_candidate_features([candidates] * 4)
+    out = net(batch, features, mask)
+    assert out["type_logits"].shape == (4, 7)
+    assert out["candidate_logits"].shape == mask.shape
+    assert out["value"].shape == (4, 4)
+    assert out["econ"].shape == (4, 2)
+    assert bool(torch.isfinite(out["value"]).all())
+    assert bool(torch.isfinite(out["econ"]).all())

@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import torch
+
+from .hierarchical_policy import pad_candidate_features
 
 from .selfplay import Sample
 
@@ -15,6 +18,12 @@ def save_samples(path: str | Path, samples: list[Sample]) -> int:
         raise ValueError("refusing to write an empty replay shard")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    candidates, candidate_mask = pad_candidate_features([
+        torch.from_numpy(s.candidates) for s in samples
+    ])
+    policy = np.zeros(candidate_mask.shape, dtype=np.float32)
+    for i, sample in enumerate(samples):
+        policy[i, :len(sample.policy)] = sample.policy
     arrays = {
         "pid": np.asarray([s.pid for s in samples], dtype=np.int8),
         "era": np.asarray([s.era for s in samples], dtype=np.int8),
@@ -23,10 +32,11 @@ def save_samples(path: str | Path, samples: list[Sample]) -> int:
         "global_vec": np.stack([s.global_vec for s in samples]).astype(np.float32),
         "own_hand": np.stack([s.own_hand for s in samples]).astype(np.float32),
         "opp_hands": np.stack([s.opp_hands for s in samples]).astype(np.float32),
-        "policy": np.stack([s.policy for s in samples]).astype(np.float32),
+        "candidates": candidates.numpy().astype(np.float32),
+        "candidate_mask": candidate_mask.numpy().astype(np.bool_),
+        "policy": policy,
         "value": np.stack([s.value for s in samples]).astype(np.float32),
         "econ": np.stack([s.econ for s in samples]).astype(np.float32),
-        "legal": np.stack([s.legal for s in samples]).astype(np.bool_),
     }
     np.savez_compressed(path, **arrays)
     return len(samples)
@@ -41,9 +51,10 @@ def load_samples(path: str | Path) -> list[Sample]:
                 pid=int(data["pid"][i]), era=int(data["era"][i]),
                 board=data["board"][i], links=data["links"][i],
                 global_vec=data["global_vec"][i], own_hand=data["own_hand"][i],
-                opp_hands=data["opp_hands"][i], policy=data["policy"][i],
+                opp_hands=data["opp_hands"][i],
+                candidates=data["candidates"][i, data["candidate_mask"][i]],
+                policy=data["policy"][i, data["candidate_mask"][i]],
                 value=data["value"][i], econ=data["econ"][i],
-                legal=data["legal"][i],
             )
             for i in range(n)
         ]

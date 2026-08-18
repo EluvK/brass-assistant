@@ -1,228 +1,172 @@
-****# Python AI 架构与操作手册
+# Python AI 架构与操作手册
 
-本文描述 `src/ai/` 当前可用的 Python AI 训练、搜索和评测工具。它面向开发与实验，不是 TTS 实时服务的部署文档。
+本文是 `src/ai/` 当前候选动作 Policy 架构的操作手册。它只描述已经迁移到 candidate policy 的主链路，并明确区分已验证和待验证流程。
 
-## 范围与权威边界
+## 权威边界
 
-Python 侧不实现游戏规则。Rust 扩展模块 `brass_engine` 是以下能力的唯一权威来源：`GameState` 状态、规则动作与回合推进、合法动作及固定策略槽映射、特征编码、对手手牌确定化、网络引导 ISMCTS 树，以及内置启发式教师策略。
+Rust 扩展 `brass_engine` 是规则和动作语义的唯一权威，负责：
 
-Python 只负责组织数据、定义 PyTorch 网络、实现 Rust 搜索所需的批量推理回调，以及编排自博弈、训练和评测。规则或策略槽变化时，应先更新 Rust bridge，再同步更新 Python 契约、测试和本文。引擎整体分层见 [engine-tools.md](engine-tools.md) 与 [architecture.md](architecture.md)。
+- `GameState`、规则、回合推进和对手手牌确定化；
+- 完整 legal concrete action 的生成；
+- state tensor 编码；
+- action feature 编码；
+- Rust heuristic teacher；
+- candidate-policy-guided ISMCTS。
 
-## 目录与职责
+Python 不实现规则或 canonical action 解析。它负责候选评分网络、样本编排、训练、checkpoint 和评测。
 
-```text
-src/ai/
-|- brass_ai/
-|  |- build_input.py  Rust NumPy 特征 -> PyTorch batch
-|  |- net.py          PolicyValueNet：策略、价值、经济辅助头
-|  |- rust_mcts.py    Rust `GameState.search_net` 的回调适配器
-|  |- selfplay.py     自博弈、启发式模仿数据和 Sample 标签
-|  |- mp_selfplay.py  常驻 spawn worker 池与样本序列化
-|  |- dataset.py      replay NPZ 分片读写
-|  |- train.py        损失、Trainer、优化器和学习率调度
-|  |- evaluate.py     网络 MCTS 与 Rust 启发式的固定种子对局
-|  `- progress.py     控制台进度与 ETA
-|- train_mp.py        正式多进程训练入口
-|- bootstrap_imitation.py
-|                     启发式行为克隆预训练入口
-|- bench_mp.py        单进程/多进程自博弈吞吐比较
-|- experiments/       基准、回放、诊断和一次性实验脚本
-`- tests/             bridge、网络、训练、自博弈、分片的回归测试
-```
-
-## 运行架构
+## 当前架构
 
 ```text
-PolicyValueNet 权重
-        |
-        v
-SelfPlayPool (多个 CPU worker) -- Rust GameState.search_net --> Rust ISMCTS
-        |                                                    |
-        |                 batched NumPy 特征                | Python 回调
-        +----------------------------------------------------+
-        |
-        v
-Sample 列表 -> replay/iter-xxxxx.npz -> 有界 replay buffer
-                                             |
-                                             v
-                                      Trainer (主进程 GPU/CPU)
-                                             |
-                                             v
-                         checkpoint + metrics + 固定种子 benchmark/gate
+Rust GameState
+  -> legal concrete candidates / action features
+  -> PolicyValueNet(state, candidates) -> candidate logits + value
+  -> Rust ISMCTS over full legal candidates
+
+Rust heuristic teacher
+  -> bounded scored shortlist (at most 14 candidates)
+  -> imitation replay / soft policy target
 ```
 
-`RustISMCTS.search()` 返回 `SearchResult`：`best` 为 canonical 动作字符串，`visits` 为根节点 `slot -> visit count`，`canon_by_slot` 为可执行动作。自博弈用访问次数构造策略监督目标，并按温度采样动作；评测关闭根节点噪声并使用最佳动作。
+MCTS 推理展开完整合法动作集合。为避免 replay 随动作组合空间爆炸，imitation 训练只持久化 teacher shortlist：top-4 Build、top-4 Network、其他每类最佳动作，必要时再加入 heuristic 的 2-ply 最终选择。当前每个 imitation 样本最多 14 个候选，而不是所有 legal actions。
 
 ## Rust-Python 契约
 
-当前正式训练路径只支持四人局。虽然 Rust `GameState` 可创建 2--4 人局，但网络的价值头固定为 4 维、对手手牌编码固定为 3 组，不能把 `SelfPlayConfig.players` 当作通用人数配置使用。
+正式训练路径当前只支持四人局。虽然 `GameState` 支持 2--4 人，但网络 value head 固定为 4 维，手牌编码也固定为三名对手。
 
-| 项目 | 当前契约 |
+| 数据 | 契约 |
 | --- | --- |
 | board | `float32 (17, 49)` |
 | links | `float32 (6, 39)` |
 | global | `float32 (50,)` |
 | own_hand | `float32 (35,)` |
-| opp_hands | `float32 (105,)`，三名对手各 35 |
-| 策略空间 | Rust 定义的 1316 个槽；运行时以 `brass_engine.policy_table_size` 为准 |
-| 策略 logit | `type_logits[:, slot_type(slot)] + goal_logits[:, slot]` |
-| 价值标签 | 四名玩家终局 VP 的 `z = (vp - mean) / std`，平局时全零 |
-| 经济辅助标签 | `(income_level, money)`；运河样本取运河结束时值，铁路样本取终局值 |
+| opp_hands | `float32 (105,)` |
+| action feature | `float32 (N, 208)`，`N` 随状态变化 |
+| feature schema | `ACTION_FEATURE_SCHEMA_VERSION = 1` |
+| policy | 对同一状态的候选集合归一化，而非固定全局动作表 |
+| value target | 四名玩家终局 VP 的标准化向量 `(vp - mean) / std`；平局为全零 |
+| econ target | `(income_level, money)`；仅作辅助监督 |
 
-训练与推理均只能在 `state.legal_mask()` 返回的槽上归一化或选取动作。不要在 Python 复制动作到槽的映射，也不要依据网络输出直接拼装 canonical 动作；应由 Rust `legal_moves()` 或 `legal_moves_slots()` 提供可执行动作。
+Python 必须拒绝未知 action feature schema version。修改 Rust action encoding 时，应同时升级 schema version、Python adapter、replay 格式和相关测试。
 
-## 网络与损失
+## 目录
 
-`PolicyValueNet` 将棋盘和连接分别逐格线性编码、做 mean/max pooling，再与全局及手牌特征拼接进入两层 MLP trunk。它有四个输出头：
-
-- `type_head (7)`：build、network、develop、sell、loan、scout、pass。
-- `goal_head (P)`：每个策略槽的目标 logit。
-- `value_head (4)`：四位玩家的标准化终局 VP 预测。
-- `econ_head (2)`：当前视角的收入和现金预测，仅作训练辅助，不参与 Rust 搜索。
-
-训练总损失为掩码策略交叉熵、四维 value MSE、经济辅助损失与显式 L2 的和。`Trainer` 持有 AdamW、CosineAnnealingLR 和 epoch 计数；不能在每轮重新创建 Trainer，否则优化器动量和学习率进度会丢失。
+```text
+src/ai/
+|- brass_ai/
+|  |- build_input.py          Rust state tensor -> PyTorch batch
+|  |- hierarchical_policy.py  candidate batch 与 teacher bridge adapter
+|  |- net.py                  candidate scorer + value/econ heads
+|  |- rust_mcts.py            Rust MCTS candidate-logit callback
+|  |- selfplay.py             self-play、teacher imitation、Sample
+|  |- mp_selfplay.py          worker pool 与候选样本打包
+|  |- dataset.py              candidate replay NPZ shard
+|  `- train.py                Trainer、loss、candidate metrics
+|- bootstrap_imitation.py     已验证的 imitation warm-start 入口
+|- train_mp.py                多进程 self-play 训练入口，待验证
+|- experiments/               历史实验脚本，多数待迁移
+`- tests/                     当前主链路回归测试
+```
 
 ## 环境准备
 
-所有命令在仓库根目录运行，以下示例采用 PowerShell。
+所有命令从仓库根目录运行，PowerShell 示例：
 
 ```powershell
-# 激活引擎虚拟环境，并让 Python 能导入 src/ai 下的包
+# 使用项目虚拟环境，并使 Python 能发现 AI 包
 .\src\engine\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = "src/ai"
 
-# Rust bridge 或其导出契约变更后重新安装扩展
+# Rust bridge 改动后重新构建和安装
 Push-Location src/engine
 python -m maturin develop --release
 Pop-Location
 
-# 回归测试
+# 当前 AI 主链路回归测试
 python -m pytest src/ai/tests -q
 ```
 
-若机器没有 CUDA，所有会调用网络的命令显式传入 `--device cpu`；`benchmark.py`、`diagnose.py`、`replay_net.py` 的默认值是 `cuda`。正式多进程训练通常使用“主进程 GPU、worker CPU”：`--worker_device cpu`。
+上述安装和测试流程已验证。当前测试集为 15 项；它覆盖 candidate feature、teacher shortlist、candidate policy、replay、训练和 Rust MCTS adapter。
 
-## 常用流程
+## 已验证流程
 
-### 1. 启发式模仿预训练
+### 1. Heuristic Imitation Bootstrap
 
-此路径让 Rust 内置启发式在完整对局中行动，记录 one-hot 策略目标，再训练初始网络。质量筛选是严格大于阈值；`--games` 指接受的对局数，筛选开启时必须给出足够的 `--max-attempts`。
+状态：已验证。
 
-```powershell
-python src/ai/bootstrap_imitation.py `
-  --games 200 `
-  --epochs 3 `
-  --workers 4 `
-  --min-avg-vp 80 `
-  --min-vp 58 `
-  --max-attempts 2000 `
-  --eval-games 8 `
-  --eval-sims 40 `
-  --ckpt checkpoints/bootstrap-smoke.pt
-```
-
-正式批量示例：
+Rust heuristic 生成完整对局；每步返回有界 scored shortlist。Python 将 teacher scores softmax 为 policy target，训练 candidate scorer、value head 和 econ head。
 
 ```powershell
-python src/ai/bootstrap_imitation.py `
-  --games 2000 `
-  --epochs 10 `
-  --workers 8 `
-  --min-avg-vp 80 `
-  --min-vp 58 `
-  --max-attempts 20000 `
-  --ckpt checkpoints/bootstrap.pt
+python src/ai/bootstrap_imitation.py --games 200 --epochs 3 --workers 4 --min-avg-vp 80 --min-vp 58 --max-attempts 20000 --ckpt checkpoints/bootstrap-smoke.pt
 ```
 
-该脚本写出的 checkpoint 只有模型 `state_dict`；它可作为 `train_mp.py --ckpt` 输入，但不能作为 `--resume` 的完整 Trainer 恢复文件。
-
-### 2. 多进程自博弈训练
-
-`train_mp.py` 是当前正式入口。每轮 worker 使用当前网络生成完整自博弈，主进程保存分片、截取 replay buffer、执行固定数目的梯度步，再按频率执行基准。`--gate` 会用当前进程中已评测的最佳网络对候选网络做接受/回滚，已知恢复语义限制见 [ai-problems.md](ai-problems.md)。
-
-```powershell
-python src/ai/train_mp.py `
-  --ckpt checkpoints/bootstrap.pt `
-  --run_dir runs/main `
-  --iters 8 `
-  --workers 8 `
-  --games_per_worker 2 `
-  --worker_device cpu `
-  --sims 200 `
-  --train_steps 60 `
-  --replay_size 6000 `
-  --bench_sims 400 `
-  --bench_games 20 `
-  --gate
-```
-
-中断后恢复同一 run：
-
-```powershell
-python src/ai/train_mp.py `
-  --run_dir runs/main `
-  --out runs/main/checkpoints/latest.pt `
-  --resume `
-  --start_iter 8 `
-  --iters 16 `
-  --worker_device cpu
-```
-
-`--resume` 会恢复 `latest.pt` 中的模型、优化器、scheduler，并读取已有 replay 分片后按 `--replay_size` 截取。传入的参数不会由旧 `manifest.json` 自动恢复，恢复前需人工确认本次 CLI 参数与 manifest 中的契约一致。
-
-### 3. 决策级基准
-
-固定 seeds `0..games-1`，网络 MCTS 座位轮换，其余三席为 Rust 启发式。输出 MCTS 胜率、VP 分布和各 seed 的 VP，适合比较两个 checkpoint。
-
-```powershell
-python src/ai/experiments/benchmark.py `
-  --ckpt runs/main/checkpoints/latest.pt `
-  --sims 600 `
-  --games 40 `
-  --device cpu
-```
-
-### 4. 诊断与回放
-
-| 入口 | 用途 | 示例 |
-| --- | --- | --- |
-| `bench_mp.py` | 单进程与 worker 池的自博弈吞吐对比 | `python src/ai/bench_mp.py --sims 60 --workers 8` |
-| `experiments/net_all_vs_all.py` | 同一网络四席互弈；`--sims 0` 为纯贪心 | `python src/ai/experiments/net_all_vs_all.py --ckpt checkpoints/bootstrap.pt --start 0 --end 19 --sims 0 --device cpu` |
-| `experiments/diagnose.py` | 汇总网络席的动作、时代分布和低分 seed | `python src/ai/experiments/diagnose.py --ckpt checkpoints/bootstrap.pt --sims 200 --seeds 0-19 --device cpu` |
-| `experiments/replay_net.py` | 逐动作中文回放，输出到 `src/engine/logs/` 或 `--out` | 参数帮助当前有已知错误，见问题清单；直接运行可传 `--ckpt ... --seed 7 --device cpu` |
-| `experiments/bc_baseline.py` | 旧的独立行为克隆实验，非正式训练路径 | 仅用于对照实验 |
-
-实验目录中的脚本可能采用不同的回合驱动与默认参数，不能将其结果直接混入正式 run 的 `metrics.jsonl`。对外比较优先使用 `experiments/benchmark.py`。
-
-## 训练产物与检查
-
-`--run_dir runs/main` 下的文件含义如下：
+当前输出包含：
 
 ```text
-runs/main/
-|- manifest.json                 本次启动时记录的 bridge 尺寸与 CLI 参数
-|- replay/iter-00000.npz         每轮完整对局产生的压缩 Sample 分片
-|- checkpoints/latest.pt          模型 + optimizer + scheduler + epoch
-`- metrics.jsonl                 每轮一条 JSON，含损失、耗时、样本数及可选 benchmark
+policy / value
+top1 / top3 / top5
+type_top1
+entropy
+candidates mean / p95
+MCTS vs heuristic benchmark
 ```
 
-分片包含 `pid`、`era`、五组特征、`policy`、`value`、`econ` 和 `legal`。只接受正常结束的完整对局；自博弈超过 `max_moves` 会丢弃整局并向 worker 报错，避免把中间局面错误标作终局价值。
+解释：top-k 是训练后的 teacher target 命中率；当前先在训练 replay 上计算，不能作为泛化结果。`candidates` 是 teacher shortlist 大小，不是 MCTS 的完整合法动作数。checkpoint 是模型 `state_dict`，不是完整 Trainer 恢复状态。
 
-训练前后至少检查：
+### 2. Rust 和 Python 回归
 
-- `manifest.json` 的策略空间和特征尺寸是否仍与当前 Rust 扩展一致。
-- `metrics.jsonl` 的 samples 是否为预期数量，loss 是否为有限值。
-- 用相同的 `--sims`、`--games` 和设备运行 benchmark，对比胜率、均值和中位数。
-- 改动 bridge、样本格式或训练损失后，运行 `python -m pytest src/ai/tests -q`。
+状态：已验证。
 
-## 常见故障
+```powershell
+Push-Location src/engine
+cargo fmt --check
+cargo check
+cargo test --lib
+Pop-Location
 
-`ModuleNotFoundError: brass_ai`：确认在仓库根目录，并设置 `$env:PYTHONPATH = "src/ai"`。
+python -m pytest src/ai/tests -q
+```
 
-`ModuleNotFoundError: brass_engine` 或接口属性缺失：激活 `src/engine/.venv` 后，在 `src/engine` 执行 `python -m maturin develop --release`。
+bridge、feature schema、candidate batch 或训练 loss 发生修改后，必须重跑这些检查。
 
-`Torch not compiled with CUDA enabled` 或 CUDA 初始化失败：为相应脚本加 `--device cpu`；多 worker 时保持 `--worker_device cpu`。
+## 待验证流程
 
-worker 报 `samples discarded`：某局超过 `max_moves=600` 或产生不可执行动作，当前池会中止本轮。保留 seed、参数和完整错误信息后再定位；不要把截断局强制写入 replay。
+以下入口在旧 flat policy 架构下存在过，但尚未完成 candidate-policy 端到端验证。
+它们不应作为长期训练基线或结果依据。
 
-更多已确认或需决策的实现风险见 [ai-problems.md](ai-problems.md)。
+| 入口 | 当前状态 | 需要先验证的内容 |
+| --- | --- | --- |
+| `train_mp.py` | 待验证 | worker pool、candidate replay shard、resume、manifest、GPU 主进程训练 |
+| `bench_mp.py` | 待验证 | full-candidate MCTS 的 worker 吞吐、内存和 batch 行为 |
+| `experiments/benchmark.py` | 待验证 | checkpoint 加载、candidate MCTS、固定 seed 对局结果 |
+| `experiments/diagnose.py` | 待迁移 | 仍可能依赖旧 slot API |
+| `experiments/replay_net.py` | 待迁移 | 仍可能依赖旧 slot API |
+| `experiments/net_all_vs_all.py` | 待迁移 | 仍可能依赖旧 slot API |
+| `experiments/bc_baseline.py` | 历史脚本 | 不属于当前训练主链路 |
+
+验证顺序应为：先用 `train_mp.py` 跑 `1 worker / 1 game / 1 iteration / CPU`，确认 sample、shard、checkpoint 和 resume；再逐步增加 worker、game 数、simulation 数和 GPU 训练。不要直接启动旧文档中的长时间 self-play run。
+
+## 训练产物
+
+candidate replay shard 的每条样本包含：
+
+```text
+pid, era
+board, links, global_vec, own_hand, opp_hands
+candidates: (N, 208)
+policy: (N,)
+value: (4,)
+econ: (2,)
+```
+
+`N` 是样本自己的候选数。落盘时为压缩 NPZ 的 padded array 加 mask；加载后恢复为变长 candidate 数组。旧的 `legal` mask 和固定 1316 维 policy 不属于当前格式。
+
+训练中 `evaluate_policy()` 必须分 batch 计算。禁止把整个 replay 按全局最大候选数一次性 padding 后送入 GPU，否则候选 tensor 会造成极高峰值内存。
+
+## 当前风险与下一步
+
+- action feature v1 仍会压缩部分资源来源和 Sell 结构；需要做 feature collision 统计后再设计 v2。
+- imitation shortlist 与 MCTS full legal candidates 存在分布差异；下一步应加入有限 数量的 hard negatives，而不是将完整候选集合写入 replay。
+- policy top-k 当前是在训练数据上评估；需要建立固定 held-out teacher validation。
+- value 是 final normalized VP 预测，不是校准后的 win probability。
+- `train_mp.py` 与实验工具尚未在新架构下验证，使用前需先完成最小 smoke run。

@@ -27,12 +27,12 @@ class Progress:
         done = min(done, self.total)
         rate = done / max(elapsed, 1e-6)
         eta = (self.total - done) / max(rate, 1e-9)
-        line = f"[{self.label}] {done}/{self.total} elapsed:{elapsed:5.0f}s  ETA:{eta:5.0f}s"
+        line = f"[{self.label}] {done}/{self.total} elapsed:{elapsed:4.0f}s |ETA:{eta:4.0f}s"
         if extra:
             line += f" | {extra}"
         
         # use carriage return to overwrite the previous line, and flush to ensure it appears immediately
-        print(f"\r{line}".ljust(100), end="", flush=True)
+        print(f"\r{line}  ".ljust(100), end="", flush=True)
 
     def done(self) -> None:
         self.update(self.total)

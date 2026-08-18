@@ -1,7 +1,7 @@
 """Bootstrap warm-start: imitate the heuristic to get a playable policy fast.
 
 The heuristic plays self-play games (no MCTS needed — fast); each move records
-the state, the heuristic's chosen policy slot (one-hot target) and the game's
+the state, a bounded scored teacher-candidate shortlist and the game's
 normalized final VP (value target). The network is trained on this imitation
 data, then its MCTS is evaluated vs the heuristic.
 
@@ -26,8 +26,8 @@ def main():
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--eval_games", type=int, default=20)
-    ap.add_argument("--eval_sims", type=int, default=60)
+    ap.add_argument("--eval-games", type=int, default=20)
+    ap.add_argument("--eval-sims", type=int, default=60)
     ap.add_argument("--ckpt", type=str, default="checkpoints/bootstrap.pt")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
                     help="heuristic-game worker processes (use 1 for serial)")
@@ -69,7 +69,14 @@ def main():
     t1 = time.time()
     losses = trainer.train_on_samples(samples)
     print(f"trained ({time.time()-t1:.0f}s): "
-          f"policy={losses['policy']:.3f} value={losses['value']:.3f}")
+          f"policy={losses['policy']:.3f} value={losses['value']:.3f} "
+          f"top1={losses['policy_top1']:.1%} "
+          f"top3={losses['policy_top3']:.1%} "
+          f"top5={losses['policy_top5']:.1%} "
+          f"type_top1={losses['action_type_top1']:.1%} "
+          f"entropy={losses['policy_entropy']:.2f} "
+          f"candidates={losses['candidate_count_mean']:.1f}"
+          f"/p95={losses['candidate_count_p95']:.0f}")
 
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
     torch.save(net.state_dict(), args.ckpt)

@@ -24,7 +24,8 @@ def test_rust_search_returns_executable_move_and_visits():
     copy = game.clone()
     copy.apply_move(result.best)
     assert sum(result.visits.values()) == 12
-    assert set(result.visits) <= {slot for slot, _, _ in game.legal_moves()}
+    legal = {canonical for _, canonical, _ in game.legal_moves()}
+    assert set(result.canon_by_candidate.values()) <= legal
 
 
 def test_rust_selfplay_produces_complete_game_samples():

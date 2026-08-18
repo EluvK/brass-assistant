@@ -1,51 +1,21 @@
-"""Policy-Value network for Brass: Birmingham.
+"""Candidate-scoring Policy-Value network for Brass: Birmingham.
 
-Structure (AlphaZero-style, flat cell encoding since the map is a fixed graph
-rather than a grid):
-
-  board (B,17,49) --shared Linear(17->H)--> cell embeddings --mean+max pool--> (B,2H)
-  links (B,6,39)  --shared Linear(6->H2)--> cell embeddings --mean+max pool--> (B,2H2)
-  [board_emb, links_emb, global(50), own_hand(35), opp_hands(105)] -> trunk MLP
-
-  Policy (branched head, 2026-08 redesign):
-    type_head Linear(256 -> 7)      # build / network / develop / sell / loan /
-                                    #   scout / pass action-type marginals
-    goal_head Linear(256 -> 1316)   # per-slot goal logits over the policy table
-    logit(slot s) = type[t(s)] + goal[s]   # merged on the Rust side over legal
-                                    #   slots; t(s) from policy::slot_type
-  Value  (redesigned): Linear(256 -> 4) predicts the normalized final VP
-    z-vector over ALL 4 players from a SINGLE perspective, NO tanh. The global
-    encoding already carries per-player money/income/vp (indices 8..39) and
-    opp_hands carries every opponent's hand, so one viewpoint is enough to
-    predict all four finals (removes the 4x perspective encode in the search).
-
-The value target is the 4-player normalized VP vector
-z = (vp - mean)/std over the players of that game (see selfplay.py).
+The engine supplies a variable-size set of concrete legal moves. The policy
+scores those candidates conditional on the state; it never emits a fixed
+policy-table vector and never learns legality.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import torch
 import torch.nn as nn
 
 import brass_engine as be
 
-POLICY_SIZE = be.policy_table_size
-N_ACTIONS = 7  # build / network / develop / sell / loan / scout / pass
+N_ACTIONS = 7
 N_PLAYERS = 4
-
-# slot -> action-type band, cached from the Rust binding (single source of truth).
-_SLOT_TYPES: np.ndarray | None = None
-
-
-def slot_types() -> np.ndarray:
-    global _SLOT_TYPES
-    if _SLOT_TYPES is None:
-        _SLOT_TYPES = np.asarray(be.slot_types, dtype=np.int64)
-    return _SLOT_TYPES
 
 
 @dataclass
@@ -53,80 +23,89 @@ class NetConfig:
     board_emb: int = 128
     links_emb: int = 64
     trunk: int = 256
-    policy_size: int = POLICY_SIZE
+    action_emb: int = 128
+    action_features: int = getattr(be, "ACTION_FEATURE_DIM", 208)
     global_len: int = be.GLOBAL_LEN
     hand_len: int = be.HAND_LEN
     opp_hands_len: int = be.HAND_LEN * 3
 
 
 class PolicyValueNet(nn.Module):
+    """Score concrete legal candidate moves and predict multi-player value."""
+
     def __init__(self, cfg: NetConfig | None = None):
         super().__init__()
         self.cfg = cfg or NetConfig()
-
-        self.board_enc = nn.Sequential(
-            nn.Linear(be.BOARD_PLANES, self.cfg.board_emb), nn.ReLU()
-        )
-        self.links_enc = nn.Sequential(
-            nn.Linear(be.LINK_PLANES, self.cfg.links_emb), nn.ReLU()
-        )
-
+        self.board_enc = nn.Sequential(nn.Linear(be.BOARD_PLANES, self.cfg.board_emb), nn.ReLU())
+        self.links_enc = nn.Sequential(nn.Linear(be.LINK_PLANES, self.cfg.links_emb), nn.ReLU())
         trunk_in = (
-            2 * self.cfg.board_emb
-            + 2 * self.cfg.links_emb
-            + self.cfg.global_len
-            + self.cfg.hand_len
-            + self.cfg.opp_hands_len
+            2 * self.cfg.board_emb + 2 * self.cfg.links_emb + self.cfg.global_len
+            + self.cfg.hand_len + self.cfg.opp_hands_len
         )
         self.trunk = nn.Sequential(
-            nn.Linear(trunk_in, self.cfg.trunk),
-            nn.ReLU(),
-            nn.Linear(self.cfg.trunk, self.cfg.trunk),
-            nn.ReLU(),
+            nn.Linear(trunk_in, self.cfg.trunk), nn.ReLU(),
+            nn.Linear(self.cfg.trunk, self.cfg.trunk), nn.ReLU(),
         )
-        self.type_head = nn.Linear(self.cfg.trunk, N_ACTIONS)
-        self.goal_head = nn.Linear(self.cfg.trunk, self.cfg.policy_size)
+        self.action_encoder = nn.Sequential(
+            nn.Linear(self.cfg.action_features, self.cfg.action_emb), nn.ReLU(),
+            nn.Linear(self.cfg.action_emb, self.cfg.action_emb), nn.ReLU(),
+        )
+        self.action_score = nn.Sequential(
+            nn.Linear(self.cfg.trunk + self.cfg.action_emb, self.cfg.trunk), nn.ReLU(),
+            nn.Linear(self.cfg.trunk, 1),
+        )
+        self.action_type_head = nn.Linear(self.cfg.trunk, N_ACTIONS)
         self.value_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
-        self.econ_head = nn.Linear(self.cfg.trunk, 2)  # (income_level, money)
+        self.econ_head = nn.Linear(self.cfg.trunk, 2)
 
-    def forward(self, batch: dict):
-        """batch keys: board (B,17,49), links (B,6,39), global/own_hand/opp_hands (B,*).
-        Returns (type_logits (B,7), goal_logits (B,P), value (B,4),
-                 econ (B,2) = current-perspective (income, money) estimate)."""
-        # board: (B,17,49) -> (B,49,17) -> (B,49,H)
-        b = batch["board"].transpose(1, 2)
-        b = self.board_enc(b)
-        b = torch.cat([b.mean(dim=1), b.max(dim=1).values], dim=1)  # (B,2H)
+    def encode_state(self, batch: dict) -> torch.Tensor:
+        board = self.board_enc(batch["board"].transpose(1, 2))
+        board = torch.cat([board.mean(dim=1), board.max(dim=1).values], dim=1)
+        links = self.links_enc(batch["links"].transpose(1, 2))
+        links = torch.cat([links.mean(dim=1), links.max(dim=1).values], dim=1)
+        return self.trunk(torch.cat(
+            [board, links, batch["global"], batch["own_hand"], batch["opp_hands"]], dim=1
+        ))
 
-        l = batch["links"].transpose(1, 2)
-        l = self.links_enc(l)
-        l = torch.cat([l.mean(dim=1), l.max(dim=1).values], dim=1)  # (B,2H2)
+    def forward(self, batch: dict, action_features: torch.Tensor,
+                candidate_mask: torch.Tensor | None = None) -> dict:
+        """Evaluate candidates shaped ``(B,N,D)`` with optional padding mask."""
+        if action_features.ndim == 2:
+            action_features = action_features.unsqueeze(0)
+        if action_features.ndim != 3 or action_features.shape[-1] != self.cfg.action_features:
+            raise ValueError(
+                f"action_features must have shape (B,N,{self.cfg.action_features})"
+            )
+        state = self.encode_state(batch)
+        if state.shape[0] != action_features.shape[0]:
+            raise ValueError("state batch and action batch sizes differ")
+        actions = self.action_encoder(action_features)
+        state_per_action = state.unsqueeze(1).expand(-1, actions.shape[1], -1)
+        logits = self.action_score(torch.cat([state_per_action, actions], dim=-1)).squeeze(-1)
+        if candidate_mask is None:
+            candidate_mask = torch.ones_like(logits, dtype=torch.bool)
+        else:
+            candidate_mask = candidate_mask.to(device=logits.device, dtype=torch.bool)
+            if candidate_mask.shape != logits.shape:
+                raise ValueError("candidate_mask must have shape (B,N)")
+        if (~candidate_mask).all(dim=1).any():
+            raise ValueError("each state must contain at least one legal candidate")
+        log_probs = torch.log_softmax(logits.masked_fill(~candidate_mask, float("-inf")), dim=1)
+        return {
+            "type_logits": self.action_type_head(state),
+            "candidate_logits": logits,
+            "candidate_log_probs": log_probs,
+            "candidate_mask": candidate_mask,
+            "value": self.value_head(state),
+            "econ": self.econ_head(state),
+        }
 
-        x = torch.cat(
-            [b, l, batch["global"], batch["own_hand"], batch["opp_hands"]], dim=1
-        )
-        x = self.trunk(x)
-        type_logits = self.type_head(x)
-        goal_logits = self.goal_head(x)
-        value = self.value_head(x)  # (B,4), no tanh
-        econ = self.econ_head(x)  # (B,2), no tanh
-        return type_logits, goal_logits, value, econ
-
-    def merge_logits(self, type_logits, goal_logits) -> torch.Tensor:
-        """logit(s) = type[t(s)] + goal[s] over the full policy table -> (B,P)."""
-        st = torch.from_numpy(slot_types()).to(goal_logits.device)
-        return goal_logits + type_logits.index_select(1, st)
-
-    def policy_value(self, batch: dict):
-        """Convenience for MCTS/search: returns (type (B,7), goal (B,P), value (B,4))
-        under eval mode + no-grad, restoring the previous train/eval state.
-        The econ head is a training-only auxiliary head and is NOT used by the
-        search (so its extra forward cost stays off the hot path)."""
+    def policy_value(self, batch: dict, action_features: torch.Tensor,
+                     candidate_mask: torch.Tensor | None = None) -> dict:
         was_training = self.training
         self.eval()
         try:
             with torch.no_grad():
-                type_logits, goal_logits, value, _ = self.forward(batch)
-                return type_logits, goal_logits, value
+                return self.forward(batch, action_features, candidate_mask)
         finally:
             self.train(was_training)

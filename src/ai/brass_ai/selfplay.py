@@ -21,11 +21,13 @@ import brass_engine as be
 
 from typing import Callable, Protocol
 
+from .hierarchical_policy import encode_legal_candidates, encode_teacher_candidates
+
 
 class SearchResultLike(Protocol):
     best: str | None
     visits: dict
-    canon_by_slot: dict
+    canon_by_candidate: dict
 
 
 class SearchLike(Protocol):
@@ -40,18 +42,11 @@ class Sample:
     global_vec: np.ndarray  # (50,)
     own_hand: np.ndarray  # (35,)
     opp_hands: np.ndarray  # (105,)
-    policy: np.ndarray  # (1316,) dense over policy slots
+    candidates: np.ndarray  # (N,208) Engine structured legal-move features
+    policy: np.ndarray  # (N,) visit distribution aligned to candidates
     value: np.ndarray  # (4,) normalized final VP z-vector over all players
-    legal: np.ndarray  # (1316,) bool mask of legal policy slots
     era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)
     econ: np.ndarray = None  # (2,) = (income_level, money) target for this sample
-
-
-def _legal_mask_bool(state, table_size: int) -> np.ndarray:
-    mask = np.zeros(table_size, dtype=bool)
-    for s in state.legal_mask():
-        mask[s] = True
-    return mask
 
 
 @dataclass
@@ -63,14 +58,19 @@ class SelfPlayConfig:
     seed: int | None = None
 
 
-def _dense_policy(visits: dict, table_size: int) -> np.ndarray:
-    p = np.zeros(table_size, dtype=np.float32)
-    total = sum(visits.values())
-    if total <= 0:
-        return p
-    for s, v in visits.items():
-        p[s] = v / total
-    return p
+def _candidate_policy(canonicals: list[str], result: SearchResultLike) -> np.ndarray:
+    """Map search visits to the Engine's concrete candidate ordering."""
+    p = np.zeros(len(canonicals), dtype=np.float32)
+    by_canonical = {canonical: i for i, canonical in enumerate(canonicals)}
+    for candidate_id, visits in result.visits.items():
+        canonical = result.canon_by_candidate.get(candidate_id)
+        if canonical in by_canonical:
+            p[by_canonical[canonical]] += visits
+    if p.sum() == 0 and result.best in by_canonical:
+        p[by_canonical[result.best]] = 1.0
+    if p.sum() == 0:
+        raise RuntimeError("search result does not map to Engine candidates")
+    return p / p.sum()
 
 
 def _sample_move(result: SearchResultLike, temperature: float):
@@ -79,7 +79,7 @@ def _sample_move(result: SearchResultLike, temperature: float):
         return result.best
     if temperature <= 0.0:
         slot = max(result.visits, key=result.visits.get)
-        return result.canon_by_slot[slot]
+        return result.canon_by_candidate[slot]
     slots = list(result.visits)
     counts = np.asarray([result.visits[s] for s in slots], dtype=np.float64)
     # Numerically stable softmax-temperature: subtract the max before exp, or
@@ -88,7 +88,7 @@ def _sample_move(result: SearchResultLike, temperature: float):
     w = np.exp((counts - counts.max()) / max(temperature, 1e-6))
     probs = w / w.sum()
     slot = np.random.choice(slots, p=probs)
-    return result.canon_by_slot[slot]
+    return result.canon_by_candidate[slot]
 
 
 def play_game(
@@ -121,7 +121,6 @@ def play_game_with_roles(
     state = be.GameState(seed=seed, players=cfg.players)
 
     samples: list[Sample] = []
-    table_size = be.policy_table_size
     if collect is None:
         collect = set(range(cfg.players))
     canal_samples: list[Sample] = []
@@ -129,15 +128,16 @@ def play_game_with_roles(
     while not state.game_over and moves < cfg.max_moves:
         moves += 1
         pid = state.current_player_id
+        canonical_candidates, candidate_tensor = encode_legal_candidates(state)
         result = roles[pid](state, cfg.sims, True)
         if result.best is None:
             break
         if pid in collect:
             board, links, g, oh, op = state.state_to_tensor()
-            policy = _dense_policy(result.visits, table_size)
+            policy = _candidate_policy(canonical_candidates, result)
             s = Sample(pid=pid, board=board, links=links, global_vec=g,
                        own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                       legal=_legal_mask_bool(state, table_size), era=state.era)
+                       candidates=candidate_tensor.numpy(), era=state.era)
             samples.append(s)
             if state.era == 0:
                 canal_samples.append(s)
@@ -205,22 +205,19 @@ def _generate_imitation_game(args):
 
     state = be.GameState(seed=seed, players=players)
     local = []
-    table = be.policy_table_size
     moves = 0
     while not state.game_over and moves < max_moves:
         moves += 1
-        canon, _, _ = state.choose_heuristic()
-        if canon is None:
-            break
         pid = state.current_player_id
-        slot = be.moves_to_slots(canon)[0]
-        policy = np.zeros(table, dtype=np.float32)
-        policy[slot] = 1.0
+        candidate_tensor, teacher_scores, canon, chosen_index, _score = encode_teacher_candidates(state)
+        score_values = teacher_scores.numpy().astype(np.float64)
+        weights = np.exp((score_values - score_values.max()) / 1.0)
+        policy = (weights / weights.sum()).astype(np.float32)
         board, links, g, oh, op = state.state_to_tensor()
         local.append(
             Sample(pid=pid, board=board, links=links, global_vec=g,
                    own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                   legal=_legal_mask_bool(state, table), era=state.era)
+                   candidates=candidate_tensor.numpy(), era=state.era)
         )
         try:
             state.apply_move(canon)

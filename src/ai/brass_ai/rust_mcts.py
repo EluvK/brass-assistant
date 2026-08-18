@@ -4,7 +4,7 @@ The search tree lives entirely in Rust (`GameState.search_net` in the
 `brass_engine` extension); the network is queried through a batched Python
 callback. This is the supported search implementation for self-play and
 evaluation. Its `search(...) -> SearchResult` contract exposes `.best`,
-`.visits`, and `.canon_by_slot`.
+`.visits`, and `.canon_by_candidate`.
 
 Callback contract (Rust side builds the arrays, ONE row per request = the
 request's current-player perspective):
@@ -13,9 +13,9 @@ request's current-player perspective):
   global_ (rows, GLOBAL_LEN)                 float32
   own     (rows, HAND_LEN)                   float32
   opp     (rows, 3*HAND_LEN)                 float32
-returns (type_logits (rows, 7), goal_logits (rows, policy_table_size),
-         values (rows, 4)). The Rust search merges the branched priors
-(logit(s) = type[t(s)] + goal[s]) and uses the 4-player value vector directly.
+receives padded candidate features and a candidate mask in addition to the
+state arrays, and returns ``(candidate_logits (rows,max_candidates),
+values (rows,4))``. Rust masks by each request's real candidate length.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from .net import PolicyValueNet
 
 def make_net_fn(net: PolicyValueNet, device: str = "cuda"):
     """Build the Python callback the Rust search calls for batched inference."""
-    def net_fn(board, links, global_vec, own_hand, opp_hands):
+    def net_fn(board, links, global_vec, own_hand, opp_hands, candidates, candidate_mask):
         batch = {
             "board": torch.from_numpy(np.asarray(board, dtype=np.float32)).reshape(-1, be.BOARD_PLANES, be.BOARD_CELLS),
             "links": torch.from_numpy(np.asarray(links, dtype=np.float32)).reshape(-1, be.LINK_PLANES, be.LINK_CELLS),
@@ -41,11 +41,17 @@ def make_net_fn(net: PolicyValueNet, device: str = "cuda"):
         }
         if device != "cpu":
             batch = {k: v.to(device) for k, v in batch.items()}
-        type_logits, goal_logits, values = net.policy_value(batch)
+        action_features = torch.from_numpy(np.asarray(candidates, dtype=np.float32)).reshape(
+            -1, np.asarray(candidate_mask).shape[1], net.cfg.action_features
+        )
+        mask = torch.from_numpy(np.asarray(candidate_mask, dtype=np.float32) > 0)
+        if device != "cpu":
+            action_features = action_features.to(device)
+            mask = mask.to(device)
+        out = net.policy_value(batch, action_features, mask)
         return (
-            type_logits.detach().cpu().numpy(),
-            goal_logits.detach().cpu().numpy(),
-            values.detach().cpu().numpy(),
+            out["candidate_logits"].detach().cpu().numpy(),
+            out["value"].detach().cpu().numpy(),
         )
 
     return net_fn
@@ -65,7 +71,7 @@ class RustMCTSConfig:
 class SearchResult:
     best: str | None = None
     visits: dict = field(default_factory=dict)
-    canon_by_slot: dict = field(default_factory=dict)
+    canon_by_candidate: dict = field(default_factory=dict)
 
 
 class RustISMCTS:
@@ -88,6 +94,6 @@ class RustISMCTS:
             add_root_noise,
             self.cfg.batch_size,
         )
-        visits = {slot: count for slot, _canon, count in children}
-        canon_by_slot = {slot: canon for slot, canon, _count in children}
-        return SearchResult(best=best, visits=visits, canon_by_slot=canon_by_slot)
+        visits = {candidate_id: count for candidate_id, _canon, count in children}
+        canon_by_candidate = {candidate_id: canon for candidate_id, canon, _count in children}
+        return SearchResult(best=best, visits=visits, canon_by_candidate=canon_by_candidate)

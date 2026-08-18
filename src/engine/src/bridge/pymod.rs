@@ -5,13 +5,14 @@
 //!     .current_player_id / .player_count    # int properties
 //!     .era                                   # 0 = canal, 1 = rail
 //!     .round / .game_over / .current_player_money / .has_pending_bonus
-//!     .legal_moves() -> list[(policy_slot:int, canonical:str, describe:str)]
+//!     .legal_moves() -> list[(action_id:int, canonical:str, describe:str)]
+//!     .legal_candidates() -> list[(canonical:str, features: float32[208])]
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
 //!     .determinize() -> GameState            # opponent-hand sampling
-//!     .legal_mask() -> list[int]             # legal policy slots
+//!     .legal_candidates() -> list[(canonical:str, features: float32[208])]
 //!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
 //!     .choose_heuristic() -> (canonical, describe, score)
-//!   module: policy_table_size (int), describe_slot(slot), moves_to_slots(canonical)
+//!   module: ACTION_FEATURE_DIM, ACTION_FEATURE_SCHEMA_VERSION
 
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
@@ -23,7 +24,6 @@ use crate::encode;
 use crate::heuristic_ai;
 use crate::mcts_ai;
 use crate::move_codec;
-use crate::policy;
 use crate::rules::{apply_move, legal_moves};
 use crate::state::GameState;
 
@@ -97,16 +97,16 @@ impl PyGame {
         }
     }
 
-    /// List of legal moves as (policy_slot, canonical, describe) triples.
+    /// List of concrete legal moves as (node-local action_id, canonical,
+    /// describe) triples.
     fn legal_moves(&self) -> Vec<(usize, String, String)> {
         let mut state = self.state.clone();
         legal_moves(&mut state)
             .into_iter()
-            .map(|mv| {
-                let slots = policy::move_slots(&mv);
-                let slot = slots.first().copied().unwrap_or(usize::MAX);
+            .enumerate()
+            .map(|(action_id, mv)| {
                 let describe = mv.describe(&state);
-                (slot, move_codec::encode(&mv), describe)
+                (action_id, move_codec::encode(&mv), describe)
             })
             .collect()
     }
@@ -115,21 +115,78 @@ impl PyGame {
     /// (policy_slot, canonical) pairs, skipping the human-readable `describe`
     /// string that the search never reads. Uses the slot-level generator, so
     /// it is also several times faster than `legal_moves`.
-    fn legal_moves_slots(&self) -> Vec<(usize, String)> {
+    fn legal_action_moves(&self) -> Vec<(usize, String)> {
         let mut state = self.state.clone();
-        crate::rules::legal_slot_moves(&mut state)
+        legal_moves(&mut state)
             .into_iter()
-            .map(|sm| (sm.slot, move_codec::encode(&sm.mv)))
+            .enumerate()
+            .map(|(action_id, mv)| (action_id, move_codec::encode(&mv)))
             .collect()
+    }
+
+    /// Concrete executable legal moves with structured v1 action features.
+    /// Unlike the legacy policy table this does not collapse card or resource
+    /// choices; every returned row is a complete action the engine can apply.
+    fn legal_candidates(&self) -> Vec<(String, Vec<f32>)> {
+        let mut state = self.state.clone();
+        legal_moves(&mut state)
+            .into_iter()
+            .map(|mv| {
+                let canonical = move_codec::encode(&mv);
+                let features = crate::bridge::action_features::encode_move(&mv);
+                (canonical, features)
+            })
+            .collect()
+    }
+
+    /// Return a bounded, scored teacher shortlist and the 2-ply selected move.
+    /// Training does not retain every legal concrete action: that would make a
+    /// large replay buffer grow with the full combinatorial action space. The
+    /// MCTS inference path still evaluates every legal candidate.
+    fn heuristic_candidates(&self) -> (Vec<f32>, Vec<f32>, String, usize, f64, usize) {
+        let mut heuristic_state = self.state.clone();
+        let decision = heuristic_ai::choose_action(&mut heuristic_state);
+        let teacher_canonical = move_codec::encode(&decision.mv);
+        let mut scoring_state = self.state.clone();
+        let scored = heuristic_ai::candidate_actions_k(&mut scoring_state, 4);
+        let mut features = Vec::new();
+        let mut scores = Vec::new();
+        let mut canonical_candidates = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for scored_move in scored {
+            let canonical = move_codec::encode(&scored_move.mv);
+            if seen.insert(canonical.clone()) {
+                features.extend(crate::bridge::action_features::encode_move(&scored_move.mv));
+                scores.push(scored_move.score as f32);
+                canonical_candidates.push(canonical);
+            }
+        }
+        let teacher_index = canonical_candidates
+            .iter()
+            .position(|canonical| canonical == &teacher_canonical)
+            .unwrap_or_else(|| {
+                features.extend(crate::bridge::action_features::encode_move(&decision.mv));
+                scores.push(decision.score as f32);
+                canonical_candidates.push(teacher_canonical.clone());
+                canonical_candidates.len() - 1
+            });
+        (
+            features,
+            scores,
+            teacher_canonical,
+            teacher_index,
+            decision.score,
+            canonical_candidates.len(),
+        )
     }
 
     /// Network-guided ISMCTS search with the tree in Rust (`nn_mcts`).
     ///
-    /// `net_fn(board, links, global, own_hand, opp_hands)` receives 2-D numpy
-    /// arrays with one row per request (each encoded from that request state's
-    /// current player) and must return `(type_logits (rows,7), goal_logits
-    /// (rows,P), values (rows,4))`. Returns (best_canonical, root children as
-    /// (slot, canonical, visits) best-first, legal_slots).
+    /// `net_fn(board, links, global, own_hand, opp_hands, candidates, mask)`
+    /// receives batched state arrays plus flattened padded candidate features
+    /// and must return `(candidate_logits (rows,max_candidates), values
+    /// (rows,4))`. Returns (best_canonical, root children as (slot, canonical,
+    /// visits) best-first, legal candidate ids).
     #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64))]
     fn search_net(
         &self,
@@ -151,7 +208,7 @@ impl PyGame {
             batch_size: batch_size.max(1),
         };
         let res = crate::nn_mcts::search_net(&self.state, &cfg, sims, add_root_noise, &net_fn, py)?;
-        Ok((res.best_canonical, res.children, res.legal_slots))
+        Ok((res.best_canonical, res.children, res.legal_candidate_ids))
     }
 
     /// Apply a canonical move string; returns a human-readable summary.
@@ -354,12 +411,6 @@ impl PyGame {
         PyGame { state }
     }
 
-    /// Set of policy slots reachable by at least one legal move.
-    fn legal_mask(&self) -> Vec<usize> {
-        let mut state = self.state.clone();
-        policy::legal_mask(&mut state)
-    }
-
     /// Encode the state into numpy arrays:
     /// board (17,49), links (6,39), global (50,), own_hand (35,), opp_hands (105,).
     /// `perspective` defaults to the current player; pass another player id to
@@ -433,8 +484,14 @@ fn reshape2<'py>(
 #[pymodule]
 fn brass_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
-    m.add("policy_table_size", policy::policy_table_size())?;
-    m.add("network_double_cells", policy::network_double_cells())?;
+    m.add(
+        "ACTION_FEATURE_DIM",
+        crate::bridge::action_features::ACTION_FEATURE_DIM,
+    )?;
+    m.add(
+        "ACTION_FEATURE_SCHEMA_VERSION",
+        crate::bridge::action_features::ACTION_FEATURE_SCHEMA_VERSION,
+    )?;
     m.add("BOARD_PLANES", encode::BOARD_PLANES)?;
     m.add("BOARD_CELLS", encode::BOARD_CELLS)?;
     m.add("LINK_PLANES", encode::LINK_PLANES)?;
@@ -442,21 +499,5 @@ fn brass_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("GLOBAL_LEN", encode::GLOBAL_LEN)?;
     m.add("HAND_LEN", encode::HAND_LEN)?;
     m.add("MAX_PLAYERS", encode::MAX_PLAYERS)?;
-    m.add("slot_types", policy::slot_types())?;
-    m.add_function(wrap_pyfunction!(py_describe_slot, m)?)?;
-    m.add_function(wrap_pyfunction!(py_moves_to_slots, m)?)?;
     Ok(())
-}
-
-#[pyfunction(name = "describe_slot")]
-fn py_describe_slot(slot: usize) -> String {
-    policy::describe_slot(slot)
-}
-
-/// Map a canonical move string to its policy slot(s).
-#[pyfunction(name = "moves_to_slots")]
-fn py_moves_to_slots(canonical: &str) -> PyResult<Vec<usize>> {
-    let mv =
-        move_codec::decode(canonical).map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
-    Ok(policy::move_slots(&mv))
 }

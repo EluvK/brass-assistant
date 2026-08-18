@@ -11,4 +11,4 @@ def test_replay_shard_roundtrip(tmp_path):
     restored = load_samples(path)
     assert len(restored) == len(original)
     np.testing.assert_array_equal(restored[0].policy, original[0].policy)
-    np.testing.assert_array_equal(restored[-1].legal, original[-1].legal)
+    np.testing.assert_array_equal(restored[-1].candidates, original[-1].candidates)

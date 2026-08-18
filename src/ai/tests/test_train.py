@@ -5,7 +5,7 @@ import torch
 from brass_ai.net import PolicyValueNet
 from brass_ai import selfplay
 from brass_ai.selfplay import generate_imitation_samples
-from brass_ai.train import TrainConfig, Trainer, compute_loss
+from brass_ai.train import TrainConfig, Trainer, _to_batch, compute_loss
 
 
 def test_trainer_reduces_loss_and_is_persistent():
@@ -18,18 +18,7 @@ def test_trainer_reduces_loss_and_is_persistent():
     cfg = TrainConfig(device="cpu", epochs=3, batch_size=32, lr=1e-3)
     trainer = Trainer(net, cfg)
 
-    b = {
-        "board": np.stack([s.board for s in samples]).astype("f4"),
-        "links": np.stack([s.links for s in samples]).astype("f4"),
-        "global": np.stack([s.global_vec for s in samples]).astype("f4"),
-        "own_hand": np.stack([s.own_hand for s in samples]).astype("f4"),
-        "opp_hands": np.stack([s.opp_hands for s in samples]).astype("f4"),
-        "policy": np.stack([s.policy for s in samples]).astype("f4"),
-        "value": np.stack([s.value for s in samples]).astype("f4"),
-        "econ": np.stack([s.econ for s in samples]).astype("f4"),
-        "era": np.asarray([s.era for s in samples], dtype="i8"),
-        "legal": np.stack([s.legal for s in samples]).astype(bool),
-    }
+    b = _to_batch(samples)
 
     net.eval()
     with torch.no_grad():

@@ -31,6 +31,7 @@ import torch
 
 from .progress import Progress
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
+from .hierarchical_policy import pad_candidate_features
 
 _PACK_TIMEOUT_S = 1800  # per packet; a full game at sims=200 can take minutes
 
@@ -97,11 +98,18 @@ def _pack_samples(samples: list[Sample]) -> dict:
             "global": np.empty((0, 50), dtype=np.float32),
             "own_hand": np.empty((0, 35), dtype=np.float32),
             "opp_hands": np.empty((0, 105), dtype=np.float32),
-            "policy": np.empty((0, 1316), dtype=np.float32),
+            "candidates": np.empty((0, 0, 208), dtype=np.float32),
+            "candidate_mask": np.empty((0, 0), dtype=np.bool_),
+            "policy": np.empty((0, 0), dtype=np.float32),
             "value": np.empty((0, 4), dtype=np.float32),
             "econ": np.empty((0, 2), dtype=np.float32),
-            "legal": np.empty((0, 1316), dtype=np.bool_),
         }
+    candidates, candidate_mask = pad_candidate_features(
+        [torch.from_numpy(s.candidates) for s in samples]
+    )
+    policy = np.zeros(candidate_mask.shape, dtype=np.float32)
+    for i, sample in enumerate(samples):
+        policy[i, :len(sample.policy)] = sample.policy
     return {
         "pid": np.asarray([s.pid for s in samples], dtype=np.int64),
         "era": np.asarray([s.era for s in samples], dtype=np.int64),
@@ -110,10 +118,11 @@ def _pack_samples(samples: list[Sample]) -> dict:
         "global": np.stack([s.global_vec for s in samples]).astype(np.float32),
         "own_hand": np.stack([s.own_hand for s in samples]).astype(np.float32),
         "opp_hands": np.stack([s.opp_hands for s in samples]).astype(np.float32),
-        "policy": np.stack([s.policy for s in samples]).astype(np.float32),
+        "candidates": candidates.numpy(),
+        "candidate_mask": candidate_mask.numpy(),
+        "policy": policy,
         "value": np.stack([s.value for s in samples]).astype(np.float32),
         "econ": np.stack([s.econ for s in samples]).astype(np.float32),
-        "legal": np.stack([s.legal for s in samples]).astype(np.bool_),
         "count": n,
     }
 
@@ -131,10 +140,10 @@ def unpack_samples(packed: dict) -> list[Sample]:
                 global_vec=packed["global"][i],
                 own_hand=packed["own_hand"][i],
                 opp_hands=packed["opp_hands"][i],
-                policy=packed["policy"][i],
+                candidates=packed["candidates"][i, packed["candidate_mask"][i]],
+                policy=packed["policy"][i, packed["candidate_mask"][i]],
                 value=packed["value"][i].astype(np.float32),
                 econ=packed["econ"][i].astype(np.float32),
-                legal=packed["legal"][i],
             )
         )
     return out

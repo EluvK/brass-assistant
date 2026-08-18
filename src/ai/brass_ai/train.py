@@ -1,9 +1,8 @@
 """AlphaZero-style training loop with a persistent optimizer.
 
 Loss (per sample):
-  L = -sum_t p_t * log_softmax_masked(merged)_t   (policy CE over LEGAL slots;
-      merged slot logit = type_head[t(s)] + goal_head[s]; the ~700
-      always-illegal double-rail slots are masked out of the softmax)
+  L = -sum_a p_a * log_softmax(score(s, a))_a     (policy CE over concrete
+      Engine-generated legal candidates; padding is masked only for batching)
     + ||value_4 - z_4||^2                         (MSE on the 4-player
       normalized final-VP vector, no tanh on the value head)
     + l2 * ||theta||^2
@@ -26,6 +25,7 @@ import torch
 import torch.nn.functional as F
 
 from .net import PolicyValueNet
+from .hierarchical_policy import pad_candidate_features
 from .progress import Progress
 from .selfplay import SelfPlayConfig, Sample, play_batch
 
@@ -77,7 +77,9 @@ class Trainer:
             self.scheduler.step()
             self.epoch_count += 1
             prog.update(e + 1)
-        return _mean_losses(losses)
+        stats = _mean_losses(losses)
+        stats.update(evaluate_policy(self.net, samples, self.cfg.device))
+        return stats
 
     def current_lr(self) -> float:
         return self.scheduler.get_last_lr()[0]
@@ -126,19 +128,18 @@ class Trainer:
 def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
                  econ_lambda: float = 0.2, econ_neg_weight: float = 3.0):
     tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
-    type_logits, goal_logits, value, econ = net(tensors)
-    # Merged policy: logit(s) = type[t(s)] + goal(s), then masked softmax over
-    # LEGAL slots only. Without the mask, the ~700 always-illegal double-rail
-    # slots pollute the softmax denominator and the net wastes capacity
-    # suppressing them.
-    merged = net.merge_logits(type_logits, goal_logits)
+    out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
     target = tensors["policy"]
-    mask = tensors["legal"].to(torch.bool)
-    masked_logits = merged.masked_fill(~mask, float("-inf"))
-    log_probs = F.log_softmax(masked_logits, dim=1)
-    log_probs = log_probs.masked_fill(~mask, 0.0)
-    policy_loss = -(target * log_probs).sum(dim=1).mean()
-    value_loss = F.mse_loss(value, tensors["value"])
+    policy_loss = -(target * out["candidate_log_probs"].masked_fill(
+        ~out["candidate_mask"], 0.0
+    )).sum(dim=1).mean()
+    value_loss = F.mse_loss(out["value"], tensors["value"])
+
+    # This auxiliary objective is the action-type marginal implied by the
+    # candidate policy target. It guides coarse action selection without ever
+    # reintroducing a flat slot head.
+    type_target = torch.einsum("bn,bnt->bt", target, tensors["candidates"][..., :7])
+    type_loss = -(type_target * F.log_softmax(out["type_logits"], dim=1)).sum(dim=1).mean()
 
     # Economic-supervision auxiliary loss. Targets are raw (income_level -10..30,
     # money); normalize income to ~0..1 and clamp money so the MSE is scale-
@@ -149,6 +150,7 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
     econ_target = tensors["econ"]  # (B,2): (income_level, money)
     inc_t = ((econ_target[:, 0] + 10.0) / 40.0).clamp(0.0, 1.0)
     money_t = (econ_target[:, 1] / 100.0).clamp(0.0, 1.0)
+    econ = out["econ"]
     inc_pred = (econ[:, 0] + 10.0) / 40.0
     money_pred = econ[:, 1] / 100.0
     inc_loss = F.mse_loss(inc_pred, inc_t)
@@ -161,7 +163,7 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
     econ_loss = econ_lambda * (inc_loss + money_loss)
 
     l2_loss = sum(p.pow(2).sum() for p in net.parameters()) * l2
-    return policy_loss, value_loss, econ_loss, l2_loss
+    return policy_loss + 0.1 * type_loss, value_loss, econ_loss, l2_loss
 
 
 def train_on_batch(net, batch, cfg: TrainConfig, optimizer) -> dict:
@@ -192,14 +194,19 @@ def _to_batch(samples: list[Sample]) -> dict:
     g = np.stack([s.global_vec for s in samples]).astype(np.float32)
     o = np.stack([s.own_hand for s in samples]).astype(np.float32)
     p = np.stack([s.opp_hands for s in samples]).astype(np.float32)
-    pol = np.stack([s.policy for s in samples]).astype(np.float32)
+    candidates, candidate_mask = pad_candidate_features(
+        [torch.from_numpy(s.candidates) for s in samples]
+    )
+    pol = np.zeros(candidate_mask.shape, dtype=np.float32)
+    for i, sample in enumerate(samples):
+        pol[i, :len(sample.policy)] = sample.policy
     val = np.stack([s.value for s in samples]).astype(np.float32)
-    legal = np.stack([s.legal for s in samples]).astype(np.bool_)
     econ = np.stack([s.econ for s in samples]).astype(np.float32)
     era = np.asarray([s.era for s in samples], dtype=np.int64)
     return {
         "board": b, "links": l, "global": g,
-        "own_hand": o, "opp_hands": p, "policy": pol, "value": val, "legal": legal,
+        "own_hand": o, "opp_hands": p, "policy": pol, "value": val,
+        "candidates": candidates.numpy(), "candidate_mask": candidate_mask.numpy(),
         "econ": econ, "era": era,
     }
 
@@ -211,6 +218,54 @@ def _mean_losses(losses):
     for k in losses[0]:
         out[k] = sum(x[k] for x in losses) / len(losses)
     return out
+
+
+def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "cpu",
+                    batch_size: int = 256) -> dict:
+    """Measure candidate-policy quality on teacher targets.
+
+    Metrics are candidate-level and remain meaningful when every state has a
+    different action count. The model is evaluated without changing its
+    training/eval state.
+    """
+    if not samples:
+        return {}
+    was_training = net.training
+    net.eval()
+    try:
+        totals = {"policy_top1": 0.0, "policy_top3": 0.0, "policy_top5": 0.0,
+                  "policy_entropy": 0.0, "action_type_top1": 0.0}
+        candidate_counts = []
+        seen = 0
+        with torch.no_grad():
+            for start in range(0, len(samples), batch_size):
+                batch = _to_batch(samples[start:start + batch_size])
+                tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
+                out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
+                mask = tensors["candidate_mask"]
+                target = tensors["policy"]
+                n = target.shape[0]
+                ranking = out["candidate_logits"].masked_fill(~mask, float("-inf")).argsort(
+                    dim=1, descending=True
+                )
+                target_idx = target.argmax(dim=1)
+                totals["policy_top1"] += (ranking[:, :1] == target_idx[:, None]).any(dim=1).sum().item()
+                totals["policy_top3"] += (ranking[:, :3] == target_idx[:, None]).any(dim=1).sum().item()
+                totals["policy_top5"] += (ranking[:, :5] == target_idx[:, None]).any(dim=1).sum().item()
+                log_probs = out["candidate_log_probs"].masked_fill(~mask, 0.0)
+                totals["policy_entropy"] += (-(log_probs * log_probs.exp()).sum(dim=1)).sum().item()
+                type_target = torch.einsum("bn,bnt->bt", target, tensors["candidates"][..., :7])
+                totals["action_type_top1"] += (
+                    out["type_logits"].argmax(dim=1) == type_target.argmax(dim=1)
+                ).sum().item()
+                candidate_counts.extend(mask.sum(dim=1).detach().cpu().tolist())
+                seen += n
+        metrics = {key: value / seen for key, value in totals.items()}
+        metrics["candidate_count_mean"] = float(np.mean(candidate_counts))
+        metrics["candidate_count_p95"] = float(np.percentile(candidate_counts, 95))
+        return metrics
+    finally:
+        net.train(was_training)
 
 
 @dataclass

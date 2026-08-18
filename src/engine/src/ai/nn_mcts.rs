@@ -15,9 +15,10 @@
 //! are applied before the next wave. This removes the per-sim Python/PyO3
 //! orchestration that capped the previous Python MCTS at ~4 ms/sim.
 
+use crate::bridge::action_features;
 use crate::engine::{advance_turn, handle_turn_result};
 use crate::move_codec;
-use crate::rules::{Move, legal_slot_moves};
+use crate::rules::{Move, legal_moves};
 use crate::state::GameState;
 use numpy::PyArray2;
 use numpy::PyArrayMethods;
@@ -55,12 +56,12 @@ impl Default for NnMctsConfig {
     }
 }
 
-/// Root children as (slot, canonical, visits), best-first.
+/// Root children as (node-local candidate id, canonical, visits), best-first.
 #[derive(Debug)]
 pub struct NnSearchResult {
     pub best_canonical: Option<String>,
     pub children: Vec<(usize, String, u32)>,
-    pub legal_slots: Vec<usize>,
+    pub legal_candidate_ids: Vec<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ pub struct NnSearchResult {
 // ---------------------------------------------------------------------------
 
 struct Child {
-    slot: usize,
+    candidate_id: usize,
     mv: Move,
     node: usize,
 }
@@ -79,7 +80,7 @@ struct Node {
     value_sum: [f64; MAX_PLAYERS],
     children: Vec<Child>,
     prior: Vec<f64>,
-    legal_slots: Vec<usize>,
+    legal_candidate_ids: Vec<usize>,
     expanded: bool,
 }
 
@@ -91,7 +92,7 @@ impl Node {
             value_sum: [0.0; MAX_PLAYERS],
             children: Vec::new(),
             prior: Vec::new(),
-            legal_slots: Vec::new(),
+            legal_candidate_ids: Vec::new(),
             expanded: false,
         }
     }
@@ -114,10 +115,10 @@ impl Node {
 // ---------------------------------------------------------------------------
 
 enum RequestKind {
-    /// Need policy priors (masked over `legal_slots`) + the 4-player value.
+    /// Need policy priors over concrete legal candidates + the 4-player value.
     Expand {
         node_idx: usize,
-        legal_slots: Vec<usize>,
+        candidate_features: Vec<Vec<f32>>,
     },
     /// Need the 4-player value only (depth cap / no legal moves).
     Leaf,
@@ -268,24 +269,30 @@ pub fn search_net(
     let mut children: Vec<(usize, String, u32)> = root
         .children
         .iter()
-        .map(|c| (c.slot, move_codec::encode(&c.mv), arena[c.node].visits))
+        .map(|c| {
+            (
+                c.candidate_id,
+                move_codec::encode(&c.mv),
+                arena[c.node].visits,
+            )
+        })
         .collect();
     children.sort_by(|a, b| b.2.cmp(&a.2));
-    let best_slot = children
+    let best_candidate_id = children
         .first()
         .filter(|(_, _, v)| *v > 0)
         .map(|(s, _, _)| *s);
-    let best_canonical = best_slot.and_then(|slot| {
+    let best_canonical = best_candidate_id.and_then(|candidate_id| {
         root.children
             .iter()
-            .find(|c| c.slot == slot)
+            .find(|c| c.candidate_id == candidate_id)
             .map(|c| move_codec::encode(&c.mv))
     });
 
     Ok(NnSearchResult {
         best_canonical,
         children,
-        legal_slots: root.legal_slots.clone(),
+        legal_candidate_ids: root.legal_candidate_ids.clone(),
     })
 }
 
@@ -327,35 +334,36 @@ fn descend(
 
         let node = &arena[node_idx];
         if !node.expanded {
-            // Expand: generate slot-level legal moves, create one child per slot.
-            let slots = legal_slot_moves(work);
+            // Expand every concrete executable move. The legacy policy table
+            // intentionally collapsed card/resource variants; candidate policy
+            // must preserve those distinctions for the action encoder.
+            let moves = legal_moves(work);
             let mut children: Vec<Child> = Vec::new();
-            let mut legal_slots: Vec<usize> = Vec::new();
-            for sm in slots {
-                if legal_slots.contains(&sm.slot) {
-                    continue; // fold duplicate-slot entries (e.g. sell routes)
-                }
-                legal_slots.push(sm.slot);
+            let mut legal_candidate_ids: Vec<usize> = Vec::new();
+            let mut candidate_features: Vec<Vec<f32>> = Vec::new();
+            for (action_id, mv) in moves.into_iter().enumerate() {
+                legal_candidate_ids.push(action_id);
                 let child_idx = arena.len();
                 arena.push(Node::new(0));
                 children.push(Child {
-                    slot: sm.slot,
-                    mv: sm.mv,
+                    candidate_id: action_id,
+                    mv,
                     node: child_idx,
                 });
+                candidate_features.push(action_features::encode_move(&children.last().unwrap().mv));
             }
             arena[node_idx].children = children;
-            arena[node_idx].legal_slots = legal_slots.clone();
+            arena[node_idx].legal_candidate_ids = legal_candidate_ids.clone();
             arena[node_idx].expanded = true;
 
-            if legal_slots.is_empty() {
+            if legal_candidate_ids.is_empty() {
                 // No legal moves: treat as a leaf (network value).
                 return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
             }
             return park(work, requests, request_by_node, path, move |node_idx| {
                 RequestKind::Expand {
                     node_idx,
-                    legal_slots: legal_slots.clone(),
+                    candidate_features: candidate_features.clone(),
                 }
             });
         }
@@ -363,11 +371,15 @@ fn descend(
         if !node.ready_to_select() {
             // Expanded but priors are still pending (another sim parked here in
             // this wave): share its request.
-            let legal_slots = arena[node_idx].legal_slots.clone();
+            let candidate_features = arena[node_idx]
+                .children
+                .iter()
+                .map(|child| action_features::encode_move(&child.mv))
+                .collect();
             return park(work, requests, request_by_node, path, move |node_idx| {
                 RequestKind::Expand {
                     node_idx,
-                    legal_slots,
+                    candidate_features,
                 }
             });
         }
@@ -505,49 +517,81 @@ fn flush_net(
         opp_hands.push(t.opp_hands);
     }
 
+    let max_candidates = requests
+        .iter()
+        .filter_map(|req| match &req.kind {
+            RequestKind::Expand {
+                candidate_features, ..
+            } => Some(candidate_features.len()),
+            RequestKind::Leaf => None,
+        })
+        .max()
+        .unwrap_or(1);
+    let mut candidate_rows =
+        vec![vec![0.0; max_candidates * action_features::ACTION_FEATURE_DIM]; n_rows];
+    let mut candidate_masks = vec![vec![0.0; max_candidates]; n_rows];
+    for (row, req) in requests.iter().enumerate() {
+        match &req.kind {
+            RequestKind::Expand {
+                candidate_features, ..
+            } => {
+                for (i, features) in candidate_features.iter().enumerate() {
+                    let begin = i * action_features::ACTION_FEATURE_DIM;
+                    candidate_rows[row][begin..begin + action_features::ACTION_FEATURE_DIM]
+                        .copy_from_slice(features);
+                    candidate_masks[row][i] = 1.0;
+                }
+            }
+            // Value-only leaves still receive one inert candidate because the
+            // Python policy API requires every padded row to have one entry.
+            RequestKind::Leaf => candidate_masks[row][0] = 1.0,
+        }
+    }
+
     let board_arr = PyArray2::from_vec2(py, &boards)?;
     let links_arr = PyArray2::from_vec2(py, &links)?;
     let global_arr = PyArray2::from_vec2(py, &globals)?;
     let own_arr = PyArray2::from_vec2(py, &own_hands)?;
     let opp_arr = PyArray2::from_vec2(py, &opp_hands)?;
+    let candidates_arr = PyArray2::from_vec2(py, &candidate_rows)?;
+    let candidate_mask_arr = PyArray2::from_vec2(py, &candidate_masks)?;
 
-    let out = net_fn.call1(py, (board_arr, links_arr, global_arr, own_arr, opp_arr))?;
-    let (type_arr, goal_arr, values_arr): (
-        Bound<PyArray2<f32>>,
-        Bound<PyArray2<f32>>,
-        Bound<PyArray2<f32>>,
-    ) = out.bind(py).extract()?;
-    let type_ro = type_arr.readonly();
-    let type_vals = type_ro
+    let out = net_fn.call1(
+        py,
+        (
+            board_arr,
+            links_arr,
+            global_arr,
+            own_arr,
+            opp_arr,
+            candidates_arr,
+            candidate_mask_arr,
+        ),
+    )?;
+    let (candidate_arr, values_arr): (Bound<PyArray2<f32>>, Bound<PyArray2<f32>>) =
+        out.bind(py).extract()?;
+    let candidate_ro = candidate_arr.readonly();
+    let candidate_logits = candidate_ro
         .as_slice()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("type array not contiguous"))?;
-    let goal_ro = goal_arr.readonly();
-    let goal_vals = goal_ro
-        .as_slice()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("goal array not contiguous"))?;
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("candidate array not contiguous"))?;
     let values_ro = values_arr.readonly();
     let values = values_ro
         .as_slice()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("values array not contiguous"))?;
 
-    let n_type = crate::policy::ACTION_TYPE_COUNT; // 7
-    let psize = crate::policy::policy_table_size();
     let mut results = Vec::with_capacity(requests.len());
     for (ri, req) in requests.iter().enumerate() {
         let r0 = ri * 4;
         // Value head predicts the 4-player z vector directly from one perspective.
         let value: Vec<f64> = (0..MAX_PLAYERS).map(|p| values[r0 + p] as f64).collect();
         let priors = match &req.kind {
-            RequestKind::Expand { legal_slots, .. } => {
-                // Merged branched prior: logit(s) = type[t(s)] + goal(s).
-                let tr0 = ri * n_type;
-                let gr0 = ri * psize;
-                let mut merged: Vec<f32> = Vec::with_capacity(legal_slots.len());
-                for &s in legal_slots {
-                    let t = crate::policy::slot_type(s);
-                    merged.push(type_vals[tr0 + t] + goal_vals[gr0 + s]);
-                }
-                Some(softmax(&merged))
+            RequestKind::Expand {
+                candidate_features, ..
+            } => {
+                let start = ri * max_candidates;
+                Some(softmax(
+                    &candidate_logits[start..start + candidate_features.len()],
+                ))
             }
             RequestKind::Leaf => None,
         };
