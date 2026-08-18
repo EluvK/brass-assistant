@@ -4,14 +4,12 @@
 //! Usage:
 //!   cargo run --release --bin sweep_scores -- <start_seed> <end_seed> <policy> [sims] [full|canal] > out.csv
 //!
-//!   policy: 2ply | heuristic | mcts
-//!   `heuristic` is a backwards-compatible alias for `2ply`.
-//!   mcts uses sims (default 200); 2ply/heuristic ignore sims.
+//!   policy: heuristic | mcts
+//!   mcts uses sims (default 200); heuristic ignores sims.
 
 use brass_engine::data::Era;
 use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use brass_engine::mcts_ai::{self, MctsConfig};
-use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
 use rayon::prelude::*;
@@ -95,7 +93,7 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
     };
     let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
         Some(match policy {
-            "2ply" | "heuristic" => search_ai::choose_action_2ply(state).mv,
+            "heuristic" => brass_engine::heuristic_ai::choose_action(state).mv,
             "mcts" => {
                 let cfg = MctsConfig {
                     simulations: sims,
@@ -103,7 +101,7 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
                 };
                 mcts_ai::choose_action_mcts(state, &cfg).mv
             }
-            _ => search_ai::choose_action_2ply(state).mv,
+            _ => brass_engine::heuristic_ai::choose_action(state).mv,
         })
     });
     if !canal_only {
@@ -136,7 +134,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let start: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let end: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
-    let policy = args.get(3).cloned().unwrap_or_else(|| "2ply".to_string());
+    let policy = args
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| "heuristic".to_string());
     let sims: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(200);
     let canal_only = matches!(args.get(5).map(String::as_str), Some("canal"));
     let players: usize = 4;

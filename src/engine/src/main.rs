@@ -4,7 +4,6 @@ use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::random_ai::choose_random_move;
 use brass_engine::rules::Move;
 use brass_engine::scoring;
-use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
 use rayon::prelude::*;
@@ -51,13 +50,11 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
     let mut loans = 0u64;
     let mut passes = 0u64;
 
-    // "mcts-vs-2ply" / "mcts-vs-heur": exactly one seat plays MCTS, the rest
-    // 2-ply or 1-ply heuristic. The MCTS seat rotates per game to cancel seat
-    // bias.
-    let mcts_vs_2ply = policy == "mcts-vs-2ply";
+    // "mcts-vs-heur": exactly one seat plays MCTS, the rest heuristic. The
+    // MCTS seat rotates per game to cancel seat bias.
     let mcts_vs_heur = policy == "mcts-vs-heur";
     let mcts_vs_random = policy == "mcts-vs-random";
-    let mcts_mixed = mcts_vs_2ply || mcts_vs_heur || mcts_vs_random;
+    let mcts_mixed = mcts_vs_heur || mcts_vs_random;
     let policy = if mcts_mixed { "mixed" } else { policy };
     let mcts_seat = if mcts_mixed {
         (seed as usize) % players
@@ -110,8 +107,6 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
                     ..Default::default()
                 };
                 Some(mcts_ai::choose_action_mcts(state, &cfg).mv)
-            } else if mcts_vs_2ply {
-                Some(search_ai::choose_action_2ply(state).mv)
             } else if mcts_vs_heur {
                 Some(heuristic_ai::choose_action(state).mv)
             } else {
@@ -120,7 +115,7 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
         } else {
             match policy {
                 "random" => choose_random_move(state, &mut rand_rng),
-                "2ply" => Some(search_ai::choose_action_2ply(state).mv),
+                "heuristic" => Some(heuristic_ai::choose_action(state).mv),
                 "mcts" => {
                     let cfg = MctsConfig {
                         simulations: sims,
@@ -214,12 +209,11 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let games: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
-    // policy: "random" | "heuristic" | "2ply" | "mcts" | "mcts-vs-2ply" | "mcts-vs-heur"
+    // policy: "random" | "heuristic" | "mcts" | "mcts-vs-heur"
     let policy = args
         .get(3)
         .cloned()
         .unwrap_or_else(|| "heuristic".to_string());
-    let mcts_vs_2ply = policy == "mcts-vs-2ply";
     let mcts_vs_heur = policy == "mcts-vs-heur";
     // threads: optional 4th arg to override rayon default pool size
     let threads: Option<usize> = args.get(4).and_then(|s| s.parse().ok());
@@ -292,9 +286,9 @@ fn main() {
     }
     println!("Canal-era transitions: {}", total.canal_events);
 
-    if mcts_vs_2ply || mcts_vs_heur {
+    if mcts_vs_heur {
         let g = total.mcts_games.max(1);
-        let opp = if mcts_vs_2ply { "2-ply" } else { "1-ply" };
+        let opp = "heuristic";
         println!(
             "  [MCTS vs {opp}, seat rotated] MCTS seat: {:.1}% wins ({}/{}), avg VP {:.1} vs {opp} avg {:.1}",
             total.mcts_wins as f64 * 100.0 / g as f64,

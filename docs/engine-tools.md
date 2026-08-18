@@ -26,13 +26,13 @@ cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only
 cargo run --release --bin replay -- 7 4 heuristic
 
 # 仅输出每个时代的结算、动作汇总和终局，替代旧 stat_game
-cargo run --release --bin replay -- 7 4 2ply 300 false summary
+cargo run --release --bin replay -- 7 4 heuristic 300 false summary
 
 # 只运行到运河时代结算前，用于检查运河局面
 cargo run --release --bin replay -- 7 4 heuristic 300 canal summary
 ```
 
-`policy` 可为 `heuristic`（默认）、`2ply`、`mcts`、`random`、`mcts-vs-random`、`mcts-vs-heur` 或 `mcts-vs-2ply`。混合策略中 MCTS 座位由 `seed % players` 决定。`sims` 仅用于含 MCTS 的策略。
+`policy` 可为 `heuristic`（默认）、`mcts`、`random`、`mcts-vs-random` 或 `mcts-vs-heur`。混合策略中 MCTS 座位由 `seed % players` 决定。`sims` 仅用于含 MCTS 的策略。
 
 最后一个参数为 `summary` 时，隐藏逐动作的盘面、手牌和商家日志，但保留时代结算、各玩家动作统计、翻面板块和终局排名。
 
@@ -44,7 +44,7 @@ cargo run --release --bin sweep_scores -- <start_seed> <end_seed> <policy> [sims
 
 ```sh
 # 评测 0..499 共 500 局完整对局；CSV 写入文件，摘要写入 stderr
-cargo run --release --bin sweep_scores -- 0 500 2ply 200 full > scores.csv
+cargo run --release --bin sweep_scores -- 0 500 heuristic 200 full > scores.csv
 
 # 只评测运河时代，替代旧 sweep_canal
 cargo run --release --bin sweep_scores -- 0 500 heuristic 200 canal > canal.csv
@@ -64,11 +64,11 @@ cargo run --release --bin mcts_lab -- <bench|inspect|sweep> [参数]
 # 不同 simulation 预算下的单次决策耗时和选择
 cargo run --release --bin mcts_lab -- bench 7 4 5000 10000
 
-# 检查一个中局局面、MCTS/1-ply/2-ply 的选择和根节点先验候选
+# 检查一个中局局面、MCTS/heuristic 的选择和根节点先验候选
 cargo run --release --bin mcts_lab -- inspect 7 4 2000 60
 
 # 扫描既有的 depth / c_puct / LeafEval 参数组合
 cargo run --release --bin mcts_lab -- sweep 7 4 2000
 ```
 
-三个子命令都先以启发式策略推进到指定中局。`bench` 固定推进 60 步；`inspect` 与 `sweep` 的默认值分别为 60 步和 60 步。设置环境变量 `BRASS_MCTS_2PLY=1` 可让 `inspect` 使用 `TwoPly` 叶节点估值；其余配置使用 `MctsConfig::default()`，仅由子命令覆盖需要扫描的参数。
+三个子命令都先以启发式策略推进到指定中局。`bench` 固定推进 60 步；`inspect` 与 `sweep` 的默认值分别为 60 步和 60 步。设置环境变量 `BRASS_MCTS_TWO_PLY=1` 可让 `inspect` 使用 `TwoPly` 叶节点估值；其余配置使用 `MctsConfig::default()`，仅由子命令覆盖需要扫描的参数。

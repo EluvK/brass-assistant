@@ -16,7 +16,6 @@ use brass_engine::random_ai;
 use brass_engine::replay_fmt;
 use brass_engine::rules::Move;
 use brass_engine::scoring;
-use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
 use std::cell::RefCell;
@@ -45,8 +44,8 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(7);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
-    // policy: "heuristic" (default) | "2ply" | "mcts" | "random"
-    //       | "mcts-vs-heur" | "mcts-vs-random" | "mcts-vs-2ply"
+    // policy: "heuristic" (default) | "mcts" | "random"
+    //       | "mcts-vs-heur" | "mcts-vs-random"
     let policy = args
         .get(3)
         .cloned()
@@ -210,20 +209,7 @@ fn main() {
                     heuristic_ai::choose_action(state).mv
                 }
             }
-            "mcts-vs-2ply" => {
-                let mcts_seat = (seed as usize) % players;
-                if pid == mcts_seat {
-                    use brass_engine::mcts_ai::{self, MctsConfig};
-                    let cfg = MctsConfig {
-                        simulations: sims,
-                        ..Default::default()
-                    };
-                    mcts_ai::choose_action_mcts(state, &cfg).mv
-                } else {
-                    search_ai::choose_action_2ply(state).mv
-                }
-            }
-            "2ply" => search_ai::choose_action_2ply(state).mv,
+            "heuristic" => heuristic_ai::choose_action(state).mv,
             "mcts" => {
                 use brass_engine::mcts_ai::{self, MctsConfig};
                 let cfg = MctsConfig {

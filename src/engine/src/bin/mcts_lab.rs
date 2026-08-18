@@ -8,7 +8,6 @@
 use brass_engine::game_loop;
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, LeafEval, MctsConfig};
-use brass_engine::search_ai;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
 
@@ -37,16 +36,10 @@ fn bench(args: &[String]) {
         state.current_player_id()
     );
     let heuristic = heuristic_ai::choose_action(&mut state);
-    let two_ply = search_ai::choose_action_2ply(&mut state);
     println!(
-        "  1-ply: {} score={:.2}",
+        "  heuristic: {} score={:.2}",
         heuristic.mv.describe(&state),
         heuristic.score
-    );
-    println!(
-        "  2-ply: {} score={:.2}",
-        two_ply.mv.describe(&state),
-        two_ply.score
     );
     for sims in sims_list {
         let cfg = MctsConfig {
@@ -71,7 +64,7 @@ fn inspect(args: &[String]) {
     let sims = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2_000);
     let ply = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(60);
     let mut state = midgame(seed, players, ply);
-    let leaf_eval = if std::env::var("BRASS_MCTS_2PLY").is_ok() {
+    let leaf_eval = if std::env::var("BRASS_MCTS_TWO_PLY").is_ok() {
         LeafEval::TwoPly
     } else {
         LeafEval::OnePly
@@ -95,14 +88,8 @@ fn inspect(args: &[String]) {
         start.elapsed()
     );
     println!(
-        "  1-ply: {}",
+        "  heuristic: {}",
         heuristic_ai::choose_action(&mut state).mv.describe(&state)
-    );
-    println!(
-        "  2-ply: {}",
-        search_ai::choose_action_2ply(&mut state)
-            .mv
-            .describe(&state)
     );
     println!("  root prior candidates (k={}):", cfg.k_candidates);
     for candidate in heuristic_ai::candidate_actions_k(&mut state, cfg.k_candidates) {
@@ -119,9 +106,7 @@ fn sweep(args: &[String]) {
     let players = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(4);
     let sims = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2_000);
     let mut state = midgame(seed, players, 60);
-    let reference = search_ai::choose_action_2ply(&mut state)
-        .mv
-        .describe(&state);
+    let reference = heuristic_ai::choose_action(&mut state).mv.describe(&state);
     println!("MCTS parameter sweep | seed={seed} players={players} reference={reference}");
     for leaf_eval in [LeafEval::OnePly, LeafEval::TwoPly] {
         for (max_depth, c_puct) in [(4, 10.0), (6, 10.0), (6, 30.0), (8, 30.0)] {

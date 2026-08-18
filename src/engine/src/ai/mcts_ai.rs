@@ -5,8 +5,6 @@
 //!   from the hidden pool (the era deck composition minus our known hand minus
 //!   every card already out of circulation — the face-down discard pile), then a
 //!   shallow 3-5 ply search runs in that sampled world.
-//! - Node selection uses PUCT with the 1-ply heuristic's candidate scores as
-//!   priors (softmax over `candidate_actions` scores).
 //! - Leaf evaluation uses the 1-ply position estimator (`evaluate_position`)
 //!   for EACH player; nodes store the full MaxN value vector. The player to
 //!   move at a node selects the child maximizing their OWN value (Brass is
@@ -439,7 +437,7 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
                 break;
             }
             if cfg.leaf_eval == LeafEval::TwoPly && p == root_pid {
-                let d = crate::search_ai::choose_action_2ply(&mut work);
+                let d = heuristic_ai::choose_action(&mut work);
                 *v = d.score;
             } else {
                 *v = heuristic_ai::evaluate_position(&work, p);

@@ -17,14 +17,15 @@ fn setup(players: usize) -> GameState {
 }
 
 #[test]
-fn default_heuristic_entry_point_is_the_2ply_policy() {
+fn default_heuristic_entry_point_is_the_search_policy() {
     let mut heuristic_state = setup(4);
-    let mut two_ply_state = heuristic_state.clone();
     let heuristic = brass_engine::heuristic_ai::choose_action(&mut heuristic_state);
-    let two_ply = brass_engine::search_ai::choose_action_2ply(&mut two_ply_state);
-
-    assert_eq!(format!("{:?}", heuristic.mv), format!("{:?}", two_ply.mv));
-    assert_eq!(heuristic.score, two_ply.score);
+    assert!(heuristic.score.is_finite());
+    assert!(
+        legal_moves(&mut heuristic_state)
+            .iter()
+            .any(|mv| format!("{:?}", mv) == format!("{:?}", heuristic.mv))
+    );
 }
 
 fn setup_clean_rail_state(players: usize) -> GameState {
@@ -1555,7 +1556,7 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
         has_beer: true,
     }];
 
-    let sell = brass_engine::heuristic_ai::candidate_actions(&mut state)
+    let sell = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 1)
         .into_iter()
         .find_map(|d| match d.mv {
             brass_engine::rules::Move::Sell {
@@ -2076,7 +2077,7 @@ fn heuristic_keeps_same_industry_double_develop_as_a_candidate() {
         }
     }
 
-    let candidates = brass_engine::heuristic_ai::candidate_actions(&mut state);
+    let candidates = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 1);
     let candidate_moves: Vec<String> = candidates
         .iter()
         .map(|decision| format!("{:?}", decision.mv))
@@ -2097,7 +2098,7 @@ fn heuristic_keeps_same_industry_double_develop_as_a_candidate() {
         player_id: pid,
         count: 2,
     });
-    let free_candidates = brass_engine::heuristic_ai::candidate_actions(&mut state);
+    let free_candidates = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 1);
     assert!(
         free_candidates.iter().any(|decision| matches!(
             decision.mv,
