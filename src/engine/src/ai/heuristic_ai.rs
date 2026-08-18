@@ -271,37 +271,3 @@ include!("heuristic_ai/develop.rs");
 include!("heuristic_ai/sell.rs");
 include!("heuristic_ai/loan.rs");
 include!("heuristic_ai/scout_pass.rs");
-// --- temporary debug helpers ------------------------------------------------
-pub fn debug_flip(state: &GameState, pid: usize, ind: IndustryType, loc: Loc) -> f64 {
-    estimate_flip_probability(state, pid, ind, loc)
-}
-
-pub fn debug_market_adjust(state: &GameState, ind: IndustryType, loc: Loc, cubes: u8) -> f64 {
-    let is_resource = matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks);
-    if !is_resource {
-        return 0.0;
-    }
-    let connected = connected_locations(state, loc);
-    let market_ok = ind == IndustryType::IronWorks || connected.iter().any(|l| l.is_merchant());
-    let is_coal = ind == IndustryType::CoalMine;
-    let scarcity = if is_coal {
-        (14 - state.coal_market) as f64 / 14.0
-    } else {
-        0.6 * (10 - state.iron_market) as f64 / 10.0
-    };
-    if market_ok {
-        let sale = simulate_market_sale(state, is_coal, cubes);
-        let sell_value = sale.cash * money_weight(state);
-        let scarcity_value = scarcity * (1.0 + sale.sold as f64) * 0.6;
-        let leftover_penalty = (sale.total - sale.sold) as f64 * 0.5;
-        sell_value + scarcity_value - leftover_penalty
-    } else if is_coal {
-        if state.era == Era::Canal {
-            -0.5
-        } else {
-            scarcity * 0.6
-        }
-    } else {
-        scarcity * 1.2
-    }
-}
