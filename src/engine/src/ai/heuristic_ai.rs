@@ -297,9 +297,8 @@ pub struct Decision {
     pub score: f64,
 }
 
-/// Compatibility entry point for the default policy (historically called
-/// "heuristic"). It delegates to the 2-ply lookahead; there is no separate
-/// single-step decision policy.
+/// Default policy entry point. It delegates to the internal 2-ply lookahead;
+/// the public API exposes no separate single-step decision policy.
 pub fn choose_action(state: &mut GameState) -> Decision {
     crate::search_ai::choose_action_2ply(state)
 }

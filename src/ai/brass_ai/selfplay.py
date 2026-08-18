@@ -292,6 +292,17 @@ def generate_imitation_samples(
     # well across processes because the Rust engine and tensor encoding are CPU
     # bound. ``spawn`` is required for Windows and avoids inheriting Rust state.
     worker_count = min(max_attempts, workers if workers is not None else min(8, os.cpu_count() or 1))
+    if worker_count > 1:
+        # Windows spawn workers import NumPy afresh.  One default BLAS thread
+        # pool per worker can exhaust memory before a game starts, so configure
+        # the environment inherited by those workers before creating the pool.
+        for name in (
+            "OPENBLAS_NUM_THREADS",
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            os.environ[name] = "1"
     jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
         
     progress = Progress(total=n_games, label="accepted imitation game")

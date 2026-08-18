@@ -17,7 +17,6 @@ import argparse
 import os
 import time
 
-import numpy as np
 from brass_ai.selfplay import generate_imitation_samples
 
 
@@ -43,7 +42,7 @@ def main():
     # Windows spawn re-imports this script in every imitation worker.  Keep
     # CUDA Torch and MCTS imports here so workers do not load GPU DLLs.
     import torch
-    from brass_ai.evaluate import evaluate_mcts_vs_baseline
+    from brass_ai.evaluate import benchmark_mcts_vs_heuristic
     from brass_ai.net import PolicyValueNet
     from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
     from brass_ai.train import TrainConfig, Trainer
@@ -76,12 +75,12 @@ def main():
     torch.save(net.state_dict(), args.ckpt)
 
     mcts = RustISMCTS(net, RustMCTSConfig(c_puct=2.5, max_depth=10, device=device))
-    for baseline in ("heuristic", "2ply"):
-        wr, mvp, bvp = evaluate_mcts_vs_baseline(
-            mcts, args.eval_games, args.eval_sims, baseline=baseline
-        )
-        print(f"MCTS(bootstrap net) vs {baseline}: win_rate={wr:.0%} "
-              f"(mcts_vp={mvp:.1f} vs {baseline}_vp={bvp:.1f})")
+    result = benchmark_mcts_vs_heuristic(
+        mcts, args.eval_sims, args.eval_games
+    )
+    print(f"MCTS(bootstrap net) vs heuristic: win_rate={result['win_rate']:.0%} "
+          f"(mcts_vp={result['mcts_mean']:.1f} "
+          f"vs heuristic_vp={result['base_mean']:.1f})")
     print(f"checkpoint saved: {args.ckpt}")
 
 

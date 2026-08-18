@@ -146,10 +146,6 @@ def test_ai_choices_return_legal_moves():
     assert describe and canon
     assert g.player_count == 4
 
-    g2 = be.GameState(seed=5, players=4)
-    canon2, describe2, score2 = g2.choose_2ply()
-    assert canon2 and describe2
-
 
 def test_play_short_game_heuristic():
     g = be.GameState(seed=1, players=4)

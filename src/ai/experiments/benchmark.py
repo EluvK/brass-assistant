@@ -21,7 +21,7 @@ import torch
 
 import brass_engine as be
 from brass_ai.net import PolicyValueNet
-from brass_ai.evaluate import benchmark_mcts_vs_heuristic
+from brass_ai.evaluate import benchmark_net_vs_heuristic
 
 
 def load_net(ckpt: str, device: str) -> PolicyValueNet:
@@ -47,7 +47,7 @@ def main():
 
     net = load_net(args.ckpt, args.device)
     t0 = time.time()
-    r = benchmark_mcts_vs_heuristic(
+    r = benchmark_net_vs_heuristic(
         net, args.sims, args.games, args.device, args.c_puct, args.max_depth
     )
     m = np.array(r["mcts_vps"])

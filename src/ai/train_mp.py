@@ -12,7 +12,7 @@ anchors training against a stable reference instead of drifting vs its own
 noisy value head (the observed failure mode of pure self-play).
 
 Gate (replaces the noisy rolling-VP gate): every `--eval_every` iterations run
-`benchmark_mcts_vs_heuristic` (fixed seeds 0..N-1, seat rotated). A candidate
+`benchmark_net_vs_heuristic` (fixed seeds 0..N-1, seat rotated). A candidate
 is accepted iff its win rate is >= the stored best win rate (ties broken by
 median VP); otherwise the best weights are restored. This is the ONLY reliable
 accept/reject signal (per-game VP fluctuates +/-20, so <10 games is noise).
@@ -33,7 +33,7 @@ import torch
 import brass_engine as be
 
 from brass_ai.dataset import load_samples, save_samples
-from brass_ai.evaluate import benchmark_mcts_vs_heuristic
+from brass_ai.evaluate import benchmark_net_vs_heuristic
 from brass_ai.mp_selfplay import SelfPlayPool
 from brass_ai.net import PolicyValueNet
 from brass_ai.train import TrainConfig, Trainer
@@ -188,7 +188,7 @@ def main():
             )
 
             if it % args.eval_every == 0:
-                r = benchmark_mcts_vs_heuristic(
+                r = benchmark_net_vs_heuristic(
                     net, args.bench_sims, args.bench_games, device,
                 )
                 line += (f" | w={r['win_rate']:.2f} "

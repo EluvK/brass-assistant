@@ -10,7 +10,7 @@
 //!     .determinize() -> GameState            # opponent-hand sampling
 //!     .legal_mask() -> list[int]             # legal policy slots
 //!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
-//!     .choose_heuristic() / .choose_2ply() -> (canonical, describe, score)
+//!     .choose_heuristic() -> (canonical, describe, score)
 //!   module: policy_table_size (int), describe_slot(slot), moves_to_slots(canonical)
 
 use numpy::{PyArray1, PyArray2};
@@ -25,7 +25,6 @@ use crate::mcts_ai;
 use crate::move_codec;
 use crate::policy;
 use crate::rules::{apply_move, legal_moves};
-use crate::search_ai;
 use crate::state::GameState;
 
 #[pyclass(name = "GameState")]
@@ -405,22 +404,13 @@ impl PyGame {
         crate::scoring::final_ranking(&self.state)
     }
 
-    /// Compatibility name for the default 2-ply choice: returns
-    /// (canonical, describe, score).
+    /// Choose an action with the engine's default heuristic policy.
+    ///
+    /// The current implementation includes 2-ply lookahead; callers should
+    /// use this single entry point rather than distinguishing the internals.
     fn choose_heuristic(&self) -> (String, String, f64) {
         let mut state = self.state.clone();
         let d = heuristic_ai::choose_action(&mut state);
-        (
-            move_codec::encode(&d.mv),
-            d.mv.describe(&self.state),
-            d.score,
-        )
-    }
-
-    /// 2-ply choice: returns (canonical, describe, score).
-    fn choose_2ply(&self) -> (String, String, f64) {
-        let mut state = self.state.clone();
-        let d = search_ai::choose_action_2ply(&mut state);
         (
             move_codec::encode(&d.mv),
             d.mv.describe(&self.state),
