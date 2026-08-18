@@ -28,6 +28,37 @@ fn default_heuristic_entry_point_is_the_search_policy() {
     );
 }
 
+#[test]
+fn heuristic_candidates_are_legal_and_never_dead_end() {
+    for seed in 0..20u64 {
+        let mut state = GameState::new(StdRng::seed_from_u64(seed), 4);
+        for _ in 0..120 {
+            if state.game_over {
+                break;
+            }
+            let legal = legal_moves(&mut state);
+            let candidates = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 3);
+            if !legal.is_empty() {
+                assert!(!candidates.is_empty(), "seed={seed} produced no candidate");
+                for candidate in candidates {
+                    let mut candidate_state = state.clone();
+                    assert!(
+                        apply_move(&mut candidate_state, &candidate.mv).is_ok(),
+                        "seed={seed} heuristic emitted an illegal candidate: {:?}",
+                        candidate.mv
+                    );
+                }
+            }
+            let decision = brass_engine::heuristic_ai::choose_action(&mut state);
+            let mut decision_state = state.clone();
+            assert!(apply_move(&mut decision_state, &decision.mv).is_ok());
+            apply_move(&mut state, &decision.mv).expect("heuristic decision must apply");
+            let tr = advance_turn(&mut state);
+            handle_turn_result(&mut state, tr);
+        }
+    }
+}
+
 fn setup_clean_rail_state(players: usize) -> GameState {
     let mut state = setup(players);
     state.era = Era::Rail;

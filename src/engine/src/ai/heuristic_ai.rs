@@ -5,14 +5,14 @@
 //! candidate set; candidate scores remain available to MCTS and training.
 
 use crate::data::{Era, IndustryType};
-use crate::engine::{TurnResult, advance_turn, handle_turn_result};
+use crate::engine::{TurnResult, advance_turn};
 use crate::graph::{
     connected_locations, find_beer_sources, find_coal_sources, find_iron_sources, is_in_network,
 };
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, city_slots, connections};
 use crate::rules::{
-    BuildTarget, Move, apply_move, can_develop, can_scout, execute_sell, get_valid_build_targets,
-    get_valid_network_targets, get_valid_second_rail_links, get_valid_sell_targets,
+    BuildTarget, Move, can_develop, can_scout, execute_sell, get_valid_build_targets,
+    get_valid_network_targets, get_valid_second_rail_links, get_valid_sell_targets, legal_moves,
     valid_build_cards,
 };
 use crate::state::{Card, GameState, PendingBonus, city_slot_offsets};
@@ -297,78 +297,8 @@ pub struct Decision {
     pub score: f64,
 }
 
-/// Choose the current player's action with deterministic 2-ply lookahead.
-pub fn choose_action(state: &mut GameState) -> Decision {
-    let pid = state.current_player_id();
-    let first_candidates = candidate_actions_k(state, FIRST_ACTION_K);
-    let income_before = state.players[pid].income_level();
-
-    let mut best: Option<(Move, f64)> = None;
-    for c1 in first_candidates {
-        let mut s1 = state.clone();
-        if apply_move(&mut s1, &c1.mv).is_err() {
-            continue;
-        }
-        let tr = advance_turn(&mut s1);
-        handle_turn_result(&mut s1, tr);
-
-        let value = if s1.current_player_id() == pid {
-            let second_candidates = candidate_actions_k(&mut s1, SECOND_ACTION_K);
-            let best_second = second_candidates
-                .iter()
-                .map(|c| c.score)
-                .fold(f64::NEG_INFINITY, f64::max);
-            if let Some(c2) = second_candidates
-                .into_iter()
-                .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
-            {
-                if apply_move(&mut s1, &c2.mv).is_ok() {
-                    let tr2 = advance_turn(&mut s1);
-                    handle_turn_result(&mut s1, tr2);
-                }
-            }
-            c1.score + combo_alpha(state) * best_second.max(0.0)
-        } else {
-            c1.score
-        };
-
-        let value = value + end_of_turn_penalty(&s1, pid, income_before);
-        if best.as_ref().is_none_or(|(_, score)| value > *score) {
-            best = Some((c1.mv, value));
-        }
-    }
-
-    best.map(|(mv, score)| Decision { mv, score })
-        .unwrap_or_else(|| pass_decision(state))
-}
-
-const FIRST_ACTION_K: usize = 3;
-const SECOND_ACTION_K: usize = 2;
-const LOW_MONEY_THRESHOLD: i32 = 15;
-const END_TURN_PENALTY_SCALE: f64 = 6.5;
-
-fn combo_alpha(state: &GameState) -> f64 {
-    era_profile(state).alpha
-}
-
-fn end_of_turn_penalty(state: &GameState, pid: usize, income_before: i8) -> f64 {
-    let p = &state.players[pid];
-    if p.money >= LOW_MONEY_THRESHOLD {
-        return 0.0;
-    }
-    let income_delta = p.income_level() as f64 - income_before as f64;
-    if income_delta >= 2.5 {
-        return 0.0;
-    }
-    let scarcity =
-        ((LOW_MONEY_THRESHOLD - p.money) as f64 / LOW_MONEY_THRESHOLD as f64).clamp(0.0, 1.0);
-    let income_term = if p.income_level() < 0 { 1.4 } else { 0.9 };
-    let rounds = estimate_rounds_remaining(state);
-    let runway = (rounds / 8.0).clamp(0.0, 1.0);
-    let era_term = if state.era == Era::Rail { 1.0 } else { 0.8 };
-    let runway_term = 0.6 + 0.4 * (1.0 - runway);
-    -END_TURN_PENALTY_SCALE * scarcity * income_term * era_term * runway_term
-}
+mod lookahead;
+pub use lookahead::choose_action;
 
 /// Top-K candidates per action type, for MCTS to get a wider prior.
 /// Build and Network get up to `k` candidates each; other action types keep
@@ -415,6 +345,19 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     }
     if let Some(d) = score_pass_result(state, pid) {
         out.push(d);
+    }
+
+    // Candidate pruning must never turn a position with executable actions
+    // into a dead end (notably pending free-develop states filtered by a
+    // strategic guardrail, or callers passing k=0). Keep one legal fallback
+    // so MCTS always has a path to explore.
+    if out.is_empty() {
+        if let Some(mv) = legal_moves(state).into_iter().next() {
+            out.push(Decision {
+                mv,
+                score: f64::NEG_INFINITY,
+            });
+        }
     }
 
     out

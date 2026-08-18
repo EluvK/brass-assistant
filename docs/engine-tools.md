@@ -50,7 +50,7 @@ cargo run --release --bin sweep_scores -- 0 500 heuristic 200 full > scores.csv
 cargo run --release --bin sweep_scores -- 0 500 heuristic 200 canal > canal.csv
 ```
 
-`full` 是默认范围。CSV 包含终局 VP、终局收入/现金和运河结束时收入。`canal` 会在运河时代清理后停止，CSV 改为输出运河 VP、各类行动次数、翻面建筑数和链接数。
+`full` 是默认范围。CSV 包含终局 VP、终局收入/现金、运河结束时收入和每局 `elapsed_us`。`canal` 会在运河时代清理后停止，CSV 改为输出运河 VP、各类行动次数、翻面建筑数、链接数和每局耗时。stderr 摘要输出 winner/player/game 的均值与方差、唯一赢家率、每局耗时均值与方差，以及 illegal/stuck 计数。
 
 该工具固定为四人局，并使用 Rayon 并行扫描。批量结果用于策略回归比较时，应固定 seed 区间、策略、simulation 数及范围。
 

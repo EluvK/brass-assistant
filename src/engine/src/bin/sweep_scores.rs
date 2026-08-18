@@ -13,6 +13,7 @@ use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::state::GameState;
 use rand::SeedableRng;
 use rayon::prelude::*;
+use std::time::Instant;
 
 #[derive(Default)]
 struct SweepResult {
@@ -24,11 +25,13 @@ struct SweepResult {
     flipped: u64,
     links: u64,
     actions: [u64; 6], // build, network, develop, sell, loan, pass
+    elapsed_us: u64,
     illegal: bool,
     stuck: bool,
 }
 
 fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bool) -> SweepResult {
+    let started = Instant::now();
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     let res = std::cell::RefCell::new(SweepResult {
@@ -127,7 +130,25 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
             }
         }
     }
+    res.elapsed_us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
     res
+}
+
+fn mean_variance(values: impl Iterator<Item = f64>) -> (f64, f64) {
+    let mut count = 0.0;
+    let mut mean = 0.0;
+    let mut m2 = 0.0;
+    for value in values {
+        count += 1.0;
+        let delta = value - mean;
+        mean += delta / count;
+        m2 += delta * (value - mean);
+    }
+    if count == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (mean, m2 / count)
+    }
 }
 
 fn main() {
@@ -148,16 +169,40 @@ fn main() {
         .collect();
 
     if canal_only {
-        println!("seed,p0,p1,p2,p3,winner,build,network,develop,sell,loan,pass,flipped,links");
+        println!(
+            "seed,p0,p1,p2,p3,winner,build,network,develop,sell,loan,pass,flipped,links,elapsed_us"
+        );
     } else {
         println!(
-            "seed,p0,p1,p2,p3,avg,income0,income1,income2,income3,money0,money1,money2,money3,canal_income0,canal_income1,canal_income2,canal_income3"
+            "seed,p0,p1,p2,p3,avg,income0,income1,income2,income3,money0,money1,money2,money3,canal_income0,canal_income1,canal_income2,canal_income3,elapsed_us"
         );
     }
     let mut illegal = 0;
     let mut stuck = 0;
-    let mut winner_sum = 0i64;
-    let mut player_sum = 0i64;
+    let (game_mean, game_variance) = mean_variance(
+        results
+            .iter()
+            .map(|r| r.vp.iter().sum::<i64>() as f64 / players as f64),
+    );
+    let (player_mean, player_variance) = mean_variance(
+        results
+            .iter()
+            .flat_map(|r| r.vp.iter().map(|&vp| vp as f64)),
+    );
+    let (winner_mean, winner_variance) = mean_variance(
+        results
+            .iter()
+            .map(|r| r.vp.iter().max().copied().unwrap_or(0) as f64),
+    );
+    let (time_mean_us, time_variance_us) =
+        mean_variance(results.iter().map(|r| r.elapsed_us as f64));
+    let unique_winners = results
+        .iter()
+        .filter(|r| {
+            let max = r.vp.iter().max().copied().unwrap_or(0);
+            r.vp.iter().filter(|&&vp| vp == max).count() == 1
+        })
+        .count();
     for r in &results {
         if r.illegal {
             illegal += 1;
@@ -166,11 +211,9 @@ fn main() {
             stuck += 1;
         }
         let avg = r.vp.iter().sum::<i64>() as f64 / players as f64;
-        winner_sum += r.vp.iter().max().copied().unwrap_or(0);
-        player_sum += r.vp.iter().sum::<i64>();
         if canal_only {
             println!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 r.seed,
                 r.vp[0],
                 r.vp[1],
@@ -184,11 +227,12 @@ fn main() {
                 r.actions[4],
                 r.actions[5],
                 r.flipped,
-                r.links
+                r.links,
+                r.elapsed_us
             );
         } else {
             println!(
-                "{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 r.seed,
                 r.vp[0],
                 r.vp[1],
@@ -206,18 +250,26 @@ fn main() {
                 r.canal_income[0],
                 r.canal_income[1],
                 r.canal_income[2],
-                r.canal_income[3]
+                r.canal_income[3],
+                r.elapsed_us
             );
         }
     }
     eprintln!(
-        "[sweep_scores] scope={} games={} policy={} illegal={} stuck={} winner_mean={:.1} player_mean={:.1}",
+        "[sweep_scores] scope={} games={} policy={} illegal={} stuck={} unique_winner_rate={:.3} winner_mean={:.3} winner_variance={:.3} player_mean={:.3} player_variance={:.3} game_mean={:.3} game_variance={:.3} time_mean_us={:.1} time_variance_us={:.1}",
         if canal_only { "canal" } else { "full" },
         results.len(),
         policy,
         illegal,
         stuck,
-        winner_sum as f64 / results.len().max(1) as f64,
-        player_sum as f64 / (results.len().max(1) as f64 * players as f64)
+        unique_winners as f64 / results.len().max(1) as f64,
+        winner_mean,
+        winner_variance,
+        player_mean,
+        player_variance,
+        game_mean,
+        game_variance,
+        time_mean_us,
+        time_variance_us
     );
 }
