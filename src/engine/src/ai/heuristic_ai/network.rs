@@ -7,10 +7,10 @@ fn count_hand_cards_newly_in_network(state: &GameState, pid: usize, cand_cities:
     for card in &player.hand {
         if let Card::Location(l) = card {
             if !is_in_network(state, pid, *l) && cand_cities.contains(l) {
-                count += 1.0;
+                count += 0.6;
             }
         } else if let Card::Industry { .. } = card {
-            count += 0.25;
+            count += 0.1;
         }
     }
     count
@@ -169,9 +169,9 @@ fn score_network_candidate(
     let vp_potential = link_vp_potential(state, pid, cities);
     let potential_link_vp = potential_link_vps(state, pid, conn_id, cities);
     let hub_bonus = if state.era == Era::Rail {
-        vp_potential * 0.08 + potential_link_vp * 0.28
+        vp_potential * 0.08 + potential_link_vp * 0.2
     } else {
-        vp_potential * 0.03 + potential_link_vp * 0.20
+        vp_potential * 0.04 + potential_link_vp * 0.1
     };
     let player = &state.players[pid];
     let links_built = if is_canal {

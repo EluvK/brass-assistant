@@ -40,7 +40,7 @@ pub fn era_profile(state: &GameState) -> EraProfile {
     match phase {
         Phase::CanalEarly | Phase::CanalLate => EraProfile {
             phase,
-            income_w: super::BASE_INCOME_WEIGHT * (2.2 + 0.6 * frac),
+            income_w: super::BASE_INCOME_WEIGHT * (1.8 + 0.6 * frac),
             money_w: super::BASE_MONEY_WEIGHT * 0.55,
             network_w: 1.0,
             alpha: 0.6,

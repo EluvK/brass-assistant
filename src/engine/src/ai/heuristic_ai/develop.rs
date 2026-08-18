@@ -9,6 +9,9 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
     if BAN_DEVELOP_IRON_LV2_PLUS {
         types.retain(|(ind, tile)| !(*ind == IndustryType::IronWorks && tile.level >= 2));
     }
+    if BAN_DEVELOP_BREWERY_LV2_PLUS_AT_CANAL_EARLY && state.era == Era::Canal {
+        types.retain(|(ind, tile)| !(*ind == IndustryType::Brewery && tile.level >= 2));
+    }
     if types.is_empty() {
         return None;
     }
@@ -39,13 +42,17 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
         // but it must stay rational: developing costs iron, so only develop
         // the brewery when iron is cheap (£1-2). At £3+ the iron is better
         // spent building/supplying iron first instead.
-        if ind == IndustryType::Brewery {
+        if ind == IndustryType::Brewery && tile.level == 1 {
             v += 0.55;
             if era_phase(state) == Phase::CanalEarly {
                 let iron_price = state.iron_price();
-                if iron_price <= 2 {
-                    v += 1.0;
-                } else if iron_price >= 3 {
+                if iron_price < 2 {
+                    v += 3.0
+                } else if iron_price <= 2 {
+                    v += 2.0;
+                } else if iron_price <= 3 {
+                    v += 0.5;
+                } else if iron_price > 3 {
                     v -= 1.5;
                 }
             }

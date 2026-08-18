@@ -382,7 +382,7 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
             let sale = simulate_market_sale(state, is_coal, tile.resource_cubes);
             let sell_value = sale.cash * money_weight(state);
             let cash_back_bonus = if sale.cash > 0.0 {
-                sale.cash * 0.11 + if sale.flips { 0.6 } else { 0.0 }
+                sale.cash * 0.4 + if sale.flips { 1.5 } else { 0.0 }
             } else {
                 0.0
             };

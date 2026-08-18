@@ -70,6 +70,6 @@ fn score_pass_result(state: &GameState, pid: usize) -> Option<Decision> {
     let card_index = pick_any_card(state, pid).unwrap_or(0);
     Some(Decision {
         mv: Move::Pass { card_index },
-        score: -0.5,
+        score: -5.0,
     })
 }

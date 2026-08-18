@@ -20,12 +20,13 @@ use crate::state::{Card, GameState, PendingBonus, city_slot_offsets};
 // Scoring weights (from aiPlayer.js).
 const VP_WEIGHT: f64 = 1.0;
 pub(super) const BASE_MONEY_WEIGHT: f64 = 0.12;
-pub(super) const BASE_INCOME_WEIGHT: f64 = 0.35;
+pub(super) const BASE_INCOME_WEIGHT: f64 = 0.25;
 const FLEX_WEIGHT: f64 = 0.8;
 
 // Hard policy constraints (temporary strategic guardrails requested by user).
 const BAN_BUILD_LV1_BREWERY: bool = true;
 const BAN_DEVELOP_IRON_LV2_PLUS: bool = true;
+const BAN_DEVELOP_BREWERY_LV2_PLUS_AT_CANAL_EARLY: bool = true;
 
 mod plan;
 pub use plan::{EraProfile, Phase, Plan, compute_plan, era_phase, era_profile};

@@ -34,20 +34,16 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
     }
 
     // Idle protection: if the current hand can't do anything positive, borrow.
-    let idle_bonus = if cash < 6.0 { 2.0 } else { 0.0 };
+    let idle_bonus = if cash < 18.0 { 2.0 } else { 0.0 };
 
     // Income floor: never borrow into deep debt.
     let post_loan_income = income_level - crate::map::LOAN_INCOME_PENALTY;
-    let floor_penalty = if post_loan_income <= -8 {
+    let floor_penalty = if post_loan_income <= -7 {
         7.0
-    } else if post_loan_income <= -6 {
-        4.2
     } else if post_loan_income <= -4 {
-        2.6
-    } else if post_loan_income <= -2 {
-        1.4
-    } else if post_loan_income < 0 {
-        0.6
+        2.0
+    } else if post_loan_income <= 0 {
+        0.3
     } else {
         0.0
     };
@@ -63,19 +59,20 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
     } else {
         0.0
     };
-    let late_era_penalty = if rounds_left <= 1.0 {
-        3.0
-    } else if rounds_left <= 1.5 {
-        1.0
-    } else {
-        0.0
-    };
+    let late_era_penalty = 0.0;
+    // let late_era_penalty = if rounds_left <= 1.0 {
+    //     3.0
+    // } else if rounds_left <= 1.5 {
+    //     1.0
+    // } else {
+    //     0.0
+    // };
     let unlock_bonus = if now <= 0.0 && after > 0.8 { 3.2 } else { 0.0 };
 
     // Startup-loan peak: Canal-Early round 1-2 with low cash — the loan funds
     // the economy engine (build/develop) before tempo stalls.
     let startup_loan_bonus = if era_phase(state) == Phase::CanalEarly && state.round <= 2 {
-        if cash < 18.0 { 2.2 } else { 1.0 }
+        if cash < 18.0 { 6.0 } else { 0.5 }
     } else {
         0.0
     };

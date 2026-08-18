@@ -198,11 +198,15 @@ fn score_sell_plan(state: &GameState, pid: usize) -> Option<Decision> {
     // not just a one-time VP. Add the income value explicitly.
     let income_stream = total_income * income_weight(state) * 0.5;
 
-    let score = vp_equivalent(state, total_vp, total_income, 0.0, 0.0)
-        + total_bonus
-        + urgency_bonus
-        + income_stream
-        + canal_beer_drain_bonus;
+    let vp_equivalent_score = vp_equivalent(state, total_vp, total_income, 0.0, 0.0);
+    let vp_score = match (state.era, state.round) {
+        (Era::Canal, 0..=3) => vp_equivalent_score * 0.3, // round 1,2,3
+        (Era::Canal, 4..=6) => vp_equivalent_score * 0.6,
+        (Era::Canal, 7..) => vp_equivalent_score * 1.0,
+        (Era::Rail, _) => vp_equivalent_score * 1.0,
+    };
+
+    let score = vp_score + total_bonus + urgency_bonus + income_stream + canal_beer_drain_bonus;
 
     Some(Decision {
         mv: Move::Sell {
