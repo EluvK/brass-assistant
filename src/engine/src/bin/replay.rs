@@ -77,6 +77,29 @@ fn choose_heuristic_action(
             decision.mv.describe(state),
             decision.score
         );
+        let pid = state.current_player_id();
+        let selected: Vec<usize> = match &decision.mv {
+            brass_engine::r#move::Move::Build { card_index, .. }
+            | brass_engine::r#move::Move::Network { card_index, .. }
+            | brass_engine::r#move::Move::NetworkDouble { card_index, .. }
+            | brass_engine::r#move::Move::Develop { card_index, .. }
+            | brass_engine::r#move::Move::Sell { card_index, .. }
+            | brass_engine::r#move::Move::Loan { card_index }
+            | brass_engine::r#move::Move::Pass { card_index } => vec![*card_index],
+            brass_engine::r#move::Move::Scout { card_indices } => card_indices.to_vec(),
+            brass_engine::r#move::Move::ResolveFreeDevelop { .. } => Vec::new(),
+        };
+        let ranked = heuristic_ai::ranked_card_choices(state, pid);
+        println!("卡片保留价值（越低越适合消耗）:");
+        for (index, score) in ranked {
+            let marker = if selected.contains(&index) { "*" } else { " " };
+            let label = state.players[pid]
+                .hand
+                .get(index)
+                .map(brass_engine::replay_fmt::card_label)
+                .unwrap_or_else(|| "?".to_string());
+            println!("  {marker} 手牌[{index}] {label} keep_score={score:.3}");
+        }
     }
     decision.mv
 }

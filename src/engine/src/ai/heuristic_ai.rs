@@ -47,6 +47,122 @@ pub struct Decision {
     pub score: f64,
 }
 
+/// Estimate how valuable a card is to keep in hand. Lower values are preferred
+/// when an action can consume any card. This is deliberately a transparent,
+/// deterministic heuristic so replay traces can expose every component's
+/// effect while the weights are tuned.
+pub fn card_keep_score(state: &GameState, pid: usize, card_index: usize) -> f64 {
+    let valid_targets = get_valid_build_targets(state, pid);
+    card_keep_score_with_targets(state, pid, card_index, &valid_targets)
+}
+
+fn card_keep_score_with_targets(
+    state: &GameState,
+    pid: usize,
+    card_index: usize,
+    valid_targets: &[BuildTarget],
+) -> f64 {
+    let Some(card) = state.players[pid].hand.get(card_index) else {
+        return f64::INFINITY;
+    };
+
+    let hand = &state.players[pid].hand;
+    let mut score = match card {
+        Card::Location(_) => 1.15,
+        Card::Industry { .. } => 1.0,
+        Card::WildLocation | Card::WildIndustry => 3.8,
+    };
+
+    // Repeated cards are less urgent to preserve. Industry cards are grouped
+    // broadly because a duplicate production role is still less flexible in
+    // the Canal era even when the printed industry pair differs.
+    let duplicate_count = match card {
+        Card::Location(loc) => hand
+            .iter()
+            .filter(|other| matches!(other, Card::Location(other_loc) if other_loc == loc))
+            .count(),
+        Card::Industry { .. } => hand
+            .iter()
+            .filter(|other| matches!(other, Card::Industry { .. }))
+            .count(),
+        Card::WildLocation | Card::WildIndustry => hand
+            .iter()
+            .filter(|other| std::mem::discriminant(*other) == std::mem::discriminant(card))
+            .count(),
+    };
+    score -= 0.38 * duplicate_count.saturating_sub(1) as f64;
+
+    match card {
+        Card::Location(loc) if loc.is_city() => {
+            let target_count = valid_targets.iter().filter(|t| t.loc == *loc).count();
+            if target_count == 0 {
+                // A full/blocked city card is usually safe to spend. Keep a
+                // small exception for resource overbuild opportunities.
+                let resource_upgrade = valid_targets.iter().any(|t| {
+                    t.loc == *loc
+                        && matches!(t.ind, IndustryType::CoalMine | IndustryType::IronWorks)
+                });
+                score -= if resource_upgrade { 0.45 } else { 1.05 };
+            } else {
+                score += (target_count.min(3) as f64) * 0.28;
+            }
+        }
+        Card::Location(_) => {
+            // should not happen: all valid build targets are cities, and the only non-city
+            panic!("non-city location card in hand: {card:?}");
+        }
+        Card::Industry { industries, n } => {
+            let mut best_role_targets = 0usize;
+            for ind in industries.iter().take(*n as usize) {
+                best_role_targets =
+                    best_role_targets.max(valid_targets.iter().filter(|t| t.ind == *ind).count());
+            }
+            if best_role_targets == 0 {
+                score -= 0.65;
+            } else {
+                score += (best_role_targets.min(3) as f64) * 0.22;
+            }
+            if state.era == Era::Canal && duplicate_count > 1 {
+                score -= 0.22;
+            }
+        }
+        Card::WildLocation | Card::WildIndustry => {
+            // Wild cards are intentionally expensive to discard. Their score
+            // is still allowed to fall when the hand contains duplicates.
+            score += 0.35 * duplicate_count.saturating_sub(1) as f64;
+        }
+    }
+
+    score
+}
+
+/// Card indices ordered from least valuable to most valuable.
+pub fn ranked_card_choices(state: &GameState, pid: usize) -> Vec<(usize, f64)> {
+    // Build-target enumeration performs connectivity, resource and era checks;
+    // compute it once per ranking instead of once per card.
+    let valid_targets = get_valid_build_targets(state, pid);
+    ranked_card_choices_with_targets(state, pid, &valid_targets)
+}
+
+fn ranked_card_choices_with_targets(
+    state: &GameState,
+    pid: usize,
+    valid_targets: &[BuildTarget],
+) -> CardChoices {
+    let mut ranked: Vec<(usize, f64)> = (0..state.players[pid].hand.len())
+        .map(|index| {
+            (
+                index,
+                card_keep_score_with_targets(state, pid, index, &valid_targets),
+            )
+        })
+        .collect();
+    ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+    ranked
+}
+
+type CardChoices = Vec<(usize, f64)>;
+
 mod lookahead;
 pub use lookahead::choose_action;
 
@@ -69,31 +185,35 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
             .collect();
     }
 
+    // Card utility is state-wide and independent of the concrete action type.
+    // Compute it once for this candidate batch and share it with all consumers.
+    let build_targets = get_valid_build_targets(state, pid);
+    let card_choices = ranked_card_choices_with_targets(state, pid, &build_targets);
     let mut out = Vec::new();
     let plan = compute_plan(state, pid);
 
-    for d in score_top_builds(state, pid, k, &plan) {
+    for d in score_top_builds(state, pid, k, &plan, &build_targets) {
         if d.score != f64::NEG_INFINITY {
             out.push(d);
         }
     }
-    out.extend(score_top_networks(state, pid, k, &plan));
-    if let Some(d) = score_best_network_double(state, pid, &plan) {
+    out.extend(score_top_networks(state, pid, k, &plan, &card_choices));
+    if let Some(d) = score_best_network_double(state, pid, &plan, &card_choices) {
         out.push(d);
     }
-    if let Some(d) = score_develop_plan(state, pid, &plan) {
+    if let Some(d) = score_develop_plan(state, pid, &plan, &card_choices) {
         out.push(d);
     }
-    if let Some(d) = score_sell_plan(state, pid) {
+    if let Some(d) = score_sell_plan(state, pid, &card_choices) {
         out.push(d);
     }
-    if let Some(d) = score_loan_result(state, pid) {
+    if let Some(d) = score_loan_result(state, pid, &card_choices) {
         out.push(d);
     }
-    if let Some(d) = score_scout_plan(state, pid) {
+    if let Some(d) = score_scout_plan(state, pid, &card_choices) {
         out.push(d);
     }
-    if let Some(d) = score_pass_result(state, pid) {
+    if let Some(d) = score_pass_result(state, pid, &card_choices) {
         out.push(d);
     }
 
@@ -115,7 +235,10 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
 
 /// Fallback "pass" decision (safe even on an empty hand).
 pub fn pass_decision(state: &GameState) -> Decision {
-    let card_index = pick_any_card(state, state.current_player_id()).unwrap_or(0);
+    let card_index = ranked_card_choices(state, state.current_player_id())
+        .first()
+        .map(|(card_index, _)| *card_index)
+        .unwrap_or(0);
     Decision {
         mv: Move::Pass { card_index },
         score: -0.5,
@@ -226,7 +349,10 @@ pub(crate) fn evaluate_position(state: &GameState, pid: usize) -> f64 {
     value += links as f64 * 2.0;
 
     // Hand flexibility.
-    let flex: f64 = p.hand.iter().map(|c| card_usefulness(state, pid, c)).sum();
+    let flex: f64 = ranked_card_choices(state, pid)
+        .into_iter()
+        .map(|(_, keep_score)| keep_score)
+        .sum();
     value += flex * FLEX_WEIGHT;
 
     value

@@ -1,7 +1,11 @@
 // LOAN
 // ---------------------------------------------------------------------------
 
-fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
+fn score_loan_result(
+    state: &GameState,
+    pid: usize,
+    card_choices: &CardChoices,
+) -> Option<Decision> {
     if !state.can_take_loan(pid) {
         return None;
     }
@@ -28,7 +32,7 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
     // productive second action (Loan -> Build / Network / Develop / Sell).
     let mut combo_gain = 0.0;
     if cash < 24.0 && rounds_left > 1.5 {
-        if let Some(sim_gain) = best_same_turn_after_loan(state, pid) {
+        if let Some(sim_gain) = best_same_turn_after_loan(state, pid, card_choices) {
             combo_gain = sim_gain.max(0.0) * 0.7;
         }
     }
@@ -103,15 +107,19 @@ fn score_loan_result(state: &GameState, pid: usize) -> Option<Decision> {
             - floor_penalty
             - rich_penalty
             - late_era_penalty;
-    let card_index = pick_any_card(state, pid)?;
+    let card_index = card_choices.first().map(|(index, _)| *index)?;
     Some(Decision {
         mv: Move::Loan { card_index },
         score,
     })
 }
 
-fn best_same_turn_after_loan(state: &GameState, pid: usize) -> Option<f64> {
-    let card_index = pick_any_card(state, pid)?;
+fn best_same_turn_after_loan(
+    state: &GameState,
+    pid: usize,
+    card_choices: &CardChoices,
+) -> Option<f64> {
+    let card_index = card_choices.first().map(|(index, _)| *index)?;
     let mut sim = state.clone();
     crate::rules::apply_move(&mut sim, &Move::Loan { card_index }).ok()?;
     let tr = advance_turn(&mut sim);

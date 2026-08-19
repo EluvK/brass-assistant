@@ -297,17 +297,13 @@ fn score_network_candidate(
     score
 }
 
-fn pick_any_card(state: &GameState, pid: usize) -> Option<usize> {
-    let hand = &state.players[pid].hand;
-    (0..hand.len()).find(|_| true)
-}
-
 /// Top-K single network candidates by 1-ply score.
 pub(crate) fn score_top_networks(
     state: &mut GameState,
     pid: usize,
     k: usize,
     plan: &Plan,
+    card_choices: &CardChoices,
 ) -> Vec<Decision> {
     let player = &state.players[pid];
     if state.era == Era::Canal && player.canal_links == 0 {
@@ -343,28 +339,36 @@ pub(crate) fn score_top_networks(
     }
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     scored.truncate(k);
+    let Some(card_index) = card_choices.first().map(|(index, _)| *index)
+    else {
+        return Vec::new();
+    };
     scored
         .into_iter()
-        .filter_map(|(conn_id, score)| {
-            let card_index = pick_any_card(state, pid)?;
+        .map(|(conn_id, score)| {
             let coal = if state.era == Era::Rail {
                 cheapest_connection_coal_source(state, conn_id)
             } else {
                 None
             };
-            Some(Decision {
+            Decision {
                 mv: Move::Network {
                     conn_id,
                     coal,
                     card_index,
                 },
                 score,
-            })
+            }
         })
         .collect()
 }
 
-fn score_best_network_double(state: &mut GameState, pid: usize, plan: &Plan) -> Option<Decision> {
+fn score_best_network_double(
+    state: &mut GameState,
+    pid: usize,
+    plan: &Plan,
+    card_choices: &CardChoices,
+) -> Option<Decision> {
     if state.era != Era::Rail {
         return None;
     }
@@ -434,7 +438,7 @@ fn score_best_network_double(state: &mut GameState, pid: usize, plan: &Plan) -> 
         .find(|b| b.kind == crate::graph::BeerSourceKind::Own)
         .or_else(|| opt.beers.first().copied())?;
     let coal2 = opt.coal2_opts.first().and_then(|o| o.first()).copied()?;
-    let card_index = pick_any_card(state, pid)?;
+    let card_index = card_choices.first().map(|(index, _)| *index)?;
     Some(Decision {
         mv: Move::NetworkDouble {
             conn1,

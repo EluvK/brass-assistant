@@ -1,7 +1,12 @@
 // DEVELOP
 // ---------------------------------------------------------------------------
 
-fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Decision> {
+fn score_develop_plan(
+    state: &GameState,
+    pid: usize,
+    plan: &Plan,
+    card_choices: &CardChoices,
+) -> Option<Decision> {
     if !can_develop(state, pid) {
         return None;
     }
@@ -150,7 +155,7 @@ fn score_develop_plan(state: &GameState, pid: usize, plan: &Plan) -> Option<Deci
     let iron_choice = crate::rules::iron_source_options(state, iron_needed)
         .into_iter()
         .next()?;
-    let card_index = pick_any_card(state, pid)?;
+    let card_index = card_choices.first().map(|(index, _)| *index)?;
     Some(Decision {
         mv: Move::Develop {
             ind1: first.0,

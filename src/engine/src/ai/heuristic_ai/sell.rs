@@ -63,13 +63,17 @@ fn sell_plan_executes_all(
     })
 }
 
-fn score_sell_plan(state: &GameState, pid: usize) -> Option<Decision> {
+fn score_sell_plan(
+    state: &GameState,
+    pid: usize,
+    card_choices: &CardChoices,
+) -> Option<Decision> {
     let targets = get_valid_sell_targets(state, pid);
     if targets.is_empty() {
         return None;
     }
 
-    let card_index = pick_any_card(state, pid)?;
+    let card_index = card_choices.first().map(|(index, _)| *index)?;
 
     // Rank targets, then sell all (matches aiPlayer.js sellPlan behavior).
     let mut ranked: Vec<(usize, f64, f64)> = targets

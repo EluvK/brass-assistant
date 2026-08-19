@@ -559,12 +559,16 @@ fn pick_build_card(state: &GameState, pid: usize, cand: &BuildTarget) -> Option<
     let player = &state.players[pid];
     let indices = valid_build_cards(state, player, pid, cand.loc, cand.ind);
     // Prefer a non-wild matching card over a wild one.
-    indices.into_iter().find(|&i| {
-        !matches!(
-            player.hand[i].ctype(),
-            crate::data::CardType::WildLocation | crate::data::CardType::WildIndustry
-        )
-    })
+    indices
+        .iter()
+        .copied()
+        .find(|&i| {
+            !matches!(
+                player.hand[i].ctype(),
+                crate::data::CardType::WildLocation | crate::data::CardType::WildIndustry
+            )
+        })
+        .or_else(|| indices.into_iter().next())
 }
 
 /// Top-K build candidates by 1-ply score. Used by MCTS to get a wider prior.
@@ -573,10 +577,11 @@ pub(crate) fn score_top_builds(
     pid: usize,
     k: usize,
     plan: &Plan,
+    targets: &[BuildTarget],
 ) -> Vec<Decision> {
-    let targets = get_valid_build_targets(state, pid);
     let mut scored: Vec<(BuildTarget, f64)> = targets
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|t| {
             let s = score_build_candidate(state, pid, &t, plan);
             (t, s)

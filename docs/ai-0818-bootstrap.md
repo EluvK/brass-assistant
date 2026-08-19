@@ -103,3 +103,15 @@ python src/ai/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-
      在 held-out policy 指标稳定后，增加 win/rank auxiliary head。当前 VP value 足以启动搜索，但不够贴近“四人局拿第一”的最终目标。
 
   完成前两项后，才能有依据决定是否启动 train_mp.py 的最小 self-play smoke run。
+
+
+---  0819 修复 engine 一些问题后再次 bootstrap结果：
+python src/ai/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-avg-vp 95 --min-vp 88 --max-attempts 20000 --ckpt checkpoints/bootstrap-test0819.pt  
+device: cuda
+[accepted imitation game] 2000/2000 elapsed: 390s |ETA:   0s                                       , samples: 250915  
+generated 250915 imitation samples from 2000 heuristic games (390s)
+[train] 10/10 elapsed: 275s |ETA:   0s                                                             trained (289s): policy=1.524 value=0.757 top1=57.4% top3=84.5% top5=95.7% type_top1=60.7% entropy=1.37 candidates=10.9/p95=13
+[bench sims=60] 20/20 elapsed:  15s |ETA:   0s                                                     
+MCTS(bootstrap net) vs heuristic: win_rate=0% (mcts_vp=33.3 vs heuristic_vp=106.1)
+checkpoint saved: checkpoints/bootstrap-test0819.pt
+
