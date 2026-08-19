@@ -6,8 +6,9 @@
 //! driver (`src/ai/experiments/replay_net.py`) uses, so both produce
 //! byte-identical log structure.
 //!
-//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary]
+//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary] [trace] [candidate-k] [max-moves]
 //!   canal-only: "1"/"true" stops after the canal era (no rail era played).
+//!   trace: "trace" prints scored heuristic candidates before each heuristic decision.
 
 use brass_engine::data::Era;
 use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
@@ -18,7 +19,7 @@ use brass_engine::rules::Move;
 use brass_engine::scoring;
 use brass_engine::state::GameState;
 use rand::SeedableRng;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::env;
 
 fn print_era_snapshot(state: &GameState, era_name: &str, action_stats: &[replay_fmt::PStats]) {
@@ -40,6 +41,46 @@ fn print_era_snapshot(state: &GameState, era_name: &str, action_stats: &[replay_
     }
 }
 
+fn choose_heuristic_action(
+    state: &mut GameState,
+    trace_enabled: bool,
+    candidate_k: usize,
+    move_no: usize,
+) -> Move {
+    if trace_enabled {
+        let pid = state.current_player_id();
+        println!(
+            "\n--- 决策追踪：第{}步 | {:?}时代，第{}轮，玩家{pid} ---",
+            move_no + 1,
+            state.era,
+            state.round
+        );
+        println!("手牌: {}", replay_fmt::hand_display(state, pid));
+
+        let mut candidates = heuristic_ai::candidate_actions_k(state, candidate_k);
+        candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+        println!("候选动作（{}）:", candidates.len());
+        for (rank, decision) in candidates.iter().enumerate() {
+            println!(
+                "  {:>2}. {} score={:.2}",
+                rank + 1,
+                decision.mv.describe(state),
+                decision.score
+            );
+        }
+    }
+
+    let decision = heuristic_ai::choose_action(state);
+    if trace_enabled {
+        println!(
+            "选择: {} score={:.2}",
+            decision.mv.describe(state),
+            decision.score
+        );
+    }
+    decision.mv
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(7);
@@ -58,6 +99,9 @@ fn main() {
     // `summary` retains the era-end diagnostics without printing every move.
     // It supersedes the former `stat_game` binary.
     let verbose = !matches!(args.get(6).map(String::as_str), Some("summary"));
+    let trace_enabled = matches!(args.get(7).map(String::as_str), Some("trace"));
+    let candidate_k: usize = args.get(8).and_then(|s| s.parse().ok()).unwrap_or(30);
+    let max_moves: usize = args.get(9).and_then(|s| s.parse().ok()).unwrap_or(200_000);
 
     let rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
@@ -74,8 +118,13 @@ fn main() {
         RefCell::new(vec![replay_fmt::PStats::default(); players]);
 
     println!(
-        "Replay: {players}玩家 {policy}AI, seed={seed} | 模式={}",
-        if verbose { "full" } else { "summary" }
+        "Replay: {players}玩家 {policy}AI, seed={seed} | 模式={}{}",
+        if verbose { "full" } else { "summary" },
+        if trace_enabled {
+            format!(" | trace（候选数={candidate_k}）")
+        } else {
+            String::new()
+        }
     );
     if verbose {
         println!("起始顺位: {:?}", state.turn_order);
@@ -90,7 +139,9 @@ fn main() {
         println!("{}", replay_fmt::board_state(&state));
     }
 
+    let move_no = Cell::new(0usize);
     let mut on_before = |state: &mut GameState, mv: &Move| {
+        move_no.set(move_no.get() + 1);
         let pid = state.current_player_id();
         let stat_target = if state.era == Era::Canal {
             &mut canal_stats.borrow_mut()[pid]
@@ -158,7 +209,7 @@ fn main() {
         on_era: Some(&mut on_era),
         after_era: Some(&mut on_era_after),
     };
-    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
+    let outcome = game_loop::play(&mut state, max_moves, hooks, |state| {
         // Era / round header change
         if verbose && state.era != prev_era {
             println!(
@@ -206,10 +257,12 @@ fn main() {
                     };
                     mcts_ai::choose_action_mcts(state, &cfg).mv
                 } else {
-                    heuristic_ai::choose_action(state).mv
+                    choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get())
                 }
             }
-            "heuristic" => heuristic_ai::choose_action(state).mv,
+            "heuristic" => {
+                choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get())
+            }
             "mcts" => {
                 use brass_engine::mcts_ai::{self, MctsConfig};
                 let cfg = MctsConfig {
@@ -218,7 +271,7 @@ fn main() {
                 };
                 mcts_ai::choose_action_mcts(state, &cfg).mv
             }
-            _ => heuristic_ai::choose_action(state).mv,
+            _ => choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get()),
         })
     });
     if outcome == LoopOutcome::StoppedByEraEnd {
