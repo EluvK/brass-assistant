@@ -1711,7 +1711,29 @@ fn legal_moves_include_executable_multi_tile_sell() {
     };
     state.place_tile(Loc::Stone, 0, cotton.clone());
     state.place_tile(Loc::StokeOnTrent, 0, cotton);
-    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 2);
+    state.place_tile(
+        Loc::Stone,
+        1,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    state.place_tile(
+        Loc::StokeOnTrent,
+        1,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CottonMill,
+            def: industry_tiles(IndustryType::CottonMill)[0],
+            flipped: false,
+            resource_cubes: 0,
+        },
+    );
+    place_test_brewery(&mut state, Loc::BrewerySouth, pid, 4);
     state.links[34] = Some(brass_engine::state::Link {
         player: pid,
         is_canal: false,
@@ -1732,25 +1754,31 @@ fn legal_moves_include_executable_multi_tile_sell() {
         .filter(|mv| matches!(mv, Move::Sell { keys, .. } if keys.len() >= 2))
         .collect();
     assert!(!multi.is_empty(), "a multi-tile sell should be generated");
+    assert!(
+        moves
+            .iter()
+            .any(|mv| matches!(mv, Move::Sell { keys, .. } if keys.len() == 4)),
+        "a Sell action must be able to include all four tiles; no artificial 3-tile cap"
+    );
 
-    let multi_mv = multi[0].clone();
+    let multi_mv = multi
+        .iter()
+        .find(|mv| matches!(mv, Move::Sell { keys, .. } if keys.len() == 2))
+        .copied()
+        .expect("a two-tile sell should be generated");
     let mut sim = state.clone();
     let res = apply_move(&mut sim, &multi_mv);
     assert!(res.is_ok(), "multi-tile sell must execute: {res:?}");
-    let stone_key = state.city_slot_key(Loc::Stone, 0).expect("stone slot");
-    let stoke_key = state
-        .city_slot_key(Loc::StokeOnTrent, 0)
-        .expect("stoke slot");
+    let sold_keys = match multi_mv {
+        Move::Sell { keys, .. } => keys,
+        _ => unreachable!(),
+    };
     assert!(
-        sim.city_tiles[stone_key]
+        sold_keys.iter().all(|&key| sim.city_tiles[key]
             .as_ref()
             .map(|t| t.flipped)
-            .unwrap_or(false)
-            && sim.city_tiles[stoke_key]
-                .as_ref()
-                .map(|t| t.flipped)
-                .unwrap_or(false),
-        "a multi-tile sell must flip BOTH tiles"
+            .unwrap_or(false)),
+        "a multi-tile sell must flip every selected tile"
     );
 
     // Slot-level generation must also carry the multi-sell plans.

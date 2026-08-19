@@ -233,27 +233,15 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
         }
     }
 
-    // SELL (single-tile + multi-tile plans; a Sell action may sell several tiles)
+    // SELL
     let sell_targets = get_valid_sell_targets(state, pid);
     if !sell_targets.is_empty() {
-        // Single-tile sells (one tile per action). Each route is a distinct
-        // merchant/beer option, so routes are never collapsed.
-        for t in &sell_targets {
-            for route in &t.routes {
-                for ci in exp.each(&cards) {
-                    moves.push(Move::Sell {
-                        keys: vec![t.key],
-                        merchant_indices: vec![route.merchant_index],
-                        use_merchant_beer: vec![route.use_merchant_beer],
-                        card_index: *ci,
-                    });
-                }
-            }
-        }
-        // Multi-tile sells: bounded subsets (2..=3 tiles) with compatible routes.
-        let multi_plans = build_multi_sell_plans(state, pid, &sell_targets);
+        // A Sell action may include any non-empty subset of sellable tiles.
+        // A plan retains every per-tile merchant/beer route because they can
+        // produce different merchant bonuses and consume different beer.
+        let sell_plans = build_sell_plans(state, pid, &sell_targets);
         for ci in exp.each(&cards) {
-            for plan in &multi_plans {
+            for plan in &sell_plans {
                 moves.push(Move::Sell {
                     keys: plan.0.clone(),
                     merchant_indices: plan.1.clone(),
@@ -298,91 +286,93 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
     moves
 }
 
-/// Generate all `k`-subsets of `0..n` (for the bounded multi-sell enumeration).
-fn gen_combos(out: &mut Vec<Vec<usize>>, n: usize, k: usize, start: usize, cur: &mut Vec<usize>) {
-    if cur.len() == k {
-        out.push(cur.clone());
-        return;
-    }
-    for i in start..n {
-        cur.push(i);
-        gen_combos(out, n, k, i + 1, cur);
-        cur.pop();
-    }
-}
-
-/// Bounded set of multi-tile sell plans: one action selling 2..=3 tiles, each
-/// to a compatible merchant route with distinct merchant-beer sources. Each
-/// plan is dry-run validated (must flip every planned tile). Returns
-/// (keys, merchant_indices, use_merchant_beer) triples.
-fn build_multi_sell_plans(
+/// All Sell plans: every non-empty subset of targets combined with every
+/// per-target merchant route. Plans are dry-run validated because beer and
+/// merchant-beer availability are shared across the tiles in one action.
+///
+/// Keys are emitted in target order, which is ascending city-slot key order,
+/// so an unordered set of sold tiles has one canonical representation.
+fn build_sell_plans(
     state: &GameState,
     pid: usize,
     targets: &[SellTarget],
 ) -> Vec<(Vec<usize>, Vec<usize>, Vec<bool>)> {
-    if targets.len() < 2 {
-        return Vec::new();
-    }
-    let n = targets.len();
-    let mut combos = Vec::new();
-    let mut cur = Vec::new();
-    for k in 2..=3 {
-        gen_combos(&mut combos, n, k, 0, &mut cur);
-    }
-    let max_plans = 24;
     let mut out: Vec<(Vec<usize>, Vec<usize>, Vec<bool>)> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for combo in combos {
-        if out.len() >= max_plans {
-            break;
-        }
-        let mut keys = Vec::with_capacity(combo.len());
-        let mut merchants = Vec::with_capacity(combo.len());
-        let mut use_beer = Vec::with_capacity(combo.len());
-        let mut committed_merchant_beer = Vec::new();
-        let mut ok = true;
-        for &ti in &combo {
-            let t = &targets[ti];
-            let mut assigned = false;
-            for route in &t.routes {
-                if route.use_merchant_beer
-                    && committed_merchant_beer.contains(&route.merchant_index)
-                {
-                    continue;
-                }
-                keys.push(t.key);
-                merchants.push(route.merchant_index);
-                use_beer.push(route.use_merchant_beer);
-                if route.use_merchant_beer {
-                    committed_merchant_beer.push(route.merchant_index);
-                }
-                assigned = true;
-                break;
-            }
-            if !assigned {
-                ok = false;
-                break;
-            }
-        }
-        if !ok {
-            continue;
-        }
-        // Dry-run: the plan must actually sell every planned tile.
-        let mut sim = state.clone();
-        if execute_sell(&mut sim, pid, &keys, &merchants, &use_beer, 0).is_err() {
-            continue;
-        }
-        if !keys.iter().all(|&key| {
-            sim.city_tiles[key]
-                .as_ref()
-                .map(|tile| tile.flipped)
-                .unwrap_or(false)
-        }) {
-            continue;
-        }
-        if seen.insert(keys.clone()) {
-            out.push((keys, merchants, use_beer));
-        }
-    }
+    let mut keys = Vec::new();
+    let mut merchants = Vec::new();
+    let mut use_beer = Vec::new();
+    enumerate_sell_plans(
+        state,
+        pid,
+        targets,
+        0,
+        &mut keys,
+        &mut merchants,
+        &mut use_beer,
+        &mut out,
+    );
     out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enumerate_sell_plans(
+    state: &GameState,
+    pid: usize,
+    targets: &[SellTarget],
+    target_index: usize,
+    keys: &mut Vec<usize>,
+    merchants: &mut Vec<usize>,
+    use_beer: &mut Vec<bool>,
+    out: &mut Vec<(Vec<usize>, Vec<usize>, Vec<bool>)>,
+) {
+    if target_index == targets.len() {
+        if keys.is_empty() {
+            return;
+        }
+        let mut sim = state.clone();
+        if execute_sell(&mut sim, pid, keys, merchants, use_beer, 0).is_ok()
+            && keys.iter().all(|&key| {
+                sim.city_tiles[key]
+                    .as_ref()
+                    .map(|tile| tile.flipped)
+                    .unwrap_or(false)
+            })
+        {
+            out.push((keys.clone(), merchants.clone(), use_beer.clone()));
+        }
+        return;
+    }
+
+    // This target is not part of the action.
+    enumerate_sell_plans(
+        state,
+        pid,
+        targets,
+        target_index + 1,
+        keys,
+        merchants,
+        use_beer,
+        out,
+    );
+
+    // This target is sold through each of its distinct merchant routes.
+    let target = &targets[target_index];
+    for route in &target.routes {
+        keys.push(target.key);
+        merchants.push(route.merchant_index);
+        use_beer.push(route.use_merchant_beer);
+        enumerate_sell_plans(
+            state,
+            pid,
+            targets,
+            target_index + 1,
+            keys,
+            merchants,
+            use_beer,
+            out,
+        );
+        keys.pop();
+        merchants.pop();
+        use_beer.pop();
+    }
 }
