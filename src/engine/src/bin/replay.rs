@@ -23,7 +23,7 @@ use std::cell::{Cell, RefCell};
 use std::env;
 
 fn print_era_snapshot(state: &GameState, era_name: &str, action_stats: &[replay_fmt::PStats]) {
-    println!("\n--- {era_name}时代玩家汇总（动作/在场板块/翻面板块） ---");
+    println!("\n--- {era_name}时代玩家汇总(动作/在场板块/翻面板块) ---");
     for (pid, stats) in action_stats.iter().enumerate() {
         println!("玩家{pid} 动作: {}", replay_fmt::fmt_stats_line(stats));
         println!(
@@ -50,16 +50,16 @@ fn choose_heuristic_action(
     if trace_enabled {
         let pid = state.current_player_id();
         println!(
-            "\n--- 决策追踪：第{}步 | {:?}时代，第{}轮，玩家{pid} ---",
-            move_no + 1,
+            "\n--- [玩家{pid}]|{:?}时代|第{}轮|决策追踪:第{}步 |  ---",
             state.era,
-            state.round
+            state.round,
+            move_no + 1,
         );
-        println!("手牌: {}", replay_fmt::hand_display(state, pid));
+        // println!("手牌: {}", replay_fmt::hand_display(state, pid));
 
         let mut candidates = heuristic_ai::candidate_actions_k(state, candidate_k);
         candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
-        println!("候选动作（{}）:", candidates.len());
+        println!("候选动作({}):", candidates.len());
         for (rank, decision) in candidates.iter().enumerate() {
             println!(
                 "  {:>2}. {} score={:.2}",
@@ -90,7 +90,7 @@ fn choose_heuristic_action(
             brass_engine::r#move::Move::ResolveFreeDevelop { .. } => Vec::new(),
         };
         let ranked = heuristic_ai::ranked_card_choices(state, pid);
-        println!("卡片保留价值（越低越适合消耗）:");
+        println!("卡片保留价值(越低越适合消耗):");
         for (index, score) in ranked {
             let marker = if selected.contains(&index) { "*" } else { " " };
             let label = state.players[pid]
@@ -144,7 +144,7 @@ fn main() {
         "Replay: {players}玩家 {policy}AI, seed={seed} | 模式={}{}",
         if verbose { "full" } else { "summary" },
         if trace_enabled {
-            format!(" | trace（候选数={candidate_k}）")
+            format!(" | trace(候选数={candidate_k})")
         } else {
             String::new()
         }
@@ -223,7 +223,7 @@ fn main() {
     };
     let mut on_era_after = |_state: &mut GameState, era: Era| {
         if era == Era::Canal && verbose {
-            println!("\n--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---");
+            println!("\n--- 运河时代结束，进入铁路时代(连接/1级板块已清除,重新洗牌发牌) ---");
         }
     };
     let hooks = GameHooks {

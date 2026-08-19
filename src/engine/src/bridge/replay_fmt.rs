@@ -186,7 +186,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
         Move::Network { conn_id, .. } => {
             let c = &connections()[*conn_id];
             format!(
-                "建网 {}↔{}（{}时代），用牌[{}]",
+                "建网 {}↔{}({}时代)，用牌[{}]",
                 loc_label(c.a),
                 loc_label(c.b),
                 era_label(state.era),
@@ -275,7 +275,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
             }
             format!("卖货 [{}]，用牌[{}]", parts.join(" + "), card_name)
         }
-        Move::Loan { .. } => format!("贷款 £30（收入-3级），用牌[{}]", card_name),
+        Move::Loan { .. } => format!("贷款 £30(收入-3级),用牌[{}]", card_name),
         Move::Scout { card_indices } => {
             let names: Vec<String> = card_indices
                 .iter()
@@ -289,7 +289,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
                 .collect();
             format!("斥候：弃[{}]换2张万用牌", names.join(", "))
         }
-        Move::Pass { .. } => format!("过牌（弃[{}]）", card_name),
+        Move::Pass { .. } => format!("过牌(弃[{}])", card_name),
     }
 }
 

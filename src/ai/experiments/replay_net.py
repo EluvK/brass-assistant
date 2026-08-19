@@ -94,7 +94,7 @@ class _EraStats:
 
 def print_era_snapshot(state, era_name: str, stats: _EraStats, n_players: int):
     out()
-    out(f"--- {era_name}时代玩家汇总（动作/在场板块/翻面板块） ---")
+    out(f"--- {era_name}时代玩家汇总(动作/在场板块/翻面板块) ---")
     for pid in range(n_players):
         out(f"玩家{pid} 动作: {stats.stats_line(state, pid)}")
         out(f"玩家{pid} 在场板块: {state.replay_tiles(pid, False)}")
@@ -252,7 +252,7 @@ def main():
                 out(state.replay_cleanup())
                 state.finish_canal_era()
                 out()
-                out("--- 运河时代结束，进入铁路时代（连接/1级板块已清除，重新洗牌发牌） ---")
+                out("--- 运河时代结束，进入铁路时代(连接/1级板块已清除,重新洗牌发牌) ---")
             elif tr == "end_game":
                 state.finish_game()
 
