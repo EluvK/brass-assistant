@@ -85,23 +85,44 @@ fn card_keep_score_with_targets(
             .iter()
             .filter(|other| matches!(other, Card::Industry { .. }))
             .count(),
-        Card::WildLocation | Card::WildIndustry => hand
-            .iter()
-            .filter(|other| std::mem::discriminant(*other) == std::mem::discriminant(card))
-            .count(),
+        Card::WildLocation | Card::WildIndustry => 0,
     };
-    score -= 0.38 * duplicate_count.saturating_sub(1) as f64;
+    score -= 0.48 * duplicate_count.saturating_sub(1) as f64;
 
     match card {
         Card::Location(loc) if loc.is_city() => {
             let target_count = valid_targets.iter().filter(|t| t.loc == *loc).count();
-            if target_count == 0 {
-                // A full/blocked city card is usually safe to spend. Keep a
-                // small exception for resource overbuild opportunities.
-                let resource_upgrade = valid_targets.iter().any(|t| {
-                    t.loc == *loc
-                        && matches!(t.ind, IndustryType::CoalMine | IndustryType::IronWorks)
-                });
+            let city_is_full = city_slots(*loc).iter().enumerate().all(|(slot, _)| {
+                let key = state
+                    .city_slot_key(*loc, slot)
+                    .expect("city slot from city_slots must have a key");
+                state.city_tiles[key].is_some()
+            });
+            if city_is_full {
+                // A location card still bypasses network access for an own
+                // resource overbuild. Preserve it in Rail when no matching
+                // industry card in hand can serve as the alternative.
+                let resource_upgrade = state.era == Era::Rail
+                    && city_slots(*loc).iter().enumerate().any(|(slot, _)| {
+                        let key = state
+                            .city_slot_key(*loc, slot)
+                            .expect("city slot from city_slots must have a key");
+                        let Some(tile) = state.city_tiles[key].as_ref() else {
+                            return false;
+                        };
+                        matches!(
+                            tile.ind,
+                            IndustryType::CoalMine
+                                | IndustryType::IronWorks
+                                | IndustryType::Brewery
+                        ) && tile.player == pid
+                            && state.players[pid]
+                                .next_tile(tile.ind)
+                                .is_some_and(|next| next.level > tile.def.level)
+                            && !hand.iter().any(|other| {
+                                other.is_industry(tile.ind) || matches!(other, Card::WildIndustry)
+                            })
+                    });
                 score -= if resource_upgrade { 0.45 } else { 1.05 };
             } else {
                 score += (target_count.min(3) as f64) * 0.28;
