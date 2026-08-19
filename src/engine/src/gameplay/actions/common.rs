@@ -209,12 +209,11 @@ pub fn coal_options_for_connection(
 
 /// Validate a chosen source set: correct count, each currently available, and
 /// the free-first rule (market may only cover the shortfall).
-fn validate_source_choice<T: Copy + PartialEq>(
+fn validate_source_choice<T: Copy + Eq + std::hash::Hash>(
     available: &[T],
     needed: usize,
     chosen: &[T],
     is_free: impl Fn(&T) -> bool,
-    key: impl Fn(&T) -> usize,
 ) -> Result<(), String> {
     if chosen.len() != needed {
         return Err(format!("Need {needed} source(s), got {}", chosen.len()));
@@ -225,15 +224,16 @@ fn validate_source_choice<T: Copy + PartialEq>(
     if market_chosen != market_needed {
         return Err("Free sources must be used before the market".into());
     }
-    // Chosen must be a sub-multiset of currently available sources (by identity).
-    let mut avail_counts: HashMap<(bool, usize), usize> = HashMap::new();
+    // Chosen must be a sub-multiset of currently available sources. A source's
+    // full value is its identity: market slots share `key == usize::MAX`, but
+    // their prices (and coal source kind) must not be forgeable by raw input.
+    let mut avail_counts: HashMap<T, usize> = HashMap::new();
     for s in available {
-        *avail_counts.entry((is_free(s), key(s))).or_insert(0) += 1;
+        *avail_counts.entry(*s).or_insert(0) += 1;
     }
     for s in chosen {
-        let e = (is_free(s), key(s));
         let c = avail_counts
-            .get_mut(&e)
+            .get_mut(s)
             .ok_or("Chosen source is not available")?;
         if *c == 0 {
             return Err("Chosen source is not available".into());
@@ -249,13 +249,7 @@ pub(crate) fn validate_coal_choice(
     needed: usize,
     chosen: &[CoalSource],
 ) -> Result<(), String> {
-    validate_source_choice(
-        &find_coal_sources(state, loc),
-        needed,
-        chosen,
-        |s| s.free,
-        |s| s.key,
-    )
+    validate_source_choice(&find_coal_sources(state, loc), needed, chosen, |s| s.free)
 }
 
 pub(crate) fn validate_connection_coal_choice(
@@ -263,13 +257,9 @@ pub(crate) fn validate_connection_coal_choice(
     conn: &Connection,
     chosen: &[CoalSource],
 ) -> Result<(), String> {
-    validate_source_choice(
-        &coal_sources_for_connection(state, conn),
-        1,
-        chosen,
-        |s| s.free,
-        |s| s.key,
-    )
+    validate_source_choice(&coal_sources_for_connection(state, conn), 1, chosen, |s| {
+        s.free
+    })
 }
 
 pub(crate) fn validate_iron_choice(
@@ -277,13 +267,51 @@ pub(crate) fn validate_iron_choice(
     needed: usize,
     chosen: &[IronSource],
 ) -> Result<(), String> {
-    validate_source_choice(
-        &find_iron_sources(state),
-        needed,
-        chosen,
-        |s| s.free,
-        |s| s.key,
-    )
+    validate_source_choice(&find_iron_sources(state), needed, chosen, |s| s.free)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_source_choice;
+    use crate::graph::{CoalSource, CoalSourceKind, IronSource};
+
+    #[test]
+    fn rejects_forged_market_resource_fields() {
+        let market_coal = CoalSource {
+            kind: CoalSourceKind::Market,
+            key: usize::MAX,
+            price: 5,
+            free: false,
+        };
+        let forged_price = CoalSource {
+            price: 0,
+            ..market_coal
+        };
+        let forged_kind = CoalSource {
+            kind: CoalSourceKind::Mine,
+            ..market_coal
+        };
+        for forged in [forged_price, forged_kind] {
+            assert_eq!(
+                validate_source_choice(&[market_coal], 1, &[forged], |s| s.free),
+                Err("Chosen source is not available".into())
+            );
+        }
+
+        let market_iron = IronSource {
+            key: usize::MAX,
+            price: 4,
+            free: false,
+        };
+        let forged_iron = IronSource {
+            price: 0,
+            ..market_iron
+        };
+        assert_eq!(
+            validate_source_choice(&[market_iron], 1, &[forged_iron], |s| s.free),
+            Err("Chosen source is not available".into())
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

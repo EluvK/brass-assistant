@@ -140,6 +140,27 @@ fn place_test_presence_tile(state: &mut GameState, loc: Loc, owner: usize) {
 }
 
 #[test]
+fn overbuilding_opponent_tile_updates_old_owner_network_cache() {
+    let mut state = setup_clean_rail_state(2);
+    place_test_coal_mine(&mut state, 1);
+
+    state.place_tile(
+        Loc::Cannock,
+        0,
+        BoardTile {
+            player: 0,
+            ind: IndustryType::CoalMine,
+            def: industry_tiles(IndustryType::CoalMine)[1],
+            flipped: false,
+            resource_cubes: 2,
+        },
+    );
+
+    // This full rescan would catch Cannock remaining in P2's cached network.
+    state.assert_caches_consistent();
+}
+
+#[test]
 fn initial_setup_invariants() {
     let state = setup(4);
     assert_eq!(state.players.len(), 4);

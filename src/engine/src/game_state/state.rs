@@ -644,14 +644,22 @@ impl GameState {
         let player = tile.player;
         if loc.is_city() {
             if let Some(k) = self.city_slot_key(loc, slot_index) {
+                let previous_owner = self.city_tiles[k].as_ref().map(|tile| tile.player);
                 self.city_tiles[k] = Some(tile);
                 self.sync_free_source(k);
                 self.mark_network(player, loc);
+                if let Some(previous_owner) = previous_owner.filter(|&owner| owner != player) {
+                    self.clear_network_location(previous_owner, loc);
+                }
             }
         } else if let Some(idx) = farm_index(loc) {
+            let previous_owner = self.farm_tiles[idx].as_ref().map(|tile| tile.player);
             self.farm_tiles[idx] = Some(tile);
             self.sync_farm_beer(idx);
             self.mark_network(player, loc);
+            if let Some(previous_owner) = previous_owner.filter(|&owner| owner != player) {
+                self.clear_network_location(previous_owner, loc);
+            }
         }
     }
 
