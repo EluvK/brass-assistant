@@ -98,8 +98,8 @@ fn main() {
         .unwrap_or(false);
     // `summary` retains the era-end diagnostics without printing every move.
     // It supersedes the former `stat_game` binary.
-    let verbose = !matches!(args.get(6).map(String::as_str), Some("summary"));
-    let trace_enabled = matches!(args.get(7).map(String::as_str), Some("trace"));
+    let verbose = args.get(6).map(|s| s.as_str()).unwrap_or("full") == "full";
+    let trace_enabled = args.get(7).map(|s| s.as_str()).unwrap_or("trace") == "trace";
     let candidate_k: usize = args.get(8).and_then(|s| s.parse().ok()).unwrap_or(30);
     let max_moves: usize = args.get(9).and_then(|s| s.parse().ok()).unwrap_or(200_000);
 

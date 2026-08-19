@@ -256,6 +256,7 @@ pub(super) fn owned_beer_barrels(state: &GameState, pid: usize) -> usize {
     state
         .city_tiles
         .iter()
+        .chain(state.farm_tiles.iter())
         .flatten()
         .filter(|t| t.player == pid && t.ind == IndustryType::Brewery && !t.flipped)
         .map(|t| t.resource_cubes as usize)
@@ -301,23 +302,6 @@ fn resource_source_ratio(state: &GameState, cand: &BuildTarget) -> f64 {
     free_available += free_coal.min(cand.cost_coal as f64);
     free_available += free_iron.min(cand.cost_iron as f64);
     (free_available / needed).clamp(0.0, 1.0)
-}
-
-/// Can `pid` sell a tile of this industry at `loc` right now (reachable
-/// merchant accepting it + beer available to fuel the sale)?
-fn immediate_sellable(state: &GameState, pid: usize, ind: IndustryType, loc: Loc) -> bool {
-    if !ind.is_sellable() {
-        return false;
-    }
-    let connected = connected_locations(state, loc);
-    let merchant_ok = state
-        .merchants
-        .iter()
-        .any(|mt| connected.contains(&mt.loc) && mt.accepts(ind));
-    if !merchant_ok {
-        return false;
-    }
-    find_beer_sources(state, loc, pid, &[]).len() > 0 || beer_barrels_reachable(state, loc)
 }
 
 fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan: &Plan) -> f64 {
@@ -514,27 +498,11 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
         }
     }
 
-    // Level-2+ tiles score their flipped VP at BOTH era ends (they survive
-    // into rail). In the rail era the double-count is fully earned (2x); in the
-    // canal era it's potential — only realized if the tile survives — so weight
-    // it lightly (1.2x) to avoid pushing expensive rail tiles into the cash-
-    // strapped canal economy. Level-1 tiles (incl. Pottery I) are removed at
-    // the canal-era end, so they never double-score.
-    let double_vp = if tile.level >= 2 {
-        if state.era == Era::Rail { 2.0 } else { 1.1 }
+    // Level-2+ tiles score their flipped VP at BOTH era ends
+    let double_vp = if tile.level >= 2 && state.era == Era::Rail {
+        2.0
     } else {
         1.0
-    };
-
-    // Level-1 tiles vanish at canal-era end: their build should be slightly
-    // discounted (they're stepping stones toward level-2+ that double-score).
-    // Level-2+ tiles get a modest canal-era weight boost for the cross-era win.
-    let level_adjust = if tile.level == 1 {
-        -0.4
-    } else if tile.level >= 2 && state.era == Era::Canal {
-        0.5
-    } else {
-        0.0
     };
 
     // "Free-riding" efficiency: if the build's coal/iron can come from board
@@ -555,47 +523,7 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
         + beer_bonus
         + cost_efficiency
         + market_adjust
-        + level_adjust
         + interaction_bonus;
-
-    if state.era == Era::Canal {
-        if tile.level >= 2 {
-            // The canal cross-era boost (rail tiles double-score at both era
-            // ends) is only real if the tile will actually flip. A sellable
-            // tile with no merchant+beer path can't be sold, so its double-
-            // score promise is hollow — scale the boost down (or off) when
-            // flip odds are low. `flip_prob` already encodes merchant/beer
-            // reachability for sellable tiles, market hunger for coal/iron,
-            // and consumption pressure for breweries.
-            let boost = if flip_prob >= 0.6 {
-                2.0
-            } else if flip_prob >= 0.35 {
-                1.3
-            } else {
-                1.0
-            };
-            score *= boost;
-        } else {
-            // Canal level-1 board presence is often disposable tempo only; keep
-            // it legal but clearly behind develop->level-2 lines.
-            score -= 1.8;
-        }
-    }
-
-    // Doomed-build guardrail: a level-1 tile (incl. Pottery I) built so late in
-    // the canal era that it cannot flip before era end is removed at the
-    // transition without ever scoring — a pure cash sink (e.g. a £21 pottery
-    // built in round 7-8 that nobody can sell in time). Heavily penalize
-    // unless it can be sold immediately this turn. This also propagates into
-    // the loan scorer's `best_affordable_build_score`, so it stops loaning
-    // just to fund such a build.
-    if state.era == Era::Canal && tile.level == 1 {
-        let rounds_left = estimate_rounds_remaining(state);
-        if rounds_left <= 2.0 && !immediate_sellable(state, pid, cand.ind, cand.loc) {
-            let urgency = (2.0 - rounds_left).max(0.0);
-            score -= 5.0 + urgency * 4.0;
-        }
-    }
 
     // Plan ("流派") soft bonus: building the target industry aligns with the
     // player's production plan. Only applies from Canal-Late onward — in
@@ -683,4 +611,28 @@ pub(crate) fn score_top_builds(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{SeedableRng, rngs::StdRng};
+
+    use super::*;
+    use crate::data::industry_tiles;
+    use crate::state::BoardTile;
+
+    #[test]
+    fn owned_beer_includes_unflipped_farm_brewery() {
+        let mut state = GameState::new(StdRng::seed_from_u64(7), 2);
+        let pid = state.current_player_id();
+        state.farm_tiles[0] = Some(BoardTile {
+            player: pid,
+            ind: IndustryType::Brewery,
+            def: industry_tiles(IndustryType::Brewery)[0],
+            flipped: false,
+            resource_cubes: 2,
+        });
+
+        assert_eq!(owned_beer_barrels(&state, pid), 2);
+    }
 }
