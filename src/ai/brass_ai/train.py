@@ -25,7 +25,11 @@ import torch
 import torch.nn.functional as F
 
 from .net import PolicyValueNet
-from .hierarchical_policy import pad_candidate_features
+from .hierarchical_policy import (
+    ACTION_FEATURE_DIM,
+    ACTION_FEATURE_SCHEMA_VERSION,
+    pad_candidate_features,
+)
 from .progress import Progress
 from .selfplay import SelfPlayConfig, Sample, play_batch
 
@@ -116,9 +120,19 @@ class Trainer:
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "epoch": self.epoch_count,
+            "action_feature_dim": ACTION_FEATURE_DIM,
+            "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
         }
 
     def load_state_dict(self, sd: dict) -> None:
+        schema_version = sd.get("action_feature_schema_version")
+        feature_dim = sd.get("action_feature_dim")
+        if schema_version != ACTION_FEATURE_SCHEMA_VERSION or feature_dim != ACTION_FEATURE_DIM:
+            raise ValueError(
+                "incompatible checkpoint action-feature schema: "
+                f"got version={schema_version}, dim={feature_dim}; expected "
+                f"version={ACTION_FEATURE_SCHEMA_VERSION}, dim={ACTION_FEATURE_DIM}"
+            )
         self.net.load_state_dict(sd["model"])
         self.optimizer.load_state_dict(sd["optimizer"])
         self.scheduler.load_state_dict(sd["scheduler"])

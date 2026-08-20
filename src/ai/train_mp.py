@@ -33,6 +33,7 @@ import torch
 import brass_engine as be
 
 from brass_ai.dataset import load_samples, save_samples
+from brass_ai.hierarchical_policy import ACTION_FEATURE_DIM, ACTION_FEATURE_SCHEMA_VERSION
 from brass_ai.evaluate import benchmark_net_vs_heuristic
 from brass_ai.mp_selfplay import SelfPlayPool
 from brass_ai.net import PolicyValueNet
@@ -93,7 +94,7 @@ def main():
     out_path = Path(args.out) if args.out else checkpoint_dir / "latest.pt"
     manifest_path = run_dir / "manifest.json"
     manifest = {
-        "format": 1,
+        "format": 2,
         "engine": {
             "action_feature_dim": be.ACTION_FEATURE_DIM,
             "action_feature_schema_version": be.ACTION_FEATURE_SCHEMA_VERSION,
@@ -123,6 +124,15 @@ def main():
     load_path = out_path if args.resume and out_path.exists() else Path(args.ckpt)
     if load_path.exists():
         sd = torch.load(load_path, map_location=device)
+        if isinstance(sd, dict):
+            schema_version = sd.get("action_feature_schema_version")
+            feature_dim = sd.get("action_feature_dim")
+            if schema_version != ACTION_FEATURE_SCHEMA_VERSION or feature_dim != ACTION_FEATURE_DIM:
+                raise ValueError(
+                    f"incompatible checkpoint {load_path}: got action-feature "
+                    f"version={schema_version}, dim={feature_dim}; expected "
+                    f"version={ACTION_FEATURE_SCHEMA_VERSION}, dim={ACTION_FEATURE_DIM}"
+                )
         model = sd["model"] if "model" in sd else sd
         net.load_state_dict(model)
         if args.resume and "model" in sd:

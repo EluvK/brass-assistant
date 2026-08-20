@@ -6,10 +6,10 @@
 //!     .era                                   # 0 = canal, 1 = rail
 //!     .round / .game_over / .current_player_money / .has_pending_bonus
 //!     .legal_moves() -> list[(action_id:int, canonical:str, describe:str)]
-//!     .legal_candidates() -> list[(canonical:str, features: float32[208])]
+//!     .legal_candidates() -> list[(canonical:str, features: float32[235])]
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
 //!     .determinize() -> GameState            # opponent-hand sampling
-//!     .legal_candidates() -> list[(canonical:str, features: float32[208])]
+//!     .legal_candidates() -> list[(canonical:str, features: float32[235])]
 //!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
 //!     .choose_heuristic() -> (canonical, describe, score)
 //!   module: ACTION_FEATURE_DIM, ACTION_FEATURE_SCHEMA_VERSION
@@ -124,7 +124,7 @@ impl PyGame {
             .collect()
     }
 
-    /// Concrete executable legal moves with structured v1 action features.
+    /// Concrete executable legal moves with structured v2 action features.
     /// Unlike the legacy policy table this does not collapse card or resource
     /// choices; every returned row is a complete action the engine can apply.
     fn legal_candidates(&self) -> Vec<(String, Vec<f32>)> {
@@ -133,7 +133,7 @@ impl PyGame {
             .into_iter()
             .map(|mv| {
                 let canonical = move_codec::encode(&mv);
-                let features = crate::bridge::action_features::encode_move(&mv);
+                let features = crate::bridge::action_features::encode_move(&state, &mv);
                 (canonical, features)
             })
             .collect()
@@ -156,7 +156,10 @@ impl PyGame {
         for scored_move in scored {
             let canonical = move_codec::encode(&scored_move.mv);
             if seen.insert(canonical.clone()) {
-                features.extend(crate::bridge::action_features::encode_move(&scored_move.mv));
+                features.extend(crate::bridge::action_features::encode_move(
+                    &scoring_state,
+                    &scored_move.mv,
+                ));
                 scores.push(scored_move.score as f32);
                 canonical_candidates.push(canonical);
             }
@@ -165,7 +168,10 @@ impl PyGame {
             .iter()
             .position(|canonical| canonical == &teacher_canonical)
             .unwrap_or_else(|| {
-                features.extend(crate::bridge::action_features::encode_move(&decision.mv));
+                features.extend(crate::bridge::action_features::encode_move(
+                    &heuristic_state,
+                    &decision.mv,
+                ));
                 scores.push(decision.score as f32);
                 canonical_candidates.push(teacher_canonical.clone());
                 canonical_candidates.len() - 1

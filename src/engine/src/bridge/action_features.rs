@@ -6,21 +6,22 @@
 
 use crate::graph::{BeerSourceKind, CoalSourceKind};
 use crate::r#move::Move;
+use crate::state::{Card, GameState};
 
-pub const ACTION_FEATURE_DIM: usize = 208;
-pub const ACTION_FEATURE_SCHEMA_VERSION: usize = 1;
+pub const ACTION_FEATURE_DIM: usize = 235;
+pub const ACTION_FEATURE_SCHEMA_VERSION: usize = 2;
 
 const ACTION: usize = 0; // 7 action-type one-hot entries
-const CARD: usize = 7; // 8 card-index entries
-const LOCATION: usize = 15; // 27 location entries
-const CITY_SLOT: usize = 42; // 4 city-slot entries
-const INDUSTRY_1: usize = 46; // 6 industry entries
-const INDUSTRY_2: usize = 52; // 6 industry entries
-const CONNECTION_1: usize = 58; // 39 connection entries
-const CONNECTION_2: usize = 97; // 39 connection entries
-const SELL_KEY: usize = 136; // 47 city-tile entries
-const MERCHANT: usize = 183; // 9 merchant-tile entries
-const SUMMARY: usize = 192; // 16 aggregate resource/shape features
+const CARD: usize = 7; // 35 stable card-semantic entries
+const LOCATION: usize = 42; // 27 location entries
+const CITY_SLOT: usize = 69; // 4 city-slot entries
+const INDUSTRY_1: usize = 73; // 6 industry entries
+const INDUSTRY_2: usize = 79; // 6 industry entries
+const CONNECTION_1: usize = 85; // 39 connection entries
+const CONNECTION_2: usize = 124; // 39 connection entries
+const SELL_KEY: usize = 163; // 47 city-tile entries
+const MERCHANT: usize = 210; // 9 merchant-tile entries
+const SUMMARY: usize = 219; // 16 aggregate resource/shape features
 
 fn one_hot(out: &mut [f32], offset: usize, width: usize, index: usize) {
     if index < width {
@@ -28,16 +29,36 @@ fn one_hot(out: &mut [f32], offset: usize, width: usize, index: usize) {
     }
 }
 
-fn card(out: &mut [f32], index: usize) {
-    one_hot(out, CARD, 8, index);
+fn card(out: &mut [f32], state: &GameState, card_index: usize) {
+    let pid = state.current_player_id();
+    let Some(card) = state
+        .players
+        .get(pid)
+        .and_then(|player| player.hand.get(card_index))
+    else {
+        return;
+    };
+    match card {
+        Card::Location(loc) => one_hot(out, CARD, 27, *loc as usize),
+        Card::Industry { industries, n } => {
+            for ind in industries.iter().take(*n as usize) {
+                one_hot(out, CARD + 27, 6, *ind as usize);
+            }
+        }
+        Card::WildLocation => out[CARD + 33] = 1.0,
+        Card::WildIndustry => out[CARD + 34] = 1.0,
+    }
 }
 
 fn industry(out: &mut [f32], offset: usize, ind: crate::data::IndustryType) {
     one_hot(out, offset, 6, ind as usize);
 }
 
-/// Encode a concrete move into the stable v1 action-feature schema.
-pub fn encode_move(mv: &Move) -> Vec<f32> {
+/// Encode a concrete move into the stable v2 action-feature schema.
+///
+/// `card_index` is an execution reference only. Card semantics are read from
+/// the pre-move current player's hand so the network never learns hand order.
+pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
     let mut out = vec![0.0; ACTION_FEATURE_DIM];
     one_hot(&mut out, ACTION, 7, mv.action().index());
 
@@ -50,7 +71,7 @@ pub fn encode_move(mv: &Move) -> Vec<f32> {
             iron,
             card_index,
         } => {
-            card(&mut out, *card_index);
+            card(&mut out, state, *card_index);
             one_hot(&mut out, LOCATION, 27, *loc as usize);
             one_hot(&mut out, CITY_SLOT, 4, *slot_index);
             industry(&mut out, INDUSTRY_1, *ind);
@@ -73,7 +94,7 @@ pub fn encode_move(mv: &Move) -> Vec<f32> {
             coal,
             card_index,
         } => {
-            card(&mut out, *card_index);
+            card(&mut out, state, *card_index);
             one_hot(&mut out, CONNECTION_1, 39, *conn_id);
             out[SUMMARY + 9] = 1.0;
             if let Some(source) = coal {
@@ -92,7 +113,7 @@ pub fn encode_move(mv: &Move) -> Vec<f32> {
             beer,
             card_index,
         } => {
-            card(&mut out, *card_index);
+            card(&mut out, state, *card_index);
             one_hot(&mut out, CONNECTION_1, 39, *conn1);
             one_hot(&mut out, CONNECTION_2, 39, *conn2);
             out[SUMMARY] = 1.0;
@@ -116,7 +137,7 @@ pub fn encode_move(mv: &Move) -> Vec<f32> {
             iron,
             card_index,
         } => {
-            card(&mut out, *card_index);
+            card(&mut out, state, *card_index);
             industry(&mut out, INDUSTRY_1, *ind1);
             if let Some(ind) = ind2 {
                 industry(&mut out, INDUSTRY_2, *ind);
@@ -141,7 +162,7 @@ pub fn encode_move(mv: &Move) -> Vec<f32> {
             use_merchant_beer,
             card_index,
         } => {
-            card(&mut out, *card_index);
+            card(&mut out, state, *card_index);
             out[SUMMARY + 12] = keys.len() as f32 / 4.0;
             for &key in keys {
                 one_hot(&mut out, SELL_KEY, 47, key);
@@ -158,10 +179,10 @@ pub fn encode_move(mv: &Move) -> Vec<f32> {
                 out[SUMMARY + 2] += 0.25;
             }
         }
-        Move::Loan { card_index } | Move::Pass { card_index } => card(&mut out, *card_index),
+        Move::Loan { card_index } | Move::Pass { card_index } => card(&mut out, state, *card_index),
         Move::Scout { card_indices } => {
             for &index in card_indices {
-                card(&mut out, index);
+                card(&mut out, state, index);
             }
             out[SUMMARY + 13] = 1.0;
         }

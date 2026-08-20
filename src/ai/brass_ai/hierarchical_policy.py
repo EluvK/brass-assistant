@@ -11,8 +11,8 @@ import torch
 
 import brass_engine as be
 
-ACTION_FEATURE_SCHEMA_VERSION = 1
-ACTION_FEATURE_DIM = 208
+ACTION_FEATURE_SCHEMA_VERSION = 2
+ACTION_FEATURE_DIM = 235
 
 
 def _feature_width() -> int:

@@ -18,8 +18,6 @@
 - action feature v1 使用 `card_index` 的 8 维 one-hot，而不是卡片语义。
 - 状态侧 `own_hand` 是无序的全量卡片编码，因此网络无法从 `card_index` 推断该位置对应哪张牌。
 
-此前 `pick_build_card()` 在只有万能牌可用时会错误返回 `None`，导致 Build 候选被漏掉；该问题已修复为“普通牌优先，否则回退到第一张合法牌”。
-
 ## 2. 主要风险
 
 ### 2.1 Teacher 偏差

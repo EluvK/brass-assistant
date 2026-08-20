@@ -24,7 +24,7 @@ class NetConfig:
     links_emb: int = 64
     trunk: int = 256
     action_emb: int = 128
-    action_features: int = getattr(be, "ACTION_FEATURE_DIM", 208)
+    action_features: int = getattr(be, "ACTION_FEATURE_DIM", 235)
     global_len: int = be.GLOBAL_LEN
     hand_len: int = be.HAND_LEN
     opp_hands_len: int = be.HAND_LEN * 3

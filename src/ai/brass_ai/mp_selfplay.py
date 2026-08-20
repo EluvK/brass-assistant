@@ -31,7 +31,7 @@ import torch
 
 from .progress import Progress
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
-from .hierarchical_policy import pad_candidate_features
+from .hierarchical_policy import ACTION_FEATURE_DIM, pad_candidate_features
 
 _PACK_TIMEOUT_S = 1800  # per packet; a full game at sims=200 can take minutes
 
@@ -98,7 +98,7 @@ def _pack_samples(samples: list[Sample]) -> dict:
             "global": np.empty((0, 50), dtype=np.float32),
             "own_hand": np.empty((0, 35), dtype=np.float32),
             "opp_hands": np.empty((0, 105), dtype=np.float32),
-            "candidates": np.empty((0, 0, 208), dtype=np.float32),
+            "candidates": np.empty((0, 0, ACTION_FEATURE_DIM), dtype=np.float32),
             "candidate_mask": np.empty((0, 0), dtype=np.bool_),
             "policy": np.empty((0, 0), dtype=np.float32),
             "value": np.empty((0, 4), dtype=np.float32),

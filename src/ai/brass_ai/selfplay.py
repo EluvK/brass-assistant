@@ -42,7 +42,7 @@ class Sample:
     global_vec: np.ndarray  # (50,)
     own_hand: np.ndarray  # (35,)
     opp_hands: np.ndarray  # (105,)
-    candidates: np.ndarray  # (N,208) Engine structured legal-move features
+    candidates: np.ndarray  # (N,235) Engine structured legal-move features
     policy: np.ndarray  # (N,) visit distribution aligned to candidates
     value: np.ndarray  # (4,) normalized final VP z-vector over all players
     era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)

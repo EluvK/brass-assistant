@@ -7,7 +7,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .hierarchical_policy import pad_candidate_features
+from .hierarchical_policy import (
+    ACTION_FEATURE_DIM,
+    ACTION_FEATURE_SCHEMA_VERSION,
+    pad_candidate_features,
+)
 
 from .selfplay import Sample
 
@@ -37,6 +41,10 @@ def save_samples(path: str | Path, samples: list[Sample]) -> int:
         "policy": policy,
         "value": np.stack([s.value for s in samples]).astype(np.float32),
         "econ": np.stack([s.econ for s in samples]).astype(np.float32),
+        "action_feature_dim": np.asarray(ACTION_FEATURE_DIM, dtype=np.int16),
+        "action_feature_schema_version": np.asarray(
+            ACTION_FEATURE_SCHEMA_VERSION, dtype=np.int16
+        ),
     }
     np.savez_compressed(path, **arrays)
     return len(samples)
@@ -45,6 +53,17 @@ def save_samples(path: str | Path, samples: list[Sample]) -> int:
 def load_samples(path: str | Path) -> list[Sample]:
     """Load a replay shard written by :func:`save_samples`."""
     with np.load(path, allow_pickle=False) as data:
+        try:
+            schema_version = int(data["action_feature_schema_version"])
+            feature_dim = int(data["action_feature_dim"])
+        except KeyError as exc:
+            raise ValueError("replay shard has no action-feature schema metadata") from exc
+        if schema_version != ACTION_FEATURE_SCHEMA_VERSION or feature_dim != ACTION_FEATURE_DIM:
+            raise ValueError(
+                "incompatible replay action-feature schema: "
+                f"got version={schema_version}, dim={feature_dim}; expected "
+                f"version={ACTION_FEATURE_SCHEMA_VERSION}, dim={ACTION_FEATURE_DIM}"
+            )
         n = len(data["pid"])
         return [
             Sample(

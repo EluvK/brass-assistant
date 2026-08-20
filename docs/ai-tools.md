@@ -41,8 +41,8 @@ MCTS 推理展开完整合法动作集合。为避免 replay 随动作组合空�
 | global | `float32 (50,)` |
 | own_hand | `float32 (35,)` |
 | opp_hands | `float32 (105,)` |
-| action feature | `float32 (N, 208)`，`N` 随状态变化 |
-| feature schema | `ACTION_FEATURE_SCHEMA_VERSION = 1` |
+| action feature | `float32 (N, 235)`，`N` 随状态变化 |
+| feature schema | `ACTION_FEATURE_SCHEMA_VERSION = 2` |
 | policy | 对同一状态的候选集合归一化，而非固定全局动作表 |
 | value target | 四名玩家终局 VP 的标准化向量 `(vp - mean) / std`；平局为全零 |
 | econ target | `(income_level, money)`；仅作辅助监督 |
@@ -153,7 +153,7 @@ candidate replay shard 的每条样本包含：
 ```text
 pid, era
 board, links, global_vec, own_hand, opp_hands
-candidates: (N, 208)
+candidates: (N, 235)
 policy: (N,)
 value: (4,)
 econ: (2,)
@@ -165,7 +165,7 @@ econ: (2,)
 
 ## 当前风险与下一步
 
-- action feature v1 仍会压缩部分资源来源和 Sell 结构；需要做 feature collision 统计后再设计 v2。
+- action feature v2 已将被消耗卡片编码为稳定语义；资源来源和 Sell 结构仍保留在 concrete action 特征中，后续再做 collision 统计。
 - imitation shortlist 与 MCTS full legal candidates 存在分布差异；下一步应加入有限 数量的 hard negatives，而不是将完整候选集合写入 replay。
 - policy top-k 当前是在训练数据上评估；需要建立固定 held-out teacher validation。
 - value 是 final normalized VP 预测，不是校准后的 win probability。

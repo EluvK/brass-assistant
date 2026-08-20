@@ -350,7 +350,10 @@ fn descend(
                     mv,
                     node: child_idx,
                 });
-                candidate_features.push(action_features::encode_move(&children.last().unwrap().mv));
+                candidate_features.push(action_features::encode_move(
+                    work,
+                    &children.last().unwrap().mv,
+                ));
             }
             arena[node_idx].children = children;
             arena[node_idx].legal_candidate_ids = legal_candidate_ids.clone();
@@ -374,7 +377,7 @@ fn descend(
             let candidate_features = arena[node_idx]
                 .children
                 .iter()
-                .map(|child| action_features::encode_move(&child.mv))
+                .map(|child| action_features::encode_move(work, &child.mv))
                 .collect();
             return park(work, requests, request_by_node, path, move |node_idx| {
                 RequestKind::Expand {

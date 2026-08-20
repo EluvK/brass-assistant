@@ -43,6 +43,7 @@ def main():
     # CUDA Torch and MCTS imports here so workers do not load GPU DLLs.
     import torch
     from brass_ai.evaluate import benchmark_mcts_vs_heuristic
+    from brass_ai.hierarchical_policy import ACTION_FEATURE_DIM, ACTION_FEATURE_SCHEMA_VERSION
     from brass_ai.net import PolicyValueNet
     from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
     from brass_ai.train import TrainConfig, Trainer
@@ -79,7 +80,11 @@ def main():
           f"/p95={losses['candidate_count_p95']:.0f}")
 
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
-    torch.save(net.state_dict(), args.ckpt)
+    torch.save({
+        "model": net.state_dict(),
+        "action_feature_dim": ACTION_FEATURE_DIM,
+        "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
+    }, args.ckpt)
 
     mcts = RustISMCTS(net, RustMCTSConfig(c_puct=2.5, max_depth=10, device=device))
     result = benchmark_mcts_vs_heuristic(
