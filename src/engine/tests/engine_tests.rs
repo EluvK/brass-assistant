@@ -835,6 +835,53 @@ fn industry_card_build_requires_network() {
 }
 
 #[test]
+fn kidderminster_worcester_link_connects_southern_brewery_farm() {
+    let mut state = setup(2);
+    let pid = 0;
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::Industry {
+        industries: [IndustryType::Brewery, IndustryType::Brewery],
+        n: 1,
+    }];
+    state.place_tile(
+        Loc::Kidderminster,
+        0,
+        BoardTile {
+            player: pid,
+            ind: IndustryType::CoalMine,
+            def: industry_tiles(IndustryType::CoalMine)[0],
+            flipped: false,
+            resource_cubes: 1,
+        },
+    );
+
+    state.set_link(connection_via_farm(), pid);
+
+    assert!(
+        brass_engine::graph::is_in_network(&state, pid, Loc::BrewerySouth),
+        "the Kidderminster-Worcester link must put the southern farm in the network"
+    );
+    let iron_sources = iron_source_options(&state, 1)
+        .into_iter()
+        .next()
+        .expect("Brewery I needs an iron source");
+    let result = execute_build(
+        &mut state,
+        pid,
+        Loc::BrewerySouth,
+        0,
+        IndustryType::Brewery,
+        &[],
+        &iron_sources,
+        0,
+    );
+    assert!(
+        result.is_ok(),
+        "the southern farm must be buildable through connection 29: {result:?}"
+    );
+}
+
+#[test]
 fn loan_lowers_income_by_three_levels() {
     let mut state = setup(4);
     let pid = state.current_player_id();

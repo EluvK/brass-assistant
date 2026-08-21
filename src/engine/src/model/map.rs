@@ -392,6 +392,18 @@ pub fn connections() -> &'static [Connection] {
             }
         };
     }
+    macro_rules! conn_via_farm {
+        ($id:expr, $a:expr, $b:expr, $canal:expr, $rail:expr, $farm:expr) => {
+            Connection {
+                id: $id,
+                a: $a,
+                b: $b,
+                canal: $canal,
+                rail: $rail,
+                via_farm: Some($farm),
+            }
+        };
+    }
     &[
         conn!(0, Belper, Derby, true, true),
         conn!(1, Belper, Leek, false, true),
@@ -422,7 +434,7 @@ pub fn connections() -> &'static [Connection] {
         conn!(26, Dudley, Wolverhampton, true, true),
         conn!(27, Gloucester, Redditch, true, true),
         conn!(28, Gloucester, Worcester, true, true),
-        conn!(29, Kidderminster, Worcester, true, true), // via southern farm
+        conn_via_farm!(29, Kidderminster, Worcester, true, true, BrewerySouth),
         conn!(30, Leek, StokeOnTrent, true, true),
         conn!(31, Nuneaton, Tamworth, true, true),
         conn!(32, Redditch, Oxford, true, true),
