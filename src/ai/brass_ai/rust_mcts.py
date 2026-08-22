@@ -64,6 +64,7 @@ class RustMCTSConfig:
     dirichlet_alpha: float = 0.3
     dirichlet_weight: float = 0.15
     batch_size: int = 64
+    candidate_k: int = 4
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -93,6 +94,7 @@ class RustISMCTS:
             self.cfg.dirichlet_weight,
             add_root_noise,
             self.cfg.batch_size,
+            self.cfg.candidate_k,
         )
         visits = {candidate_id: count for candidate_id, _canon, count in children}
         canon_by_candidate = {candidate_id: canon for candidate_id, canon, _count in children}

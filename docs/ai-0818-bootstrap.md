@@ -111,7 +111,39 @@ device: cuda
 [accepted imitation game] 2000/2000 elapsed: 390s |ETA:   0s                                       , samples: 250915  
 generated 250915 imitation samples from 2000 heuristic games (390s)
 [train] 10/10 elapsed: 275s |ETA:   0s                                                             trained (289s): policy=1.524 value=0.757 top1=57.4% top3=84.5% top5=95.7% type_top1=60.7% entropy=1.37 candidates=10.9/p95=13
-[bench sims=60] 20/20 elapsed:  15s |ETA:   0s                                                     
+[bench sims=60] 20/20 elapsed:  15s |ETA:   0s
 MCTS(bootstrap net) vs heuristic: win_rate=0% (mcts_vp=33.3 vs heuristic_vp=106.1)
 checkpoint saved: checkpoints/bootstrap-test0819.pt
 
+--- 0822 修改动作空间以后，训练用的
+python src/ai/bootstrap_imitation.py --games 1000 --epochs 10 --workers 8 --min-avg-vp 90 --min-vp 78 --max-attempts 20000 --ckpt checkpoints/bootstrap-0822.pt
+ policy=1.625 value=0.788 top1=55.3% top3=82.4% top5=94.8% type_top1=58.5% entropy=1.37 candidates=11.2/p95=13
+[bench sims=60] 20/20 elapsed:  10s |ETA:   0s
+MCTS(bootstrap net) vs heuristic: win_rate=5% (mcts_vp=82.7 vs heuristic_vp=102.2)
+checkpoint saved: checkpoints/bootstrap-0822.pt
+
+---  0822 候选分布错位分析与验证
+
+今天沿 bootstrap -> policy network -> Rust NN-MCTS -> benchmark 的完整链路检查后，确认
+0822 退化的首要原因不是 235 维 CARD 特征本身无法学习，而是训练候选集和推理候选集不一致：
+
+- imitation 的 `heuristic_candidates()` 只保留 `candidate_actions_k(..., 4)` 的 teacher shortlist，平均约 11 个候选；policy loss 只在这个 shortlist 内归一化。
+- NN-MCTS 原先在每个节点扩展完整 `legal_moves()`。初始局面实测约 626 个合法 concrete actions，其中绝大多数从未作为训练候选出现。
+- 因此网络没有学会压低 shortlist 之外的合法动作。新增 CARD 语义后，未训练的 action-feature 组合更多，full-legal MCTS 更容易被随机偏高的候选 logit 和错误先验带偏。
+
+为验证该结论，临时增加了 `candidate_k` 配置，让 NN-MCTS 也使用 `heuristic_ai::candidate_actions_k(..., 4)`。同样的 1000 局、10 epoch bootstrap 结果为：
+
+```text
+shortlist MCTS: mcts_vp=82.7, heuristic_vp=102.2, win_rate=5%
+此前 full-legal MCTS: mcts_vp=32.9, heuristic_vp=97.9, win_rate=0%
+```
+
+该结果显著恢复了策略强度，证明 full-legal 推理中的未训练候选是主要故障来源。当前 `candidate_k` 改动属于诊断/临时基线，不应作为最终能力边界；它会让 MCTS 永久受 heuristic shortlist 限制，也可能错过 shortlist 之外的更优合法动作。
+
+后续执行路径：
+
+1. 保留当前 shortlist MCTS 作为可复现实验基线
+2. 修改 imitation candidate 生成：保留 teacher shortlist，并从 full legal actions 补充 16--32 个结构多样的 hard negatives，覆盖不同 action type、地点/连接、产业和资源来源。teacher 动作保留正概率，negative target 为 0 或极低权重。
+3. 使用 hard-negative 数据重新训练后，恢复 NN-MCTS 的 full `legal_moves()`，对比 shortlist MCTS 与 full-legal MCTS 的 VP、胜率和动作类型分桶结果。
+4. 如果 full-legal 表现稳定，再移除 `candidate_k` 正式配置。长期方案是在训练时从可恢复的 `GameState` 动态生成 full legal candidates，避免把数百个动作特征全部持久化到 replay。
+5. 在上述分布对齐完成前，不启动大规模 self-play；held-out teacher validation 和 full-legal benchmark 必须优先于继续扩大 bootstrap 样本量。

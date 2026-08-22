@@ -179,7 +179,7 @@ impl PyGame {
     /// and must return `(candidate_logits (rows,max_candidates), values
     /// (rows,4))`. Returns (best_canonical, root children as (slot, canonical,
     /// visits) best-first, legal candidate ids).
-    #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64))]
+    #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64, candidate_k=4))]
     fn search_net(
         &self,
         py: Python<'_>,
@@ -191,6 +191,7 @@ impl PyGame {
         dirichlet_weight: f64,
         add_root_noise: bool,
         batch_size: usize,
+        candidate_k: usize,
     ) -> PyResult<(Option<String>, Vec<(usize, String, u32)>, Vec<usize>)> {
         let cfg = crate::nn_mcts::NnMctsConfig {
             c_puct,
@@ -198,6 +199,7 @@ impl PyGame {
             dirichlet_alpha,
             dirichlet_weight,
             batch_size: batch_size.max(1),
+            candidate_k,
         };
         let res = crate::nn_mcts::search_net(&self.state, &cfg, sims, add_root_noise, &net_fn, py)?;
         Ok((res.best_canonical, res.children, res.legal_candidate_ids))

@@ -203,7 +203,7 @@ def _normalize(vps: np.ndarray) -> np.ndarray:
 
 def _generate_imitation_game(args):
     """Generate one heuristic game in a worker process."""
-    seed, players, max_moves = args
+    seed, players, max_moves, full_legal_candidates = args
 
     state = be.GameState(seed=seed, players=players)
     local = []
@@ -211,10 +211,24 @@ def _generate_imitation_game(args):
     while not state.game_over and moves < max_moves:
         moves += 1
         pid = state.current_player_id
-        candidate_tensor, teacher_scores, canon, chosen_index, _score = encode_teacher_candidates(state)
-        score_values = teacher_scores.numpy().astype(np.float64)
-        weights = np.exp((score_values - score_values.max()) / 1.0)
-        policy = (weights / weights.sum()).astype(np.float32)
+        if full_legal_candidates:
+            canonical_candidates, candidate_tensor = encode_legal_candidates(state)
+            # Reuse the same Rust teacher bridge as the shortlist path. The
+            # teacher canonical must be present in the complete legal set.
+            _short_features, _short_scores, canon, _short_index, _short_score = (
+                encode_teacher_candidates(state)
+            )
+            try:
+                teacher_index = canonical_candidates.index(canon)
+            except ValueError as exc:
+                raise RuntimeError("heuristic action is missing from legal candidates") from exc
+            policy = np.zeros(len(canonical_candidates), dtype=np.float32)
+            policy[teacher_index] = 1.0
+        else:
+            candidate_tensor, teacher_scores, canon, _chosen_index, _score = encode_teacher_candidates(state)
+            score_values = teacher_scores.numpy().astype(np.float64)
+            weights = np.exp((score_values - score_values.max()) / 1.0)
+            policy = (weights / weights.sum()).astype(np.float32)
         board, links, g, oh, op = state.state_to_tensor()
         local.append(
             Sample(pid=pid, board=board, links=links, global_vec=g,
@@ -249,6 +263,7 @@ def generate_imitation_samples(
     min_avg_vp: float | None = None,
     min_vp: float | None = None,
     max_attempts: int | None = None,
+    full_legal_candidates: bool = False,
 ):
     """Heuristic-vs-heuristic games: one-hot imitation samples (cheap, no MCTS).
 
@@ -302,7 +317,7 @@ def generate_imitation_samples(
             "NUMEXPR_NUM_THREADS",
         ):
             os.environ[name] = "1"
-    jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
+    jobs = [(gi, players, max_moves, full_legal_candidates) for gi in range(max_attempts)]
         
     progress = Progress(total=n_games, label="accepted imitation game")
     accepted_games = 0
@@ -374,6 +389,7 @@ def generate_imitation_sample_shards(
     min_avg_vp: float | None = None,
     min_vp: float | None = None,
     max_attempts: int | None = None,
+    full_legal_candidates: bool = False,
 ) -> list[Path]:
     """Generate imitation games and spill each accepted game to disk.
 
@@ -403,14 +419,15 @@ def generate_imitation_sample_shards(
 
     _generate_imitation_with_sink(
         n_games, players, max_moves, workers, min_avg_vp, min_vp,
-        max_attempts, sink,
+        max_attempts, sink, full_legal_candidates,
     )
     flush()
     return paths
 
 
 def _generate_imitation_with_sink(
-    n_games, players, max_moves, workers, min_avg_vp, min_vp, max_attempts, sink
+    n_games, players, max_moves, workers, min_avg_vp, min_vp, max_attempts, sink,
+    full_legal_candidates=False,
 ):
     """Shared generator core; ``sink`` is called for each accepted game."""
     # Keep the original implementation's validation and scheduling behavior,
@@ -435,7 +452,7 @@ def _generate_imitation_with_sink(
     if worker_count > 1:
         for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             os.environ[name] = "1"
-    jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
+    jobs = [(gi, players, max_moves, full_legal_candidates) for gi in range(max_attempts)]
     accepted_games = attempted_games = 0
     progress = Progress(total=n_games, label="accepted imitation game")
     def consume(result):

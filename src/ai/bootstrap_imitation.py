@@ -40,6 +40,10 @@ def main():
                     help="only keep games whose lowest final VP is strictly above this value")
     ap.add_argument("--max-attempts", type=int, default=None,
                     help="candidate-game cap when a VP quality filter is enabled (default: 10x --games)")
+    ap.add_argument("--full-legal-candidates", action="store_true",
+                    help="train on every legal candidate instead of the teacher shortlist")
+    ap.add_argument("--mcts-full-legal", action="store_true",
+                    help="benchmark with every legal candidate instead of the shortlist")
     args = ap.parse_args()
 
     # Windows spawn re-imports this script in every imitation worker.  Keep
@@ -65,6 +69,7 @@ def main():
             min_avg_vp=args.min_avg_vp,
             min_vp=args.min_vp,
             max_attempts=args.max_attempts,
+            full_legal_candidates=args.full_legal_candidates,
         )
         print(f"generated imitation shards for {args.games} heuristic games "
               f"({time.time()-t0:.0f}s)")
@@ -77,7 +82,7 @@ def main():
         losses = []
         total_samples = 0
         for epoch in range(args.epochs):
-            print(f"epoch {epoch+1}/{args.epochs} ... \n")
+            print(f"\nepoch {epoch+1}/{args.epochs} ...")
             for shard in shards:
                 with open(shard, "rb") as f:
                     shard_samples = pickle.load(f)
@@ -116,7 +121,10 @@ def main():
             "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
         }, args.ckpt)
 
-        mcts = RustISMCTS(net, RustMCTSConfig(c_puct=2.5, max_depth=10, device=device))
+        mcts = RustISMCTS(net, RustMCTSConfig(
+            c_puct=2.5, max_depth=10, device=device,
+            candidate_k=0 if args.mcts_full_legal else 4,
+        ))
         result = benchmark_mcts_vs_heuristic(
             mcts, args.eval_sims, args.eval_games
         )

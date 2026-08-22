@@ -212,6 +212,27 @@ fn score_sell_plan(
 
     let score = vp_score + total_bonus + urgency_bonus + income_stream + canal_beer_drain_bonus;
 
+    // Canonical Sell actions use ascending city-tile keys. The plan above is
+    // ranked by merchant bonus/value, so its construction order can differ
+    // from legal_moves() even when it describes the same concrete action.
+    // Sort the aligned route vectors before returning the teacher move.
+    let mut routes: Vec<(usize, usize, bool)> = keys
+        .into_iter()
+        .zip(merchant_indices)
+        .zip(use_merchant)
+        .map(|((key, merchant), use_merchant)| (key, merchant, use_merchant))
+        .collect();
+    routes.sort_by_key(|(key, _, _)| *key);
+    let (keys, merchant_indices, use_merchant) = routes.into_iter().fold(
+        (Vec::new(), Vec::new(), Vec::new()),
+        |(mut keys, mut merchants, mut beer), (key, merchant, use_merchant)| {
+            keys.push(key);
+            merchants.push(merchant);
+            beer.push(use_merchant);
+            (keys, merchants, beer)
+        },
+    );
+
     Some(Decision {
         mv: Move::Sell {
             keys,

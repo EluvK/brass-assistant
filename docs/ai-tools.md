@@ -21,14 +21,18 @@ Python 不实现规则或 canonical action 解析。它负责候选评分网络�
 Rust GameState
   -> legal concrete candidates / action features
   -> PolicyValueNet(state, candidates) -> candidate logits + value
-  -> Rust ISMCTS over full legal candidates
+  -> Rust ISMCTS over configured candidate set
 
 Rust heuristic teacher
   -> bounded scored shortlist (at most 14 candidates)
   -> imitation replay / soft policy target
 ```
 
-MCTS 推理展开完整合法动作集合。为避免 replay 随动作组合空间爆炸，imitation 训练只持久化 teacher shortlist：top-4 Build、top-4 Network、其他每类最佳动作，必要时再加入 heuristic 的 2-ply 最终选择。当前每个 imitation 样本最多 14 个候选，而不是所有 legal actions。
+默认 MCTS 使用与 teacher 一致的 bounded shortlist（`candidate_k=4`）：top-4 Build、top-4
+Network、其他每类最佳动作，必要时再加入 heuristic 的 2-ply 最终选择。设置
+`candidate_k=0` 时恢复为完整 `legal_moves()`。imitation 默认持久化 teacher shortlist，每个样本最多
+14 个候选；实验开关 `--full-legal-candidates` 会改为保存该状态的全部合法候选，并在 full candidate
+集合上使用 heuristic 选择动作作为 one-hot target。
 
 ## Rust-Python 契约
 
@@ -113,6 +117,29 @@ MCTS vs heuristic benchmark
 
 解释：top-k 是训练后的 teacher target 命中率；当前先在训练 replay 上计算，不能作为泛化结果。`candidates` 是 teacher shortlist 大小，不是 MCTS 的完整合法动作数。checkpoint 是模型 `state_dict`，不是完整 Trainer 恢复状态。
 
+候选集对齐实验：
+
+```powershell
+# full legal candidates 训练 + full legal MCTS benchmark
+python src/ai/bootstrap_imitation.py --games 100 --epochs 1 --workers 8 `
+  --full-legal-candidates --mcts-full-legal `
+  --ckpt checkpoints/bootstrap-full-legal-test.pt
+```
+
+`--full-legal-candidates` 会显著增加临时 replay shard 体积，建议先用 100 局检查 candidate count、
+生成速度和磁盘占用。`--mcts-full-legal` 仅影响 bootstrap 末尾 benchmark；不加时 benchmark 使用默认
+`candidate_k=4` shortlist。Rust extension 改动后必须重新运行 `maturin develop`。
+
+full-legal 持久化实验结果（2026-08-22）：2 个 worker 可以运行，但 40 局已经产生约 2 GB
+replay 数据；8 个 worker 在把完整 `Sample` 列表通过 multiprocessing queue pickle 回主进程时触发
+`MemoryError`。原因是每个状态平均约 500 个合法候选，每个候选包含 235 维 `float32` 特征，单局
+约 125 个状态，多个 worker 的结果会同时驻留内存。当前不应继续用该模式做正式 bootstrap。
+
+同一轮排查还修复了两个 canonical 规范化问题：heuristic Sell 返回的 tile keys 已统一按升序排列，
+Scout 返回的 card indices 已统一按升序排列；两者现在与 `legal_moves()` 的 concrete canonical
+顺序一致。后续 full-legal 能力应通过 hard negatives 或训练时动态生成候选实现，而不是把完整
+候选特征直接持久化到 replay。
+
 ### 2. Rust 和 Python 回归
 
 状态：已验证。
@@ -163,7 +190,10 @@ econ: (2,)
 ## 当前风险与下一步
 
 - action feature v2 已将被消耗卡片编码为稳定语义；资源来源和 Sell 结构仍保留在 concrete action 特征中，后续再做 collision 统计。
-- imitation shortlist 与 MCTS full legal candidates 存在分布差异；下一步应加入有限 数量的 hard negatives，而不是将完整候选集合写入 replay。
+- 当前同时支持 shortlist 对齐实验和 full-legal candidate 实验。full-legal 训练直接保存所有候选，
+  已验证会造成 replay shard 体积和 worker IPC 内存不可接受；长期需要在 full-legal 与
+  hard-negative/动态候选方案之间做规模和泛化能力对比。当前正式 bootstrap 应继续使用 bounded
+  shortlist，直到 hard-negative 或动态候选方案完成。
 - policy top-k 当前是在训练数据上评估；需要建立固定 held-out teacher validation。
 - value 是 final normalized VP 预测，不是校准后的 win probability。
 - `train_mp.py` 和实验工具依赖已安装的 Rust extension；使用前应完成最小 CPU smoke run。

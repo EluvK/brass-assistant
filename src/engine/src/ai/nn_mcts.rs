@@ -16,8 +16,9 @@
 
 use crate::bridge::action_features;
 use crate::engine::{advance_turn, handle_turn_result};
+use crate::heuristic_ai;
 use crate::move_codec;
-use crate::rules::{Move, legal_moves};
+use crate::rules::Move;
 use crate::state::GameState;
 use numpy::PyArray2;
 use numpy::PyArrayMethods;
@@ -41,6 +42,9 @@ pub struct NnMctsConfig {
     pub dirichlet_alpha: f64,
     pub dirichlet_weight: f64,
     pub batch_size: usize,
+    /// Per-type shortlist width, shared with imitation teacher candidates.
+    /// Zero means expand every legal concrete move.
+    pub candidate_k: usize,
 }
 
 impl Default for NnMctsConfig {
@@ -51,6 +55,7 @@ impl Default for NnMctsConfig {
             dirichlet_alpha: 0.3,
             dirichlet_weight: 0.15,
             batch_size: 64,
+            candidate_k: 4,
         }
     }
 }
@@ -333,9 +338,18 @@ fn descend(
 
         let node = &arena[node_idx];
         if !node.expanded {
-            // Expand every concrete executable move, preserving card and
-            // resource choices for the action encoder.
-            let moves = legal_moves(work);
+            // Keep inference candidates aligned with the imitation teacher.
+            // The teacher uses candidate_actions_k(..., 4); expanding every
+            // legal concrete move here would expose the net to many actions
+            // that never appeared in the bootstrap training targets.
+            let moves: Vec<Move> = if cfg.candidate_k == 0 {
+                crate::rules::legal_moves(work)
+            } else {
+                heuristic_ai::candidate_actions_k(work, cfg.candidate_k)
+                    .into_iter()
+                    .map(|decision| decision.mv)
+                    .collect()
+            };
             let mut children: Vec<Child> = Vec::new();
             let mut legal_candidate_ids: Vec<usize> = Vec::new();
             let mut candidate_features: Vec<Vec<f32>> = Vec::new();

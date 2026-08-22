@@ -59,7 +59,11 @@ fn score_scout_plan(
     let hand_refresh_score = scout_hand_refresh_score(card_choices);
     let score = discard_score + hand_refresh_score;
 
-    let card_indices: [usize; 3] = [discard[0].0, discard[1].0, discard[2].0];
+    // legal_moves emits Scout combinations in ascending index order. Keep
+    // the teacher canonical representation identical regardless of the
+    // utility ranking order used to choose discarded cards.
+    let mut card_indices: [usize; 3] = [discard[0].0, discard[1].0, discard[2].0];
+    card_indices.sort_unstable();
     Some(Decision {
         mv: Move::Scout { card_indices },
         score,
