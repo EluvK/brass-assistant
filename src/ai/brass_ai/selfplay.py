@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import multiprocessing as mp
 import os
+import pickle
+from pathlib import Path
 
 from .progress import Progress
 import numpy as np
@@ -361,6 +363,121 @@ def generate_imitation_samples(
                     
     progress.done()
     return samples
+
+
+def generate_imitation_sample_shards(
+    n_games: int,
+    sample_dir: str | os.PathLike,
+    players: int = 4,
+    max_moves: int = 600,
+    workers: int | None = None,
+    min_avg_vp: float | None = None,
+    min_vp: float | None = None,
+    max_attempts: int | None = None,
+) -> list[Path]:
+    """Generate imitation games and spill each accepted game to disk.
+
+    Unlike :func:`generate_imitation_samples`, this function never retains the
+    complete replay set in the parent process.  A shard contains one pickled
+    ``list[Sample]`` and can be loaded, trained, and released independently.
+    """
+    out_dir = Path(sample_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    buffered: list[Sample] = []
+
+    def flush():
+        if not buffered:
+            return
+        path = out_dir / f"imitation-{len(paths):06d}.pkl"
+        with path.open("wb") as f:
+            pickle.dump(buffered[:], f, protocol=pickle.HIGHEST_PROTOCOL)
+        paths.append(path)
+        buffered.clear()
+
+    def sink(local, _vps):
+        buffered.extend(local)
+        # Keep at most a few dozen games' samples in memory while generating.
+        if len(buffered) >= 4096:
+            flush()
+
+    _generate_imitation_with_sink(
+        n_games, players, max_moves, workers, min_avg_vp, min_vp,
+        max_attempts, sink,
+    )
+    flush()
+    return paths
+
+
+def _generate_imitation_with_sink(
+    n_games, players, max_moves, workers, min_avg_vp, min_vp, max_attempts, sink
+):
+    """Shared generator core; ``sink`` is called for each accepted game."""
+    # Keep the original implementation's validation and scheduling behavior,
+    # but consume accepted results immediately instead of extending a global list.
+    if n_games <= 0:
+        return
+    if workers is not None and workers < 1:
+        raise ValueError("workers must be >= 1")
+    if min_avg_vp is not None and not np.isfinite(min_avg_vp):
+        raise ValueError("min_avg_vp must be finite")
+    if min_vp is not None and not np.isfinite(min_vp):
+        raise ValueError("min_vp must be finite")
+    quality_filter = min_avg_vp is not None or min_vp is not None
+    if max_attempts is None:
+        max_attempts = n_games * 10 if quality_filter else n_games
+    if max_attempts < n_games:
+        raise ValueError("max_attempts must be >= n_games")
+    def accepted(vps):
+        return ((min_avg_vp is None or float(vps.mean()) > min_avg_vp)
+                and (min_vp is None or float(vps.min()) > min_vp))
+    worker_count = min(max_attempts, workers if workers is not None else min(8, os.cpu_count() or 1))
+    if worker_count > 1:
+        for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            os.environ[name] = "1"
+    jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
+    accepted_games = attempted_games = 0
+    progress = Progress(total=n_games, label="accepted imitation game")
+    def consume(result):
+        nonlocal accepted_games, attempted_games
+        attempted_games += 1
+        local, vps = result
+        if accepted(vps):
+            sink(local, vps)
+            accepted_games += 1
+        progress.update(
+            accepted_games,
+            extra=(f"accepted: {accepted_games}/{n_games}, attempted: {attempted_games}"),
+        )
+        return accepted_games == n_games
+    if worker_count == 1:
+        for job in jobs:
+            if consume(_generate_imitation_game(job)):
+                break
+    else:
+        with ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn")) as pool:
+            pending = {}
+            next_submit = 0
+            while next_submit < worker_count:
+                pending[pool.submit(_generate_imitation_game, jobs[next_submit])] = next_submit
+                next_submit += 1
+            completed = {}
+            next_emit = 0
+            while pending and accepted_games < n_games:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = pending.pop(future)
+                    completed[index] = future.result()
+                    if next_submit < max_attempts:
+                        pending[pool.submit(_generate_imitation_game, jobs[next_submit])] = next_submit
+                        next_submit += 1
+                while next_emit in completed and accepted_games < n_games:
+                    result = completed.pop(next_emit)
+                    next_emit += 1
+                    consume(result)
+    if accepted_games != n_games:
+        raise RuntimeError(f"only accepted {accepted_games}/{n_games} imitation games after {attempted_games} attempts; relax min_avg_vp/min_vp or increase max_attempts")
+    progress.done()
 
 
 def play_batch(

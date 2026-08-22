@@ -73,17 +73,29 @@ class Trainer:
         losses = []
         prog = Progress(self.cfg.epochs, "train", every_s=10.0)
         for e in range(self.cfg.epochs):
-            idx = np.random.permutation(n)
-            for start in range(0, n, self.cfg.batch_size):
-                chunk = [samples[i] for i in idx[start:start + self.cfg.batch_size]]
-                batch = _to_batch(chunk)
-                losses.append(train_on_batch(self.net, batch, self.cfg, self.optimizer))
+            losses.extend(self.train_one_epoch(samples))
             self.scheduler.step()
             self.epoch_count += 1
             prog.update(e + 1)
         stats = _mean_losses(losses)
         stats.update(evaluate_policy(self.net, samples, self.cfg.device))
         return stats
+
+    def train_one_epoch(self, samples: list[Sample]) -> list[dict]:
+        """Train one epoch without advancing the LR scheduler.
+
+        This is useful when a dataset is streamed from multiple disk shards:
+        the caller can process every shard once, then advance the scheduler
+        exactly once for the complete logical epoch.
+        """
+        if not samples:
+            return []
+        idx = np.random.permutation(len(samples))
+        losses = []
+        for start in range(0, len(samples), self.cfg.batch_size):
+            chunk = [samples[i] for i in idx[start:start + self.cfg.batch_size]]
+            losses.append(train_on_batch(self.net, _to_batch(chunk), self.cfg, self.optimizer))
+        return losses
 
     def current_lr(self) -> float:
         return self.scheduler.get_last_lr()[0]
