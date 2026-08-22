@@ -12,6 +12,7 @@ from brass_ai.hierarchical_policy import (
     pad_candidate_features,
 )
 from brass_ai.net import PolicyValueNet
+from brass_ai.selfplay import Sample, materialize_sample
 
 
 def test_engine_candidates_feed_variable_candidate_policy():
@@ -54,3 +55,19 @@ def test_candidate_feature_compression_is_lossless():
     packed = compress_candidate_features(features.numpy())
     restored = packed.astype(np.float32) / 4.0
     np.testing.assert_array_equal(restored, features.numpy())
+
+
+def test_snapshot_replay_materializes_current_full_legal_candidates():
+    state = be.GameState(seed=51, players=4)
+    teacher, _, _ = state.choose_heuristic()
+    sample = Sample(
+        pid=state.current_player_id, era=state.era, value=np.zeros(4, dtype=np.float32),
+        econ=np.zeros(2, dtype=np.float32), snapshot=bytes(state.snapshot()),
+        teacher_canonical=teacher,
+    )
+    restored = materialize_sample(sample)
+    canonical, features = encode_legal_candidates(state)
+    assert restored.candidates.shape == features.numpy().shape
+    np.testing.assert_array_equal(restored.candidates, features.numpy())
+    assert restored.policy.sum() == 1.0
+    assert restored.policy[canonical.index(teacher)] == 1.0

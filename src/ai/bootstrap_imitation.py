@@ -21,7 +21,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from brass_ai.selfplay import generate_imitation_sample_shards
+from brass_ai.selfplay import generate_imitation_sample_shards, materialize_samples
 
 
 def main():
@@ -112,6 +112,7 @@ def main():
                 with open(shard, "rb") as f:
                     shard_samples = pickle.load(f)
                 total_samples += len(shard_samples) if epoch == 0 else 0
+                shard_samples = materialize_samples(shard_samples)
                 progress_label = f"train e{epoch+1}/{args.epochs} s{shard_index}/{len(shards)}"
                 # print(f"[{progress_label}] {len(shard_samples)} samples: {shard.name}")
                 losses.extend(trainer.train_one_epoch(shard_samples, progress_label))
@@ -127,6 +128,7 @@ def main():
             for shard in shards:
                 with open(shard, "rb") as f:
                     shard_samples = pickle.load(f)
+                shard_samples = materialize_samples(shard_samples)
                 shard_metrics = evaluate_policy(
                     net, shard_samples, device,
                     max_candidate_batch=args.max_candidate_batch,

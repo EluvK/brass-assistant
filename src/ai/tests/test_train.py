@@ -59,7 +59,7 @@ def test_imitation_quality_filter_retries_until_it_has_requested_games(monkeypat
     seen_seeds = []
 
     def fake_game(args):
-        seed, _, _ = args
+        seed, *_ = args
         seen_seeds.append(seed)
         # Both thresholds are strict: seed 0 fails at exactly 60 VP; seed 1
         # qualifies with mean 81 and minimum 81.

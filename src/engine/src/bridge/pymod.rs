@@ -17,6 +17,7 @@
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -30,7 +31,25 @@ use crate::state::GameState;
 #[pyclass(name = "GameState")]
 pub struct PyGame {
     state: GameState,
+    // The engine is deterministic after setup.  Recording engine-level events
+    // gives Python a compact, opaque, and lossless replay snapshot without
+    // exposing GameState internals as a second rules implementation.
+    initial_seed: u64,
+    history: Vec<SnapshotEvent>,
+    snapshotable: bool,
 }
+
+#[derive(Clone)]
+enum SnapshotEvent {
+    Apply(String),
+    ApplyRaw(String),
+    AdvanceTurn,
+    FinishCanalEra,
+    FinishGame,
+}
+
+const SNAPSHOT_MAGIC: &[u8; 4] = b"BASS";
+const SNAPSHOT_VERSION: u8 = 1;
 
 #[pymethods]
 impl PyGame {
@@ -44,6 +63,9 @@ impl PyGame {
         let rng = StdRng::seed_from_u64(seed);
         Ok(PyGame {
             state: GameState::new(rng, players),
+            initial_seed: seed,
+            history: Vec::new(),
+            snapshotable: true,
         })
     }
 
@@ -94,7 +116,30 @@ impl PyGame {
     fn clone(&self) -> Self {
         PyGame {
             state: self.state.clone(),
+            initial_seed: self.initial_seed,
+            history: self.history.clone(),
+            snapshotable: self.snapshotable,
         }
+    }
+
+    /// Opaque, versioned snapshot.  Restoring it replays engine-level events
+    /// from the original deterministic setup, preserving hidden hands, deck,
+    /// markets and every rule-relevant field.
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if !self.snapshotable {
+            return Err(PyValueError::new_err(
+                "cannot snapshot a determinized GameState; it has no reproducible setup history",
+            ));
+        }
+        Ok(PyBytes::new(
+            py,
+            &encode_snapshot(self.initial_seed, self.state.player_count(), &self.history),
+        ))
+    }
+
+    #[staticmethod]
+    fn from_snapshot(snapshot: Vec<u8>) -> PyResult<Self> {
+        restore_snapshot(&snapshot)
     }
 
     /// List of concrete legal moves as (node-local action_id, canonical,
@@ -216,6 +261,8 @@ impl PyGame {
         let summary = apply_move(&mut self.state, &mv).map_err(|e| PyValueError::new_err(e))?;
         let tr = crate::engine::advance_turn(&mut self.state);
         crate::engine::handle_turn_result(&mut self.state, tr);
+        self.history
+            .push(SnapshotEvent::Apply(canonical.to_string()));
         Ok(summary)
     }
 
@@ -231,7 +278,11 @@ impl PyGame {
         let mv = move_codec::decode(canonical)
             .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
         match apply_move(&mut self.state, &mv) {
-            Ok(summary) => Ok((summary, true)),
+            Ok(summary) => {
+                self.history
+                    .push(SnapshotEvent::ApplyRaw(canonical.to_string()));
+                Ok((summary, true))
+            }
             Err(e) => Ok((format!("!!失败: {e}"), false)),
         }
     }
@@ -241,22 +292,26 @@ impl PyGame {
     /// transition (the caller decides when to call finish_canal_era/finish_game).
     fn advance_turn_raw(&mut self) -> PyResult<String> {
         use crate::engine::TurnResult;
-        Ok(match crate::engine::advance_turn(&mut self.state) {
+        let result = match crate::engine::advance_turn(&mut self.state) {
             TurnResult::Continue => "continue".to_string(),
             TurnResult::EndCanalEra => "end_canal_era".to_string(),
             TurnResult::EndGame => "end_game".to_string(),
-        })
+        };
+        self.history.push(SnapshotEvent::AdvanceTurn);
+        Ok(result)
     }
 
     /// Run the canal-era score + cleanup + reshuffle (the driver calls this
     /// AFTER printing the era score detail / cleanup log).
     fn finish_canal_era(&mut self) {
         crate::engine::handle_turn_result(&mut self.state, crate::engine::TurnResult::EndCanalEra);
+        self.history.push(SnapshotEvent::FinishCanalEra);
     }
 
     /// Run the end-of-game scoring (the driver calls this after the final move).
     fn finish_game(&mut self) {
         crate::engine::handle_turn_result(&mut self.state, crate::engine::TurnResult::EndGame);
+        self.history.push(SnapshotEvent::FinishGame);
     }
 
     // ------------------------------------------------------- replay (logging)
@@ -402,7 +457,12 @@ impl PyGame {
     fn determinize(&self) -> Self {
         let mut rng = StdRng::from_entropy();
         let state = mcts_ai::determinize(&self.state, &mut rng);
-        PyGame { state }
+        PyGame {
+            state,
+            initial_seed: self.initial_seed,
+            history: self.history.clone(),
+            snapshotable: false,
+        }
     }
 
     /// Encode the state into numpy arrays:
@@ -462,6 +522,124 @@ impl PyGame {
             d.score,
         )
     }
+}
+
+fn encode_snapshot(seed: u64, players: usize, history: &[SnapshotEvent]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + history.iter().map(snapshot_event_size).sum::<usize>());
+    out.extend_from_slice(SNAPSHOT_MAGIC);
+    out.push(SNAPSHOT_VERSION);
+    out.extend_from_slice(&seed.to_le_bytes());
+    out.push(players as u8);
+    out.extend_from_slice(&(history.len() as u32).to_le_bytes());
+    for event in history {
+        match event {
+            SnapshotEvent::Apply(canonical) => push_snapshot_move(&mut out, 0, canonical),
+            SnapshotEvent::ApplyRaw(canonical) => push_snapshot_move(&mut out, 1, canonical),
+            SnapshotEvent::AdvanceTurn => out.push(2),
+            SnapshotEvent::FinishCanalEra => out.push(3),
+            SnapshotEvent::FinishGame => out.push(4),
+        }
+    }
+    out
+}
+
+fn snapshot_event_size(event: &SnapshotEvent) -> usize {
+    match event {
+        SnapshotEvent::Apply(canonical) | SnapshotEvent::ApplyRaw(canonical) => 3 + canonical.len(),
+        _ => 1,
+    }
+}
+
+fn push_snapshot_move(out: &mut Vec<u8>, tag: u8, canonical: &str) {
+    debug_assert!(canonical.len() <= u16::MAX as usize);
+    out.push(tag);
+    out.extend_from_slice(&(canonical.len() as u16).to_le_bytes());
+    out.extend_from_slice(canonical.as_bytes());
+}
+
+fn restore_snapshot(snapshot: &[u8]) -> PyResult<PyGame> {
+    if snapshot.len() < 18 || &snapshot[..4] != SNAPSHOT_MAGIC {
+        return Err(PyValueError::new_err("invalid GameState snapshot magic"));
+    }
+    if snapshot[4] != SNAPSHOT_VERSION {
+        return Err(PyValueError::new_err(format!(
+            "unsupported GameState snapshot version: {}",
+            snapshot[4]
+        )));
+    }
+    let seed = u64::from_le_bytes(snapshot[5..13].try_into().unwrap());
+    let players = snapshot[13] as usize;
+    if !(2..=4).contains(&players) {
+        return Err(PyValueError::new_err(
+            "invalid GameState snapshot player count",
+        ));
+    }
+    let event_count = u32::from_le_bytes(snapshot[14..18].try_into().unwrap()) as usize;
+    let mut game = PyGame {
+        state: GameState::new(StdRng::seed_from_u64(seed), players),
+        initial_seed: seed,
+        history: Vec::with_capacity(event_count),
+        snapshotable: true,
+    };
+    let mut pos = 18;
+    for _ in 0..event_count {
+        let tag = *snapshot
+            .get(pos)
+            .ok_or_else(|| PyValueError::new_err("truncated GameState snapshot"))?;
+        pos += 1;
+        match tag {
+            0 | 1 => {
+                if pos + 2 > snapshot.len() {
+                    return Err(PyValueError::new_err("truncated GameState snapshot move"));
+                }
+                let len = u16::from_le_bytes(snapshot[pos..pos + 2].try_into().unwrap()) as usize;
+                pos += 2;
+                let bytes = snapshot
+                    .get(pos..pos + len)
+                    .ok_or_else(|| PyValueError::new_err("truncated GameState snapshot move"))?;
+                pos += len;
+                let canonical = std::str::from_utf8(bytes)
+                    .map_err(|_| PyValueError::new_err("invalid GameState snapshot move encoding"))?
+                    .to_string();
+                let mv = move_codec::decode(&canonical)
+                    .map_err(|e| PyValueError::new_err(format!("snapshot decode: {e}")))?;
+                apply_move(&mut game.state, &mv)
+                    .map_err(|e| PyValueError::new_err(format!("snapshot replay: {e}")))?;
+                if tag == 0 {
+                    let tr = crate::engine::advance_turn(&mut game.state);
+                    crate::engine::handle_turn_result(&mut game.state, tr);
+                    game.history.push(SnapshotEvent::Apply(canonical));
+                } else {
+                    game.history.push(SnapshotEvent::ApplyRaw(canonical));
+                }
+            }
+            2 => {
+                crate::engine::advance_turn(&mut game.state);
+                game.history.push(SnapshotEvent::AdvanceTurn);
+            }
+            3 => {
+                crate::engine::handle_turn_result(
+                    &mut game.state,
+                    crate::engine::TurnResult::EndCanalEra,
+                );
+                game.history.push(SnapshotEvent::FinishCanalEra);
+            }
+            4 => {
+                crate::engine::handle_turn_result(
+                    &mut game.state,
+                    crate::engine::TurnResult::EndGame,
+                );
+                game.history.push(SnapshotEvent::FinishGame);
+            }
+            _ => return Err(PyValueError::new_err("invalid GameState snapshot event")),
+        }
+    }
+    if pos != snapshot.len() {
+        return Err(PyValueError::new_err(
+            "trailing bytes in GameState snapshot",
+        ));
+    }
+    Ok(game)
 }
 
 fn reshape2<'py>(

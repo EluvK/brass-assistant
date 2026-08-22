@@ -39,16 +39,44 @@ class SearchLike(Protocol):
 @dataclass
 class Sample:
     pid: int
-    board: np.ndarray  # (17,49)
-    links: np.ndarray  # (6,39)
-    global_vec: np.ndarray  # (50,)
-    own_hand: np.ndarray  # (35,)
-    opp_hands: np.ndarray  # (105,)
-    candidates: np.ndarray  # (N,235), float32 or packed uint8 full-legal features
-    policy: np.ndarray  # (N,) visit distribution aligned to candidates
-    value: np.ndarray  # (4,) normalized final VP z-vector over all players
+    board: np.ndarray | None = None  # (17,49)
+    links: np.ndarray | None = None  # (6,39)
+    global_vec: np.ndarray | None = None  # (50,)
+    own_hand: np.ndarray | None = None  # (35,)
+    opp_hands: np.ndarray | None = None  # (105,)
+    candidates: np.ndarray | None = None  # (N,235), materialized on demand
+    policy: np.ndarray | None = None  # (N,) aligned to candidates
+    value: np.ndarray | float = 0.0  # (4,) normalized final VP z-vector
     era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)
     econ: np.ndarray = None  # (2,) = (income_level, money) target for this sample
+    snapshot: bytes | None = None  # opaque Engine snapshot for dynamic full-legal replay
+    teacher_canonical: str | None = None
+
+
+def materialize_sample(sample: Sample) -> Sample:
+    """Recover dynamic full-legal inputs for a snapshot-backed replay sample."""
+    if sample.snapshot is None:
+        return sample
+    state = be.GameState.from_snapshot(sample.snapshot)
+    if state.current_player_id != sample.pid or state.era != sample.era:
+        raise ValueError("replay snapshot does not match its player/era metadata")
+    canonicals, candidates = encode_legal_candidates(state)
+    if sample.teacher_canonical not in canonicals:
+        raise ValueError("replay teacher action is not legal in its restored GameState")
+    board, links, global_vec, own_hand, opp_hands = state.state_to_tensor()
+    policy = np.zeros(len(canonicals), dtype=np.float32)
+    policy[canonicals.index(sample.teacher_canonical)] = 1.0
+    return Sample(
+        pid=sample.pid, era=sample.era, board=board, links=links,
+        global_vec=global_vec, own_hand=own_hand, opp_hands=opp_hands,
+        candidates=candidates.numpy(), policy=policy, value=sample.value,
+        econ=sample.econ, snapshot=sample.snapshot,
+        teacher_canonical=sample.teacher_canonical,
+    )
+
+
+def materialize_samples(samples: list[Sample]) -> list[Sample]:
+    return [materialize_sample(sample) for sample in samples]
 
 
 @dataclass
@@ -229,16 +257,21 @@ def _generate_imitation_game(args):
             score_values = teacher_scores.numpy().astype(np.float64)
             weights = np.exp((score_values - score_values.max()) / 1.0)
             policy = (weights / weights.sum()).astype(np.float32)
-        board, links, g, oh, op = state.state_to_tensor()
-        stored_candidates = (
-            compress_candidate_features(candidate_tensor.numpy())
-            if full_legal_candidates else candidate_tensor.numpy()
-        )
-        local.append(
-            Sample(pid=pid, board=board, links=links, global_vec=g,
-                   own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                   candidates=stored_candidates, era=state.era)
-        )
+        if full_legal_candidates:
+            # Complete candidate rows are a deterministic derivative of the
+            # state. Persisting only this snapshot and Rust's canonical action
+            # avoids the full-legal replay/IPC explosion.
+            local.append(Sample(
+                pid=pid, era=state.era, value=0.0,
+                snapshot=bytes(state.snapshot()), teacher_canonical=canon,
+            ))
+        else:
+            board, links, g, oh, op = state.state_to_tensor()
+            local.append(
+                Sample(pid=pid, board=board, links=links, global_vec=g,
+                       own_hand=oh, opp_hands=op, policy=policy, value=0.0,
+                       candidates=candidate_tensor.numpy(), era=state.era)
+            )
         try:
             state.apply_move(canon)
         except ValueError:

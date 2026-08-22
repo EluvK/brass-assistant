@@ -117,6 +117,19 @@ def test_legal_candidates_are_complete_and_executable():
         g.clone().apply_move(canonical)
 
 
+def test_snapshot_restores_state_and_full_legal_candidates():
+    g = be.GameState(seed=29, players=4)
+    for _ in range(8):
+        canonical, _, _ = g.choose_heuristic()
+        g.apply_move(canonical)
+    restored = be.GameState.from_snapshot(g.snapshot())
+    assert restored.current_player_id == g.current_player_id
+    assert restored.era == g.era
+    assert restored.round == g.round
+    np.testing.assert_array_equal(restored.state_to_tensor()[0], g.state_to_tensor()[0])
+    assert restored.legal_candidates() == g.legal_candidates()
+
+
 def test_ai_choices_return_legal_moves():
     g = be.GameState(seed=5, players=4)
     canon, describe, score = g.choose_heuristic()

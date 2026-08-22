@@ -173,6 +173,14 @@ Scout 返回的 card indices 已统一按升序排列；两者现在与 `legal_m
 顺序一致。hard negatives 不作为正式演进方向：少量负样本无法覆盖全部未见合法动作，不能保证
 full-legal MCTS 的分布对齐。最终应改为训练时动态生成候选，而不是把完整候选特征直接持久化到 replay。
 
+动态 full-legal replay 实现状态（2026-08-22）：Rust bridge 已提供 `GameState.snapshot()` 与
+`GameState.from_snapshot(bytes)`。snapshot 是版本化的不透明事件流，包含初始 seed、人数和成功执行的
+engine-level 操作；恢复时由 Rust 从初始状态重放，因此完整保留隐藏手牌、牌堆、市场和所有规则相关状态，
+不将 Python tensor 当作状态来源。`--full-legal-candidates` 的 imitation shard 现保存该 snapshot、teacher
+canonical action 和 value/econ target；`bootstrap_imitation.py` 加载 shard 后调用 `materialize_samples()`，
+恢复状态并实时请求 `legal_candidates()`，再以 teacher action 生成 full-legal one-hot policy。短名单旧 shard
+保持原格式和训练路径，便于已有 baseline 复现。
+
 ### 2. Rust 和 Python 回归
 
 状态：已验证。
@@ -218,21 +226,20 @@ econ: (2,)
 
 `N` 是样本自己的候选数。落盘时为压缩 NPZ 的 padded array 加 mask；加载后恢复为变长 candidate 数组。旧的 `legal` mask 和固定 1316 维 policy 不属于当前格式。
 
-上述是当前过渡格式；full-legal 动态候选完成后，正式 replay 将改为保存可恢复的 Rust `GameState`
-快照、teacher canonical action、value/econ target。`candidates` 和 `policy` 的候选维度数据届时在
-训练加载阶段由 Rust 从快照重新生成，不再作为长期持久化字段。
+上述格式仍用于 shortlist replay 与旧 full-legal 实验 shard。新的 full-legal imitation replay 保存可恢复的
+Rust `GameState` 快照、teacher canonical action、value/econ target；`candidates` 和 `policy` 的候选维度
+数据在训练加载阶段由 Rust 从快照重新生成，不再作为长期持久化字段。
 
 训练中 `evaluate_policy()` 必须分 batch 计算。禁止把整个 replay 按全局最大候选数一次性 padding 后送入 GPU，否则候选 tensor 会造成极高峰值内存。
 
 ## 当前风险与下一步
 
 - action feature v2 已将被消耗卡片编码为稳定语义；资源来源和 Sell 结构仍保留在 concrete action 特征中，后续再做 collision 统计。
-- 当前同时支持 shortlist 对齐实验和 full-legal candidate 实验。full-legal 训练直接保存所有候选，
-  已验证会造成 replay shard 体积和 worker IPC 内存不可接受；`uint8` 版本仅用于短期验证。
-- 正式演进路线不采用 hard negatives 作为分布对齐保证，直接推进可恢复 Rust `GameState` 快照：
-  replay 只保存状态快照、teacher canonical action 和 value/econ target；训练时恢复状态并动态生成
-  全部 legal candidates，推理继续使用 full-legal MCTS。需要新增 Rust snapshot/restore bridge，并
-  通过流式 worker/micro-batch 控制训练时的 CPU 和显存开销。
+- 当前同时支持 shortlist 对齐实验和 full-legal candidate 实验。旧 full-legal shard 直接保存所有候选，
+  已验证会造成 replay shard 体积和 worker IPC 内存不可接受；`uint8` 版本仅用于旧 shard 兼容。
+- full-legal imitation 已改为可恢复 Rust `GameState` 快照：replay 只保存状态快照、teacher canonical
+  action 和 value/econ target；训练时恢复状态并动态生成全部 legal candidates，推理继续使用 full-legal
+  MCTS。仍需用流式 worker/micro-batch 控制训练时的 CPU 和显存开销，并完成 held-out/full-legal benchmark。
 - 在动态候选训练完成并通过 held-out validation、full-legal benchmark 前，当前正式 bootstrap 仍使用
   bounded shortlist，不启动大规模 self-play。
 - policy top-k 当前是在训练数据上评估；需要建立固定 held-out teacher validation。
