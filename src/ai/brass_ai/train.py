@@ -47,6 +47,9 @@ class TrainConfig:
     amp: bool = True         # fp16 autocast (no-op on CPU)
     econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
     econ_neg_weight: float = 3.0  # extra weight on samples with negative income
+    # Bound the largest padded candidate matrix in one GPU batch. Full-legal
+    # states can have hundreds of candidates, so a fixed sample batch is unsafe.
+    max_candidate_batch: int = 65536
 
 
 class Trainer:
@@ -81,7 +84,7 @@ class Trainer:
         stats.update(evaluate_policy(self.net, samples, self.cfg.device))
         return stats
 
-    def train_one_epoch(self, samples: list[Sample]) -> list[dict]:
+    def train_one_epoch(self, samples: list[Sample], progress_label: str = "train") -> list[dict]:
         """Train one epoch without advancing the LR scheduler.
 
         This is useful when a dataset is streamed from multiple disk shards:
@@ -92,11 +95,24 @@ class Trainer:
             return []
         idx = np.random.permutation(len(samples))
         losses = []
-        prog = Progress(len(samples), "train", every_s=10.0)
+        prog = Progress(len(samples), progress_label, every_s=2.0)
+        completed = 0
         for start in range(0, len(samples), self.cfg.batch_size):
-            chunk = [samples[i] for i in idx[start:start + self.cfg.batch_size]]
-            losses.append(train_on_batch(self.net, _to_batch(chunk), self.cfg, self.optimizer))
-            prog.update(min(start + self.cfg.batch_size, len(samples)))
+            raw = [samples[i] for i in idx[start:start + self.cfg.batch_size]]
+            # Padding is determined by the largest candidate row in the batch.
+            # Split large-candidate chunks so activation memory scales with the
+            # candidate budget rather than the nominal sample batch size.
+            raw.sort(key=lambda s: len(s.candidates))
+            chunk_start = 0
+            while chunk_start < len(raw):
+                max_n = max(len(s.candidates) for s in raw[chunk_start:])
+                cap = max(1, self.cfg.max_candidate_batch // max_n)
+                chunk = raw[chunk_start:chunk_start + min(self.cfg.batch_size, cap)]
+                losses.append(train_on_batch(self.net, _to_batch(chunk), self.cfg, self.optimizer))
+                chunk_start += len(chunk)
+                completed += len(chunk)
+                prog.update(completed)
+        prog.done()
         return losses
 
     def current_lr(self) -> float:
@@ -222,9 +238,13 @@ def _to_batch(samples: list[Sample]) -> dict:
     g = np.stack([s.global_vec for s in samples]).astype(np.float32)
     o = np.stack([s.own_hand for s in samples]).astype(np.float32)
     p = np.stack([s.opp_hands for s in samples]).astype(np.float32)
-    candidates, candidate_mask = pad_candidate_features(
-        [torch.from_numpy(s.candidates) for s in samples]
-    )
+    candidate_rows = []
+    for sample in samples:
+        row = sample.candidates
+        if row.dtype == np.uint8:
+            row = row.astype(np.float32) / 4.0
+        candidate_rows.append(torch.from_numpy(row))
+    candidates, candidate_mask = pad_candidate_features(candidate_rows)
     pol = np.zeros(candidate_mask.shape, dtype=np.float32)
     for i, sample in enumerate(samples):
         pol[i, :len(sample.policy)] = sample.policy
@@ -249,7 +269,7 @@ def _mean_losses(losses):
 
 
 def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "cpu",
-                    batch_size: int = 256) -> dict:
+                    batch_size: int = 256, max_candidate_batch: int = 16384) -> dict:
     """Measure candidate-policy quality on teacher targets.
 
     Metrics are candidate-level and remain meaningful when every state has a
@@ -267,27 +287,32 @@ def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "c
         seen = 0
         with torch.no_grad():
             for start in range(0, len(samples), batch_size):
-                batch = _to_batch(samples[start:start + batch_size])
-                tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
-                out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
-                mask = tensors["candidate_mask"]
-                target = tensors["policy"]
-                n = target.shape[0]
-                ranking = out["candidate_logits"].masked_fill(~mask, float("-inf")).argsort(
-                    dim=1, descending=True
-                )
-                target_idx = target.argmax(dim=1)
-                totals["policy_top1"] += (ranking[:, :1] == target_idx[:, None]).any(dim=1).sum().item()
-                totals["policy_top3"] += (ranking[:, :3] == target_idx[:, None]).any(dim=1).sum().item()
-                totals["policy_top5"] += (ranking[:, :5] == target_idx[:, None]).any(dim=1).sum().item()
-                log_probs = out["candidate_log_probs"].masked_fill(~mask, 0.0)
-                totals["policy_entropy"] += (-(log_probs * log_probs.exp()).sum(dim=1)).sum().item()
-                type_target = torch.einsum("bn,bnt->bt", target, tensors["candidates"][..., :7])
-                totals["action_type_top1"] += (
-                    out["type_logits"].argmax(dim=1) == type_target.argmax(dim=1)
-                ).sum().item()
-                candidate_counts.extend(mask.sum(dim=1).detach().cpu().tolist())
-                seen += n
+                raw = samples[start:start + batch_size]
+                raw.sort(key=lambda s: len(s.candidates))
+                for sub_start in range(0, len(raw), batch_size):
+                    sub = raw[sub_start:sub_start + batch_size]
+                    max_n = max(len(s.candidates) for s in sub)
+                    cap = max(1, max_candidate_batch // max_n)
+                    for offset in range(0, len(sub), cap):
+                        batch = _to_batch(sub[offset:offset + cap])
+                        tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
+                        out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
+                        mask = tensors["candidate_mask"]
+                        target = tensors["policy"]
+                        n = target.shape[0]
+                        ranking = out["candidate_logits"].masked_fill(~mask, float("-inf")).argsort(
+                            dim=1, descending=True
+                        )
+                        target_idx = target.argmax(dim=1)
+                        totals["policy_top1"] += (ranking[:, :1] == target_idx[:, None]).any(dim=1).sum().item()
+                        totals["policy_top3"] += (ranking[:, :3] == target_idx[:, None]).any(dim=1).sum().item()
+                        totals["policy_top5"] += (ranking[:, :5] == target_idx[:, None]).any(dim=1).sum().item()
+                        log_probs = out["candidate_log_probs"].masked_fill(~mask, 0.0)
+                        totals["policy_entropy"] += (-(log_probs * log_probs.exp()).sum(dim=1)).sum().item()
+                        type_target = torch.einsum("bn,bnt->bt", target, tensors["candidates"][..., :7])
+                        totals["action_type_top1"] += (out["type_logits"].argmax(dim=1) == type_target.argmax(dim=1)).sum().item()
+                        candidate_counts.extend(mask.sum(dim=1).detach().cpu().tolist())
+                        seen += n
         metrics = {key: value / seen for key, value in totals.items()}
         metrics["candidate_count_mean"] = float(np.mean(candidate_counts))
         metrics["candidate_count_p95"] = float(np.percentile(candidate_counts, 95))

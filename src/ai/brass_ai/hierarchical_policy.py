@@ -13,6 +13,7 @@ import brass_engine as be
 
 ACTION_FEATURE_SCHEMA_VERSION = 2
 ACTION_FEATURE_DIM = 235
+ACTION_FEATURE_SCALE = 4
 
 
 def _feature_width() -> int:
@@ -50,6 +51,19 @@ def encode_teacher_candidates(state) -> tuple[torch.Tensor, torch.Tensor, str, i
         int(teacher_index),
         float(score),
     )
+
+
+def compress_candidate_features(features: np.ndarray) -> np.ndarray:
+    """Losslessly pack quarter-step action features into uint8 replay data."""
+    array = np.asarray(features, dtype=np.float32)
+    if array.ndim != 2 or array.shape[1] != _feature_width():
+        raise ValueError("invalid action features for compression")
+    scaled = array * ACTION_FEATURE_SCALE
+    if not np.all(np.isfinite(scaled)) or not np.allclose(scaled, np.rint(scaled)):
+        raise ValueError("action features contain values outside the quarter-step schema")
+    if scaled.min() < 0 or scaled.max() > 255:
+        raise ValueError("action features do not fit uint8 storage")
+    return np.rint(scaled).astype(np.uint8)
 
 
 def pad_candidate_features(rows: list[torch.Tensor], device=None) -> tuple[torch.Tensor, torch.Tensor]:

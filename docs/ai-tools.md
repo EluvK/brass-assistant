@@ -135,10 +135,43 @@ replay 数据；8 个 worker 在把完整 `Sample` 列表通过 multiprocessing 
 `MemoryError`。原因是每个状态平均约 500 个合法候选，每个候选包含 235 维 `float32` 特征，单局
 约 125 个状态，多个 worker 的结果会同时驻留内存。当前不应继续用该模式做正式 bootstrap。
 
+为保留 full-legal 过渡实验能力，replay/进程传输现在对完整候选特征使用无损定点压缩：动作特征值均为
+0.25 的整数倍，保存时乘 4 后转为 `uint8`，训练组 batch 时再还原为 `float32`。这只压缩存储格式，
+不改变网络输入或 policy target；候选特征部分理论上减少约 75% 体积，并降低 worker 返回结果的峰值
+内存。该格式只用于验证和短期实验，不是最终 replay 结构。
+
+2026-08-22 进一步实验：1000 局 full-legal 样本生成成功（约 1325 秒），但训练第一 epoch 使用固定
+`batch=256` 时在 8GB GPU 上 OOM。原因是 batch padding 到该批次最大候选数，候选矩阵和 action encoder
+激活随 `batch_size * max_candidates * 235` 增长。训练器现已按候选数自动拆分 batch（默认限制候选行预算
+为 16384），评估路径同样受限；bootstrap 失败时会保留临时 shard 并打印目录，不再被 finally 静默删除。
+
+已有 shard 可用 `--sample-dir` 跳过生成并重复训练；该参数指向的目录永不由脚本删除。例如：
+
+```powershell
+python src/ai/bootstrap_imitation.py --sample-dir checkpoints/bootstrap-imitation-XXXXXX `
+  --epochs 10 --mcts-full-legal --ckpt checkpoints/bootstrap-0822-full.pt
+```
+
+目录必须包含 `imitation-*.pkl`。传入 `--sample-dir` 后，`--games`、`--workers`、质量筛选和
+`--full-legal-candidates` 都不参与生成；它们不会改变已落盘样本。
+
+训练日志会显示 `train e<epoch>/<total> s<shard>/<total>`、当前 shard 的样本数和文件名。full-legal
+实验应以该 shard 编号判断进度，不要将单个 shard 内部的 progress 重置误认为整轮重新开始。训练进度
+按实际 GPU micro-batch 更新并以 2 秒限流刷新；候选预算导致的 batch 拆分会反映在进度和 ETA 中。
+
+`--max-candidate-batch` 是 GPU batch 内的候选行预算，不是字节数：实际 batch 满足
+`sample_count * max_candidates <= budget`。默认 `16384`；对于一个最大候选数约 600 的 batch，至多约
+27 个 sample。8GB GPU 在默认值稳定后可按 `16384 -> 24576 -> 32768` 逐次提高，每次先跑一个 epoch；
+一旦 OOM 就退回上一个值。GPU 利用率 100% 代表正在算，显存有余量时提高该值才可能减少 batch 拆分、提高吞吐。
+
+bootstrap 默认跳过全 replay 的 policy 指标统计；这一步不更新模型，也不影响 checkpoint 或 MCTS
+benchmark，但 full-legal 时会额外读取全部 shard 并执行一次完整前向。需要 top-k、entropy、候选数
+等指标时显式传入 `--enable-policy-eval`。
+
 同一轮排查还修复了两个 canonical 规范化问题：heuristic Sell 返回的 tile keys 已统一按升序排列，
 Scout 返回的 card indices 已统一按升序排列；两者现在与 `legal_moves()` 的 concrete canonical
-顺序一致。后续 full-legal 能力应通过 hard negatives 或训练时动态生成候选实现，而不是把完整
-候选特征直接持久化到 replay。
+顺序一致。hard negatives 不作为正式演进方向：少量负样本无法覆盖全部未见合法动作，不能保证
+full-legal MCTS 的分布对齐。最终应改为训练时动态生成候选，而不是把完整候选特征直接持久化到 replay。
 
 ### 2. Rust 和 Python 回归
 
@@ -185,15 +218,23 @@ econ: (2,)
 
 `N` 是样本自己的候选数。落盘时为压缩 NPZ 的 padded array 加 mask；加载后恢复为变长 candidate 数组。旧的 `legal` mask 和固定 1316 维 policy 不属于当前格式。
 
+上述是当前过渡格式；full-legal 动态候选完成后，正式 replay 将改为保存可恢复的 Rust `GameState`
+快照、teacher canonical action、value/econ target。`candidates` 和 `policy` 的候选维度数据届时在
+训练加载阶段由 Rust 从快照重新生成，不再作为长期持久化字段。
+
 训练中 `evaluate_policy()` 必须分 batch 计算。禁止把整个 replay 按全局最大候选数一次性 padding 后送入 GPU，否则候选 tensor 会造成极高峰值内存。
 
 ## 当前风险与下一步
 
 - action feature v2 已将被消耗卡片编码为稳定语义；资源来源和 Sell 结构仍保留在 concrete action 特征中，后续再做 collision 统计。
 - 当前同时支持 shortlist 对齐实验和 full-legal candidate 实验。full-legal 训练直接保存所有候选，
-  已验证会造成 replay shard 体积和 worker IPC 内存不可接受；长期需要在 full-legal 与
-  hard-negative/动态候选方案之间做规模和泛化能力对比。当前正式 bootstrap 应继续使用 bounded
-  shortlist，直到 hard-negative 或动态候选方案完成。
+  已验证会造成 replay shard 体积和 worker IPC 内存不可接受；`uint8` 版本仅用于短期验证。
+- 正式演进路线不采用 hard negatives 作为分布对齐保证，直接推进可恢复 Rust `GameState` 快照：
+  replay 只保存状态快照、teacher canonical action 和 value/econ target；训练时恢复状态并动态生成
+  全部 legal candidates，推理继续使用 full-legal MCTS。需要新增 Rust snapshot/restore bridge，并
+  通过流式 worker/micro-batch 控制训练时的 CPU 和显存开销。
+- 在动态候选训练完成并通过 held-out validation、full-legal benchmark 前，当前正式 bootstrap 仍使用
+  bounded shortlist，不启动大规模 self-play。
 - policy top-k 当前是在训练数据上评估；需要建立固定 held-out teacher validation。
 - value 是 final normalized VP 预测，不是校准后的 win probability。
 - `train_mp.py` 和实验工具依赖已安装的 Rust extension；使用前应完成最小 CPU smoke run。

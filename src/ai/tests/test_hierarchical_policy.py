@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 import brass_engine as be
@@ -5,6 +6,7 @@ import brass_engine as be
 from brass_ai import build_input
 from brass_ai.hierarchical_policy import (
     ACTION_FEATURE_SCHEMA_VERSION,
+    compress_candidate_features,
     encode_legal_candidates,
     encode_teacher_candidates,
     pad_candidate_features,
@@ -44,3 +46,11 @@ def test_teacher_candidates_are_engine_aligned_and_schema_versioned():
     assert scores.shape == (len(features),)
     assert torch.isfinite(features).all()
     assert isinstance(score, float)
+
+
+def test_candidate_feature_compression_is_lossless():
+    state = be.GameState(seed=41, players=4)
+    _canonical, features = encode_legal_candidates(state)
+    packed = compress_candidate_features(features.numpy())
+    restored = packed.astype(np.float32) / 4.0
+    np.testing.assert_array_equal(restored, features.numpy())

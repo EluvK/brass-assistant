@@ -91,9 +91,8 @@ python src/ai/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-
   2. 扩大 benchmark 样本
      用至少 100 局，最好 200 局，分别测试 60 和 200 simulations。20 局只能发现灾难性问题，不能可靠区分 15%、20% 或 25% 胜率。
 
-  3. 加入 hard negatives
-     当前 imitation 只看到高质量 teacher shortlist，而 MCTS 必须在完整合法动作中决策。应从全量 legal actions 中抽取少量结构不同的低分候
-     选，加入每条训练样本，控制总候选数在 16-32，而不是重新持久化全量动作。
+3. 不采用 hard negatives 作为正式方案
+   少量 hard negatives 只能抽查 full-legal 分布，无法保证其余数百个未见动作不会获得异常高 logit；它不能从根本上消除训练/推理候选分布错位。除非作为临时诊断，不再把它列为正式演进步骤。
 
   4. 再评估 action feature v1
      对 benchmark 中网络高分但 heuristic 低分的动作做 feature collision 和错误案例分析，决定 action feature v2 优先补哪些资源来源和 Sell
@@ -103,6 +102,20 @@ python src/ai/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-
      在 held-out policy 指标稳定后，增加 win/rank auxiliary head。当前 VP value 足以启动搜索，但不够贴近“四人局拿第一”的最终目标。
 
   完成前两项后，才能有依据决定是否启动 train_mp.py 的最小 self-play smoke run。
+
+--- 2026-08-22 full-legal 最终架构方向 ---
+
+当前 `uint8` 压缩只解决 full-legal replay 的存储和 IPC 成本，属于过渡实验，不改变候选矩阵仍被完整持久化的事实。最终方案确定为：
+
+```text
+ReplaySample = 可恢复的 Rust GameState 快照 + teacher canonical action + value/econ target
+训练时 = 恢复 GameState -> Rust 动态生成全部 legal candidates/features -> 网络训练
+推理时 = 当前 GameState -> Rust 动态生成全部 legal candidates/features -> full-legal MCTS
+```
+
+候选特征是 `GameState + Move` 的确定性派生数据，不应作为 replay 的长期主数据。实现该方案前需要增加 Rust state snapshot/restore 契约；当前给网络的 board/hand tensor 不能保证无损恢复完整 GameState。训练阶段的候选生成成本可以通过 worker、micro-batch 和流式处理控制，推理阶段本来就必须生成合法动作，因此不会引入额外的候选语义步骤。
+
+执行顺序固定为：先完成当前压缩实验验证，再实现 state snapshot/restore 和动态候选训练，最后恢复 `candidate_k=0` 做 full-legal benchmark；在此之前不启动大规模 self-play。
 
 
 ---  0819 修复 engine 一些问题后再次 bootstrap结果：
@@ -143,7 +156,7 @@ shortlist MCTS: mcts_vp=82.7, heuristic_vp=102.2, win_rate=5%
 后续执行路径：
 
 1. 保留当前 shortlist MCTS 作为可复现实验基线
-2. 修改 imitation candidate 生成：保留 teacher shortlist，并从 full legal actions 补充 16--32 个结构多样的 hard negatives，覆盖不同 action type、地点/连接、产业和资源来源。teacher 动作保留正概率，negative target 为 0 或极低权重。
-3. 使用 hard-negative 数据重新训练后，恢复 NN-MCTS 的 full `legal_moves()`，对比 shortlist MCTS 与 full-legal MCTS 的 VP、胜率和动作类型分桶结果。
-4. 如果 full-legal 表现稳定，再移除 `candidate_k` 正式配置。长期方案是在训练时从可恢复的 `GameState` 动态生成 full legal candidates，避免把数百个动作特征全部持久化到 replay。
-5. 在上述分布对齐完成前，不启动大规模 self-play；held-out teacher validation 和 full-legal benchmark 必须优先于继续扩大 bootstrap 样本量。
+2. 完成当前 `uint8` full-legal 过渡实验，记录体积、生成速度和内存边界。
+3. 实现 Rust `GameState` snapshot/restore，改造 replay 为状态快照 + teacher action + value/econ target。
+4. 训练加载时从快照动态生成全部 legal candidates，恢复 NN-MCTS 的 full `legal_moves()`，对比 shortlist MCTS 与 full-legal MCTS。
+5. 在动态候选训练通过 held-out validation 和 full-legal benchmark 前，不启动大规模 self-play。

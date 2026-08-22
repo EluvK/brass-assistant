@@ -23,7 +23,7 @@ import brass_engine as be
 
 from typing import Callable, Protocol
 
-from .hierarchical_policy import encode_legal_candidates, encode_teacher_candidates
+from .hierarchical_policy import compress_candidate_features, encode_legal_candidates, encode_teacher_candidates
 
 
 class SearchResultLike(Protocol):
@@ -44,7 +44,7 @@ class Sample:
     global_vec: np.ndarray  # (50,)
     own_hand: np.ndarray  # (35,)
     opp_hands: np.ndarray  # (105,)
-    candidates: np.ndarray  # (N,235) Engine structured legal-move features
+    candidates: np.ndarray  # (N,235), float32 or packed uint8 full-legal features
     policy: np.ndarray  # (N,) visit distribution aligned to candidates
     value: np.ndarray  # (4,) normalized final VP z-vector over all players
     era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)
@@ -230,10 +230,14 @@ def _generate_imitation_game(args):
             weights = np.exp((score_values - score_values.max()) / 1.0)
             policy = (weights / weights.sum()).astype(np.float32)
         board, links, g, oh, op = state.state_to_tensor()
+        stored_candidates = (
+            compress_candidate_features(candidate_tensor.numpy())
+            if full_legal_candidates else candidate_tensor.numpy()
+        )
         local.append(
             Sample(pid=pid, board=board, links=links, global_vec=g,
                    own_hand=oh, opp_hands=op, policy=policy, value=0.0,
-                   candidates=candidate_tensor.numpy(), era=state.era)
+                   candidates=stored_candidates, era=state.era)
         )
         try:
             state.apply_move(canon)
