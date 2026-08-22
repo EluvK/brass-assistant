@@ -92,9 +92,11 @@ class Trainer:
             return []
         idx = np.random.permutation(len(samples))
         losses = []
+        prog = Progress(len(samples), "train", every_s=10.0)
         for start in range(0, len(samples), self.cfg.batch_size):
             chunk = [samples[i] for i in idx[start:start + self.cfg.batch_size]]
             losses.append(train_on_batch(self.net, _to_batch(chunk), self.cfg, self.optimizer))
+            prog.update(min(start + self.cfg.batch_size, len(samples)))
         return losses
 
     def current_lr(self) -> float:

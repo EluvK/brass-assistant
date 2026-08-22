@@ -77,6 +77,7 @@ def main():
         losses = []
         total_samples = 0
         for epoch in range(args.epochs):
+            print(f"epoch {epoch+1}/{args.epochs} ... \n")
             for shard in shards:
                 with open(shard, "rb") as f:
                     shard_samples = pickle.load(f)
