@@ -329,6 +329,35 @@ pub fn find_beer_sources(
     sources
 }
 
+/// Count beer cubes available for a sale without constructing/sorting source
+/// descriptors. Used by heuristic scoring when only availability is needed.
+pub fn count_beer_sources(
+    state: &GameState,
+    loc: Loc,
+    player_id: usize,
+    allowed_merchants: &[usize],
+) -> usize {
+    let mask = state.connected_mask(loc);
+    let mut count = 0usize;
+    for b in &state.free_beer_cubes {
+        if b.owner == player_id || mask & (1u32 << (b.loc as u8)) != 0 {
+            count += b.cubes as usize;
+        }
+    }
+    if !allowed_merchants.is_empty() {
+        count += allowed_merchants
+            .iter()
+            .filter(|&&mi| {
+                state
+                    .merchants
+                    .get(mi)
+                    .is_some_and(|mt| mt.has_beer && mask & (1u32 << (mt.loc as u8)) != 0)
+            })
+            .count();
+    }
+    count
+}
+
 /// Cheapest coal source reachable from either endpoint of a connection.
 pub fn cheapest_coal_for_connection(
     state: &GameState,

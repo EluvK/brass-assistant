@@ -7,7 +7,7 @@
 use crate::data::{Era, IndustryType};
 use crate::engine::{TurnResult, advance_turn};
 use crate::graph::{
-    connected_locations, find_beer_sources, find_coal_sources, find_iron_sources, is_in_network,
+    connected_locations, count_beer_sources, find_coal_sources, find_iron_sources, is_in_network,
 };
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, city_slots, connections};
 use crate::rules::{

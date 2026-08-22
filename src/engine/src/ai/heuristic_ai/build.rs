@@ -43,7 +43,7 @@ fn simulate_market_sale(state: &GameState, is_coal: bool, cubes: u8) -> MarketSa
 /// tile already claims the beer, so the marginal tile can't sell this era.
 fn sell_saturation(state: &GameState, pid: usize, loc: Loc) -> f64 {
     let connected = connected_locations(state, loc);
-    let supply = find_beer_sources(state, loc, pid, &[]).len() as f64
+    let supply = count_beer_sources(state, loc, pid, &[]) as f64
         + state
             .merchants
             .iter()
@@ -169,7 +169,7 @@ fn estimate_flip_probability(
         if has_reachable_merchant {
             // A merchant is only worth real flip credit if there is beer to
             // fuel the sale; without beer it's a dead end this era.
-            let beer_ok = find_beer_sources(state, city_id, pid, &[]).len() > 0
+            let beer_ok = count_beer_sources(state, city_id, pid, &[]) > 0
                 || beer_barrels_reachable(state, city_id);
             if beer_ok {
                 b += 0.6;
@@ -457,7 +457,7 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
         // barrel, the sellable tile is near-worthless unflipped. (Don't punish
         // too hard: a brewery can still be added later.)
         let beer_ok = has_merchant
-            && (find_beer_sources(state, cand.loc, pid, &[]).len()
+            && (count_beer_sources(state, cand.loc, pid, &[])
                 >= tile.beers_to_sell.unwrap_or(0) as usize
                 || beer_barrels_reachable(state, cand.loc));
         if beer_ok {
@@ -541,7 +541,7 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
     if era_phase(state) == Phase::RailLate && cand.ind.is_sellable() {
         let beer_ok = {
             let connected = connected_locations(state, cand.loc);
-            find_beer_sources(state, cand.loc, pid, &[]).len() > 0
+            count_beer_sources(state, cand.loc, pid, &[]) > 0
                 || state
                     .merchants
                     .iter()
