@@ -43,6 +43,7 @@ import torch
 
 import brass_engine as be
 from brass_ai.net import PolicyValueNet
+from brass_ai.hierarchical_policy import encode_legal_candidates
 from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.evaluate import heuristic_policy
 
@@ -151,16 +152,12 @@ def main():
     def net_pol(state):
         if args.sims <= 0:
             batch = _encode_state(state, net)
-            type_logits, goal_logits, _ = net.policy_value(batch)
-            merged = net.merge_logits(type_logits, goal_logits)[0].detach().cpu().numpy()
-            mask = np.zeros(len(merged), dtype=bool)
-            for s in state.legal_mask():
-                mask[s] = True
-            slot = int(np.argmax(np.where(mask, merged, -1e9)))
-            for s, canon, _ in state.legal_moves():
-                if s == slot:
-                    return canon
-            return None
+            canonicals, candidates = encode_legal_candidates(state)
+            candidates = candidates.unsqueeze(0).to(next(net.parameters()).device)
+            mask = torch.ones((1, len(canonicals)), dtype=torch.bool, device=candidates.device)
+            with torch.no_grad():
+                out = net.policy_value(batch, candidates, mask)
+            return canonicals[int(out["candidate_logits"].argmax(dim=1).item())]
         return rm.search(state, args.sims, add_root_noise=False).best
 
     def replay_one(seed: int):

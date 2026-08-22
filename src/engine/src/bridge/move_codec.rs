@@ -408,7 +408,6 @@ pub fn decode(s: &str) -> Result<Move, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy;
     use crate::rules::{apply_move, legal_moves};
     use crate::state::GameState;
     use rand::SeedableRng;
@@ -440,34 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn policy_slots_are_stable_and_in_range() {
-        let size = policy::policy_table_size();
-        for seed in [2u64, 99, 2026] {
-            let mut state = fresh_state(seed, 4);
-            let moves = legal_moves(&mut state);
-            for mv in &moves {
-                let slots = policy::move_slots(mv);
-                assert!(!slots.is_empty());
-                for &s in &slots {
-                    assert!(
-                        s < size,
-                        "slot {s} out of range ({size}) for {}",
-                        encode(mv)
-                    );
-                }
-                // Encode->decode keeps the same slot set.
-                let decoded = decode(&encode(mv)).unwrap();
-                assert_eq!(slots, policy::move_slots(&decoded));
-            }
-            // Mask is a subset of the full table.
-            let mask = policy::legal_mask(&mut state);
-            for &s in &mask {
-                assert!(s < size);
-            }
-        }
-    }
-
-    #[test]
     fn malformed_inputs_are_rejected_not_panicked() {
         // A garbage farm/merchant index in a beer source must error, not decode
         // into usize::MAX (which would panic on apply via farm_tiles[MAX]).
@@ -484,45 +455,5 @@ mod tests {
             decode("NetDouble{c1:0,c2:11,coal1:M;3;0;1,coal2:M;4;0;1,beer:M;max;-;abc,card:0}")
                 .is_err()
         );
-    }
-
-    #[test]
-    fn distinct_build_slots_map_to_distinct_indices() {
-        // Build at city 5 (Uttoxeter) slot 0 industry Brewery(5) vs CottonMill(0).
-        let m1 = Move::Build {
-            loc: crate::map::Loc::Uttoxeter,
-            slot_index: 0,
-            ind: IndustryType::Brewery,
-            coal: vec![],
-            iron: vec![],
-            card_index: 0,
-        };
-        let m2 = Move::Build {
-            loc: crate::map::Loc::Uttoxeter,
-            slot_index: 0,
-            ind: IndustryType::CottonMill,
-            coal: vec![],
-            iron: vec![],
-            card_index: 0,
-        };
-        let s1 = policy::move_slots(&m1);
-        let s2 = policy::move_slots(&m2);
-        assert_eq!(s1.len(), 1);
-        assert_ne!(s1[0], s2[0]);
-        // Resource-source choices collapse to the same slot.
-        let m3 = Move::Build {
-            loc: crate::map::Loc::Uttoxeter,
-            slot_index: 0,
-            ind: IndustryType::Brewery,
-            coal: vec![CoalSource {
-                kind: CoalSourceKind::Market,
-                key: usize::MAX,
-                price: 7,
-                free: false,
-            }],
-            iron: vec![],
-            card_index: 1,
-        };
-        assert_eq!(policy::move_slots(&m3), s1);
     }
 }

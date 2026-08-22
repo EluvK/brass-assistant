@@ -14,7 +14,7 @@
 - `Build` 只优先选择第一张非万能合法牌，不比较不同卡片的长期机会成本。
 - `Scout` 使用启发式固定的一组三张牌，而不是对所有组合评分。
 - `heuristic_candidates()` 只保留有限 teacher shortlist，不是全量合法动作。
-- 固定 policy slot 会折叠仅卡片或资源来源不同的 concrete actions。
+- 具体候选动作必须保留卡片和资源来源等执行差异。
 - action feature v1 使用 `card_index` 的 8 维 one-hot，而不是卡片语义。
 - 状态侧 `own_hand` 是无序的全量卡片编码，因此网络无法从 `card_index` 推断该位置对应哪张牌。
 
@@ -50,7 +50,7 @@ MCTS 的 concrete candidate 路径可以看到全量合法动作，但 imitation
 ### 阶段 A：动作与数据审计
 
 - 统计各类局面中“任意卡可打”的动作数量、卡片语义数量和重复数量。
-- 对 concrete canonical action、policy slot、action feature 做碰撞分析。
+- 对 concrete canonical action 与 action feature 做碰撞分析。
 - 确认手牌顺序是否仅为抽牌顺序，不能被当作稳定语义。
 - 增加回归测试，覆盖万能牌、重复牌、仅一张合法牌和多张不同语义合法牌。
 
@@ -79,7 +79,7 @@ MCTS 的 concrete candidate 路径可以看到全量合法动作，但 imitation
 
 ### 阶段 E：网络与评测
 
-- 优先沿用 concrete candidate scorer，不恢复依赖固定 policy slot 的卡片压缩路径。
+- 优先沿用 concrete candidate scorer。
 - 比较旧 v1 表示、新 v2 表示、shortlist-only 与 shortlist+hard-negatives。
 - 建立按 action type、卡片语义、候选数量分桶的 held-out teacher validation。
 - 检查网络是否仍偏好手牌位置，而不是卡片语义。
@@ -89,7 +89,7 @@ MCTS 的 concrete candidate 路径可以看到全量合法动作，但 imitation
 - 不在 Python 中复制 Brass 规则或合法动作生成。
 - 不直接把所有 full legal actions 无限制写入长期 replay；先评估内存和训练吞吐。
 - 不在没有 schema、canonicalization 和测试方案前修改网络输入维度。
-- 不把固定 policy slot 继续当作能够表达完整卡片选择的动作空间。
+- 不把动作特征压缩成无法表达完整卡片选择的固定动作空间。
 
 ## 6. 完成标准
 
@@ -99,4 +99,3 @@ MCTS 的 concrete candidate 路径可以看到全量合法动作，但 imitation
 - 完整 concrete candidate 路径仍覆盖所有理论合法动作。
 - teacher shortlist 不再系统性固定使用手牌第 0 张。
 - replay、checkpoint 和 schema version 能拒绝旧格式与新格式混用。
-

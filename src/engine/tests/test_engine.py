@@ -16,20 +16,6 @@ def test_constants_shape_consistency():
     assert be.LINK_CELLS == 39
     assert be.GLOBAL_LEN == 50
     assert be.HAND_LEN == 35
-    assert be.policy_table_size > 0
-    assert be.network_double_cells > 0
-
-
-def test_policy_table_size_matches_layout():
-    city_build = 20 * 4 * 6  # cities x slots x industries
-    farm_build = 2
-    network = 39
-    network_double = be.network_double_cells
-    develop = 6 + 36
-    sell = 47
-    fixed = 3
-    expected = city_build + farm_build + network + network_double + develop + sell + fixed
-    assert be.policy_table_size == expected
 
 
 def test_new_state_basics():
@@ -53,18 +39,18 @@ def test_legal_moves_structure():
     g = be.GameState(seed=7, players=4)
     moves = g.legal_moves()
     assert moves
-    for slot, canonical, describe in moves:
-        assert 0 <= slot < be.policy_table_size
+    for action_id, canonical, describe in moves:
+        assert action_id >= 0
         assert canonical.startswith(("Build", "Network", "NetDouble", "Develop",
                                      "Sell", "FreeDevelop", "Loan", "Scout", "Pass"))
         assert describe
 
 
-def test_move_slot_roundtrip():
+def test_move_codec_roundtrip():
     g = be.GameState(seed=42, players=4)
-    for slot, canonical, _ in g.legal_moves():
-        slots = be.moves_to_slots(canonical)
-        assert slot in slots
+    for _, canonical, _ in g.legal_moves():
+        copy = g.clone()
+        copy.apply_move(canonical)
         break
 
 
@@ -77,14 +63,6 @@ def test_apply_move_valid_and_invalid():
 
     with pytest.raises(ValueError):
         g.apply_move("NotAMove{foo:1}")
-
-    # A stale canonical string from before a move should fail legality check.
-    _, stale, _ = g.legal_moves()[0]
-    g2 = be.GameState(seed=3, players=4)
-    g2.apply_move(stale)  # legal on the fresh clone
-    if g.current_player_id != g2.current_player_id:
-        # different player to move: the stale card index may now be out of range
-        pass
 
 
 def test_determinize_preserves_own_hand_and_count():
@@ -130,14 +108,13 @@ def test_tensor_bounds_with_built_tiles():
     assert board[:, :].sum() > 0  # something is occupied
 
 
-def test_legal_mask_subset_of_table():
+def test_legal_candidates_are_complete_and_executable():
     g = be.GameState(seed=21, players=4)
-    mask = g.legal_mask()
-    assert mask == sorted(set(mask))
-    assert all(0 <= s < be.policy_table_size for s in mask)
-    # mask must cover every slot produced by legal_moves
-    slots = {slot for slot, _, _ in g.legal_moves()}
-    assert slots.issubset(set(mask))
+    candidates = g.legal_candidates()
+    assert candidates
+    for canonical, features in candidates:
+        assert len(features) == be.ACTION_FEATURE_DIM
+        g.clone().apply_move(canonical)
 
 
 def test_ai_choices_return_legal_moves():
@@ -173,18 +150,16 @@ def _reach_rail(seed):
     return g
 
 
-def test_network_double_moves_are_policy_mapped_and_executable():
+def test_network_double_moves_are_executable():
     seen = 0
     for seed in range(200):
         g = _reach_rail(seed)
         if g.era != 1:
             continue
-        for slot, canonical, _ in g.legal_moves():
+        for _, canonical, _ in g.legal_moves():
             if not canonical.startswith("NetDouble"):
                 continue
             seen += 1
-            assert 0 <= slot < be.policy_table_size
-            assert be.describe_slot(slot).startswith("Double rail")
             # Replay the same line from the seed and execute the move.
             g2 = _reach_rail(seed)
             g2.apply_move(canonical)

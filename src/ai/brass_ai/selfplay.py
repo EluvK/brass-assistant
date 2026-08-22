@@ -252,7 +252,7 @@ def generate_imitation_samples(
 ):
     """Heuristic-vs-heuristic games: one-hot imitation samples (cheap, no MCTS).
 
-    Each move records the state + the heuristic's chosen policy slot (one-hot)
+    Each move records the state + the heuristic's concrete candidate distribution
     with the game's normalized VP as the value target and the player's FINAL
     (income, money) as the econ target. Games are independent and therefore
     generated in parallel by default; pass ``workers=1`` to force serial

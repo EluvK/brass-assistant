@@ -111,22 +111,8 @@ impl PyGame {
             .collect()
     }
 
-    /// Lean variant of `legal_moves` for the MCTS hot path: returns only
-    /// (policy_slot, canonical) pairs, skipping the human-readable `describe`
-    /// string that the search never reads. Uses the slot-level generator, so
-    /// it is also several times faster than `legal_moves`.
-    fn legal_action_moves(&self) -> Vec<(usize, String)> {
-        let mut state = self.state.clone();
-        legal_moves(&mut state)
-            .into_iter()
-            .enumerate()
-            .map(|(action_id, mv)| (action_id, move_codec::encode(&mv)))
-            .collect()
-    }
-
     /// Concrete executable legal moves with structured v2 action features.
-    /// Unlike the legacy policy table this does not collapse card or resource
-    /// choices; every returned row is a complete action the engine can apply.
+    /// Every returned row is a complete action the engine can apply.
     fn legal_candidates(&self) -> Vec<(String, Vec<f32>)> {
         let mut state = self.state.clone();
         legal_moves(&mut state)

@@ -1,11 +1,10 @@
 //! Stable public facade for action rules.
 //!
 //! Action-specific legality and execution live in [`crate::gameplay::actions`];
-//! raw and policy-slot enumeration lives in [`crate::gameplay::legal_moves`].
+//! concrete legal-move enumeration lives in [`crate::gameplay::legal_moves`].
 
 use crate::state::GameState;
 
-pub use crate::bridge::policy::{SlotMove, legal_slot_moves};
 pub use crate::gameplay::actions::{
     BuildCost, BuildTarget, SecondRailOption, SellRoute, SellTarget, any_card_indices,
     beer_sources_for_link, calculate_build_cost, can_develop, can_scout,

@@ -1,9 +1,8 @@
-"""BC baseline for the redesigned network (branched policy + 4-player value).
+"""BC baseline for the concrete-candidate network.
 
 Trains a fresh `PolicyValueNet` from heuristic imitation data under the new
 contract:
-  * policy target: one-hot over the heuristic's slot, loss = masked CE on the
-    MERGED branched logits (logit(s) = type[t(s)] + goal[s])
+  * policy target: heuristic distribution over concrete legal candidates
   * value target: the full 4-player normalized z-vector, MSE (no tanh)
 
 The old `best_masked.pt` is kept as an untouched comparison baseline.
@@ -22,9 +21,8 @@ import time
 import numpy as np
 import torch
 
-import brass_engine as be
-
 from brass_ai import build_input
+from brass_ai.hierarchical_policy import encode_legal_candidates
 from brass_ai.net import PolicyValueNet
 from brass_ai.progress import Progress
 from brass_ai.selfplay import generate_imitation_samples
@@ -39,17 +37,12 @@ def greedy_policy(net):
     def pol(state):
         batch = build_input.encode_state(state)
         batch = {k: v.to(dev) for k, v in batch.items()}
+        canonicals, candidates = encode_legal_candidates(state)
+        candidates = candidates.unsqueeze(0).to(dev)
+        mask = torch.ones((1, len(canonicals)), dtype=torch.bool, device=dev)
         with torch.no_grad():
-            type_logits, goal_logits, _ = net.policy_value(batch)
-        merged = net.merge_logits(type_logits, goal_logits)[0].cpu().numpy()
-        mask = np.zeros(len(merged), dtype=bool)
-        for s, _, _ in state.legal_moves():
-            mask[s] = True
-        slot = int(np.argmax(np.where(mask, merged, -1e9)))
-        for s, canon, _ in state.legal_moves():
-            if s == slot:
-                return canon
-        return None
+            out = net.policy_value(batch, candidates, mask)
+        return canonicals[int(out["candidate_logits"].argmax(dim=1).item())]
 
     return pol
 

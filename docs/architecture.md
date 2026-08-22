@@ -123,7 +123,7 @@ src/ai/
 
 - `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为 `board`、`links`、`global`、`own_hand`、`opp_hands`、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
 - `state_to_tensor()`：供训练样本采集使用的单状态特征；维度固定为 board `(17, 49)`、links `(6, 39)`、global `(50,)`、own hand `(35,)`、 opponent hands `(105,)`。
-- `legal_mask()`：当前局面合法的策略槽。网络训练和推理均只在这些槽上执行 softmax 或 argmax。
+- `legal_candidates()`：Rust 返回完整可执行动作及其结构化特征；网络只对当前候选集合执行 softmax。
 
 网络当前直接对每个具体候选动作输出 logit；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。
 

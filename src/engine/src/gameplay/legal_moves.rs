@@ -1,4 +1,4 @@
-//! Legal move enumeration for raw execution and policy slots.
+//! Legal concrete move enumeration for execution and candidate scoring.
 
 use crate::data::{Era, IndustryType};
 use crate::gameplay::actions::{
@@ -14,46 +14,9 @@ use crate::state::GameState;
 // Legal move enumeration
 // ---------------------------------------------------------------------------
 
-/// Expansion mode for legal-move enumeration.
-///
-/// `All` emits every legal source/card combination (the raw move space);
-/// `OnePerSlot` emits a single representative move per policy slot (the
-/// MCTS / policy-head fast path). Both modes share ONE generator below, so
-/// their coverage can never drift apart.
-#[derive(Clone, Copy)]
-enum MoveExpansion {
-    All,
-    OnePerSlot,
-}
-
-impl MoveExpansion {
-    /// Yield the full slice (`All`) or just its first element (`OnePerSlot`).
-    fn each<'a, T>(self, items: &'a [T]) -> impl Iterator<Item = &'a T> {
-        items.iter().take(match self {
-            MoveExpansion::All => items.len(),
-            MoveExpansion::OnePerSlot => 1,
-        })
-    }
-}
-
+/// Enumerate every complete executable move, including resource and card
+/// choices. Candidate scoring intentionally keeps these distinctions.
 pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
-    generate_moves(state, MoveExpansion::All)
-}
-
-/// One executable representative for every raw action choice class. Policy
-/// encoding intentionally lives in `bridge::policy`; gameplay only decides
-/// which moves are legal.
-pub(crate) fn legal_policy_representatives(state: &mut GameState) -> Vec<Move> {
-    generate_moves(state, MoveExpansion::OnePerSlot)
-}
-
-/// The single legal-move generator shared by `legal_moves` (raw) and
-/// `legal_slot_moves` (one representative per policy slot). Every legality
-/// decision (build targets, network targets, double-rail options, develop
-/// sets, sell plans, scout combos) lives exactly here; the expansion mode only
-/// decides whether source/card choices are enumerated fully or truncated to
-/// their first representative.
-fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
     state.ensure_network_masks();
     let pid = state.current_player_id();
 
@@ -102,15 +65,9 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
         let iron_needed = t.cost_iron as usize;
         let coal_opts = coal_source_options(state, t.loc, coal_needed);
         let iron_opts = iron_source_options(state, iron_needed);
-        for coal in exp.each(&coal_opts) {
-            for iron in exp.each(&iron_opts) {
-                for ci in exp.each(&valid_build_cards(
-                    state,
-                    &state.players[pid],
-                    pid,
-                    t.loc,
-                    t.ind,
-                )) {
+        for coal in &coal_opts {
+            for iron in &iron_opts {
+                for ci in &valid_build_cards(state, &state.players[pid], pid, t.loc, t.ind) {
                     moves.push(Move::Build {
                         loc: t.loc,
                         slot_index: t.slot_index,
@@ -129,7 +86,7 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
         || state.era == Era::Rail && state.players[pid].rail_links > 0
     {
         for conn in get_valid_network_targets(state, pid) {
-            for ci in exp.each(&cards) {
+            for ci in &cards {
                 if state.era == Era::Canal {
                     moves.push(Move::Network {
                         conn_id: conn,
@@ -139,7 +96,7 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
                 } else {
                     let c = &connections()[conn];
                     let coal_opts = coal_options_for_connection(state, c, 1);
-                    for coal in exp.each(&coal_opts) {
+                    for coal in &coal_opts {
                         moves.push(Move::Network {
                             conn_id: conn,
                             coal: coal.first().copied(),
@@ -157,14 +114,14 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
         for conn1 in single {
             let c1 = &connections()[conn1];
             let coal1_opts = coal_options_for_connection(state, c1, 1);
-            for coal1 in exp.each(&coal1_opts) {
+            for coal1 in &coal1_opts {
                 let Some(&coal1) = coal1.first() else {
                     continue;
                 };
                 for opt in get_second_rail_options(state, pid, conn1, coal1) {
-                    for coal2 in exp.each(&opt.coal2_opts) {
-                        for beer in exp.each(&opt.beers) {
-                            for ci in exp.each(&cards) {
+                    for coal2 in &opt.coal2_opts {
+                        for beer in &opt.beers {
+                            for ci in &cards {
                                 moves.push(Move::NetworkDouble {
                                     conn1,
                                     conn2: opt.conn,
@@ -193,8 +150,8 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
             // Single develop
             if affordable_iron >= 1 {
                 let iron_opts = iron_source_options(state, 1);
-                for iron in exp.each(&iron_opts) {
-                    for ci in exp.each(&cards) {
+                for iron in &iron_opts {
+                    for ci in &cards {
                         moves.push(Move::Develop {
                             ind1,
                             ind2: None,
@@ -218,8 +175,8 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
                     .collect();
                 let iron_opts = iron_source_options(state, 2);
                 for &ind2 in &second_types {
-                    for iron in exp.each(&iron_opts) {
-                        for ci in exp.each(&cards) {
+                    for iron in &iron_opts {
+                        for ci in &cards {
                             moves.push(Move::Develop {
                                 ind1,
                                 ind2: Some(ind2),
@@ -240,7 +197,7 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
         // A plan retains every per-tile merchant/beer route because they can
         // produce different merchant bonuses and consume different beer.
         let sell_plans = build_sell_plans(state, pid, &sell_targets);
-        for ci in exp.each(&cards) {
+        for ci in &cards {
             for plan in &sell_plans {
                 moves.push(Move::Sell {
                     keys: plan.0.clone(),
@@ -254,7 +211,7 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
 
     // LOAN
     if state.can_take_loan(pid) {
-        for ci in exp.each(&cards) {
+        for ci in &cards {
             moves.push(Move::Loan { card_index: *ci });
         }
     }
@@ -271,7 +228,7 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
                 }
             }
         }
-        for &indices in exp.each(&combos) {
+        for &indices in &combos {
             moves.push(Move::Scout {
                 card_indices: indices,
             });
@@ -279,7 +236,7 @@ fn generate_moves(state: &mut GameState, exp: MoveExpansion) -> Vec<Move> {
     }
 
     // PASS
-    for ci in exp.each(&cards) {
+    for ci in &cards {
         moves.push(Move::Pass { card_index: *ci });
     }
 

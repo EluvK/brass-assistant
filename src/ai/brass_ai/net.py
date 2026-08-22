@@ -1,8 +1,7 @@
 """Candidate-scoring Policy-Value network for Brass: Birmingham.
 
 The engine supplies a variable-size set of concrete legal moves. The policy
-scores those candidates conditional on the state; it never emits a fixed
-policy-table vector and never learns legality.
+scores those candidates conditional on the state and never learns legality.
 """
 
 from __future__ import annotations

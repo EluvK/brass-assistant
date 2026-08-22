@@ -30,20 +30,13 @@ from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.evaluate import heuristic_policy
 
 ACTION_TYPE = {
-    "Build": "Build", "Network": "Net", "Double": "Net2", "Develop": "Dev",
-    "Sell": "Sell", "Loan": "Loan", "Scout": "Scout", "Pass": "Pass",
+    "Build": "Build", "Network": "Net", "NetDouble": "Net2", "Develop": "Dev",
+    "FreeDevelop": "Dev", "Sell": "Sell", "Loan": "Loan", "Scout": "Scout", "Pass": "Pass",
 }
 
 
 def action_type(canon: str) -> str:
-    slots = be.moves_to_slots(canon)
-    if not slots:
-        return "?"
-    d = be.describe_slot(slots[0])
-    for k, v in ACTION_TYPE.items():
-        if d.startswith(k):
-            return v
-    return d.split()[0]
+    return next((label for prefix, label in ACTION_TYPE.items() if canon.startswith(prefix)), "?")
 
 
 def tile_stats(state) -> dict:

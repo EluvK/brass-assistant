@@ -333,9 +333,8 @@ fn descend(
 
         let node = &arena[node_idx];
         if !node.expanded {
-            // Expand every concrete executable move. The legacy policy table
-            // intentionally collapsed card/resource variants; candidate policy
-            // must preserve those distinctions for the action encoder.
+            // Expand every concrete executable move, preserving card and
+            // resource choices for the action encoder.
             let moves = legal_moves(work);
             let mut children: Vec<Child> = Vec::new();
             let mut legal_candidate_ids: Vec<usize> = Vec::new();

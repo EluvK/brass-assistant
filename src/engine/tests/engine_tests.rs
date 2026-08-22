@@ -1699,34 +1699,16 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
 }
 
 #[test]
-fn every_double_rail_move_from_legal_slots_executes() {
-    use brass_engine::rules::{Move, apply_move, legal_moves, legal_slot_moves};
+fn every_double_rail_move_from_legal_moves_executes() {
+    use brass_engine::rules::{Move, apply_move, legal_moves};
     let mut state = setup_clean_rail_state(2);
     let pid = 0;
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
 
-    let doubles: Vec<_> = legal_slot_moves(&mut state)
-        .into_iter()
-        .filter(|sm| matches!(sm.mv, Move::NetworkDouble { .. }))
-        .collect();
-    assert!(
-        !doubles.is_empty(),
-        "expected double-rail slot moves in this setup"
-    );
-    for sm in &doubles {
-        let mut sim = state.clone();
-        let res = apply_move(&mut sim, &sm.mv);
-        assert!(
-            res.is_ok(),
-            "slot-level double-rail move must execute (Task B): {} -> {res:?}",
-            sm.mv.describe(&state)
-        );
-    }
-
-    // Every RAW NetworkDouble enumerated by legal_moves must also execute:
-    // this is the regression guard for the coal1/coal2 enumeration fix.
+    // Every generated NetworkDouble must execute; this is the regression guard
+    // for the coal1/coal2 enumeration fix.
     for mv in legal_moves(&mut state) {
         if let Move::NetworkDouble { .. } = &mv {
             let mut sim = state.clone();
@@ -1742,7 +1724,7 @@ fn every_double_rail_move_from_legal_slots_executes() {
 
 #[test]
 fn legal_moves_include_executable_multi_tile_sell() {
-    use brass_engine::rules::{Move, apply_move, legal_moves, legal_slot_moves};
+    use brass_engine::rules::{Move, apply_move, legal_moves};
     let mut state = setup_clean_rail_state(3);
     let pid = 0;
     state.players[pid].hand = vec![Card::WildLocation];
@@ -1826,16 +1808,6 @@ fn legal_moves_include_executable_multi_tile_sell() {
             .map(|t| t.flipped)
             .unwrap_or(false)),
         "a multi-tile sell must flip every selected tile"
-    );
-
-    // Slot-level generation must also carry the multi-sell plans.
-    let slot_multi = legal_slot_moves(&mut state)
-        .iter()
-        .filter(|sm| matches!(&sm.mv, Move::Sell { keys, .. } if keys.len() >= 2))
-        .count();
-    assert!(
-        slot_multi > 0,
-        "slot-level generation must include multi-tile sell plans"
     );
 }
 
