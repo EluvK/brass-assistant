@@ -42,12 +42,18 @@ fn sell_plan_executes_all(
     card_index: usize,
 ) -> bool {
     let mut sim = state.clone();
+    let Ok(beer_sources) = crate::rules::plan_sell_beer_sources(
+        state, pid, keys, merchant_indices, use_merchant,
+    ) else {
+        return false;
+    };
     if execute_sell(
         &mut sim,
         pid,
         keys,
         merchant_indices,
         use_merchant,
+        &beer_sources,
         card_index,
     )
     .is_err()
@@ -178,12 +184,17 @@ fn score_sell_plan(
     if state.era == Era::Canal && rounds_left <= 2.5 {
         let (before_barrels, before_flipped) = own_brewery_stats(state, pid);
         let mut sim = state.clone();
+        let beer_sources = crate::rules::plan_sell_beer_sources(
+            state, pid, &keys, &merchant_indices, &use_merchant,
+        )
+        .ok()?;
         if execute_sell(
             &mut sim,
             pid,
             &keys,
             &merchant_indices,
             &use_merchant,
+            &beer_sources,
             card_index,
         )
         .is_ok()
@@ -232,12 +243,17 @@ fn score_sell_plan(
             (keys, merchants, beer)
         },
     );
+    let beer_sources = crate::rules::plan_sell_beer_sources(
+        state, pid, &keys, &merchant_indices, &use_merchant,
+    )
+    .ok()?;
 
     Some(Decision {
         mv: Move::Sell {
             keys,
             merchant_indices,
             use_merchant_beer: use_merchant,
+            beer_sources,
             card_index,
         },
         score,

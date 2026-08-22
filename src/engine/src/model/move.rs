@@ -38,6 +38,7 @@ pub enum Move {
         keys: Vec<usize>,
         merchant_indices: Vec<usize>,
         use_merchant_beer: Vec<bool>,
+        beer_sources: Vec<Vec<BeerSource>>,
         card_index: usize,
     },
     ResolveFreeDevelop {

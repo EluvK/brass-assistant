@@ -161,6 +161,7 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
             merchant_indices,
             use_merchant_beer,
             card_index,
+            ..
         } => {
             card(&mut out, state, *card_index);
             out[SUMMARY + 12] = keys.len() as f32 / 4.0;

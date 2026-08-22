@@ -42,11 +42,18 @@ fn heuristic_candidates_are_legal_and_never_dead_end() {
                 assert!(!candidates.is_empty(), "seed={seed} produced no candidate");
                 for candidate in candidates {
                     let mut candidate_state = state.clone();
-                    assert!(
-                        apply_move(&mut candidate_state, &candidate.mv).is_ok(),
-                        "seed={seed} heuristic emitted an illegal candidate: {:?}",
-                        candidate.mv
-                    );
+                    if apply_move(&mut candidate_state, &candidate.mv).is_err() {
+                        assert!(
+                            false,
+                            "seed={seed} heuristic emitted an illegal candidate: {:?}, {}, {}, {:?}, {}, {:?}",
+                            candidate.mv,
+                            state.era,
+                            state.round,
+                            state.turn_order,
+                            state.current_index,
+                            apply_move(&mut candidate_state, &candidate.mv)
+                        );
+                    }
                 }
             }
             let decision = brass_engine::heuristic_ai::choose_action(&mut state);
@@ -1532,7 +1539,23 @@ fn sell_uses_the_explicitly_chosen_merchant_bonus() {
     let tile_key = state
         .city_slot_key(Loc::Stone, 0)
         .expect("stone slot should exist");
-    let res = execute_sell(&mut state, pid, &[tile_key], &[warrington_idx], &[true], 0);
+    let beer_sources = brass_engine::rules::plan_sell_beer_sources(
+        &state,
+        pid,
+        &[tile_key],
+        &[warrington_idx],
+        &[true],
+    )
+    .expect("test sale should have a valid beer payment");
+    let res = execute_sell(
+        &mut state,
+        pid,
+        &[tile_key],
+        &[warrington_idx],
+        &[true],
+        &beer_sources,
+        0,
+    );
 
     assert!(
         res.is_ok(),
@@ -1592,7 +1615,18 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
     let tile_key = state
         .city_slot_key(Loc::Kidderminster, 1)
         .expect("kidderminster slot should exist");
-    let res = execute_sell(&mut state, pid, &[tile_key], &[0], &[true], 0);
+    let beer_sources =
+        brass_engine::rules::plan_sell_beer_sources(&state, pid, &[tile_key], &[0], &[true])
+            .expect("test sale should have a valid beer payment");
+    let res = execute_sell(
+        &mut state,
+        pid,
+        &[tile_key],
+        &[0],
+        &[true],
+        &beer_sources,
+        0,
+    );
     assert!(res.is_ok(), "sell to gloucester should succeed: {res:?}");
     assert!(matches!(
         state.pending_bonus,
@@ -1678,8 +1712,15 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
                 keys,
                 merchant_indices,
                 use_merchant_beer,
+                beer_sources,
                 card_index,
-            } => Some((keys, merchant_indices, use_merchant_beer, card_index)),
+            } => Some((
+                keys,
+                merchant_indices,
+                use_merchant_beer,
+                beer_sources,
+                card_index,
+            )),
             _ => None,
         })
         .expect("heuristic should generate a sell candidate");
@@ -1691,7 +1732,9 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
     );
 
     let mut sim = state.clone();
-    let res = brass_engine::rules::execute_sell(&mut sim, pid, &sell.0, &sell.1, &sell.2, sell.3);
+    let res = brass_engine::rules::execute_sell(
+        &mut sim, pid, &sell.0, &sell.1, &sell.2, &sell.3, sell.4,
+    );
     assert!(
         res.is_ok(),
         "generated sell plan must execute successfully: {res:?}"

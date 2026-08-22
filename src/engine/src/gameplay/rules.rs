@@ -12,7 +12,7 @@ pub use crate::gameplay::actions::{
     execute_loan, execute_network, execute_network_double, execute_pass,
     execute_resolve_free_develop, execute_scout, execute_sell, get_second_rail_options,
     get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links,
-    get_valid_sell_targets, iron_source_options, valid_build_cards,
+    get_valid_sell_targets, iron_source_options, plan_sell_beer_sources, valid_build_cards,
 };
 pub use crate::gameplay::legal_moves::legal_moves;
 pub use crate::r#move::Move;
@@ -62,6 +62,7 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
             keys,
             merchant_indices,
             use_merchant_beer,
+            beer_sources,
             card_index,
         } => execute_sell(
             state,
@@ -69,6 +70,7 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
             keys,
             merchant_indices,
             use_merchant_beer,
+            beer_sources,
             *card_index,
         ),
         Move::ResolveFreeDevelop { ind1, ind2 } => {

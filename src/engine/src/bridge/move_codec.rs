@@ -104,6 +104,13 @@ fn b_list(v: &[bool]) -> String {
         .join(";")
 }
 
+fn beer_plan(v: &[Vec<BeerSource>]) -> String {
+    v.iter()
+        .map(|payment| payment.iter().map(beer).collect::<Vec<_>>().join("|"))
+        .collect::<Vec<_>>()
+        .join("~")
+}
+
 // --- source decoders --------------------------------------------------------
 
 fn dec_coal(s: &str) -> Result<CoalSource, String> {
@@ -188,6 +195,18 @@ fn b_list_dec(s: &str) -> Result<Vec<bool>, String> {
         .collect()
 }
 
+fn beer_plan_dec(s: &str) -> Result<Vec<Vec<BeerSource>>, String> {
+    s.split('~')
+        .map(|payment| {
+            payment
+                .split('|')
+                .filter(|source| !source.is_empty())
+                .map(dec_beer)
+                .collect()
+        })
+        .collect()
+}
+
 fn ind(n: usize) -> Result<IndustryType, String> {
     IndustryType::ALL
         .get(n)
@@ -266,12 +285,14 @@ pub fn encode(mv: &Move) -> String {
             keys,
             merchant_indices,
             use_merchant_beer,
+            beer_sources,
             card_index,
         } => format!(
-            "Sell{{keys:{},merchants:{},beer:{},card:{}}}",
+            "Sell{{keys:{},merchants:{},beer:{},sources:{},card:{}}}",
             u_list(keys),
             u_list(merchant_indices),
             b_list(use_merchant_beer),
+            beer_plan(beer_sources),
             card_enc(*card_index)
         ),
         Move::ResolveFreeDevelop { ind1, ind2 } => format!(
@@ -377,10 +398,12 @@ pub fn decode(s: &str) -> Result<Move, String> {
             let keys = u_list_dec(field(body, "keys")?)?;
             let merchant_indices = u_list_dec(field(body, "merchants")?)?;
             let use_merchant_beer = b_list_dec(field(body, "beer")?)?;
+            let beer_sources = beer_plan_dec(field(body, "sources")?)?;
             Ok(Move::Sell {
                 keys,
                 merchant_indices,
                 use_merchant_beer,
+                beer_sources,
                 card_index: field_u(body, "card")?,
             })
         }

@@ -104,6 +104,7 @@ enum MoveKey {
         keys: Vec<usize>,
         merchant_indices: Vec<usize>,
         use_merchant_beer: Vec<bool>,
+        beer_sources: Vec<Vec<crate::graph::BeerSource>>,
     },
     Loan,
     Scout {
@@ -172,29 +173,38 @@ fn move_key(mv: &Move) -> MoveKey {
             keys,
             merchant_indices,
             use_merchant_beer,
+            beer_sources,
             ..
         } => {
-            let mut k = keys.clone();
-            let mut pairs: Vec<(usize, usize, bool)> = k
-                .drain(..)
+            let mut pairs: Vec<(usize, usize, bool, Vec<crate::graph::BeerSource>)> = keys
+                .iter()
+                .copied()
                 .zip(merchant_indices.iter().copied())
                 .zip(use_merchant_beer.iter().copied())
-                .map(|((key, merchant_index), use_merchant)| (key, merchant_index, use_merchant))
+                .zip(beer_sources.iter().cloned())
+                .map(|(((key, merchant_index), use_merchant), sources)| {
+                    (key, merchant_index, use_merchant, sources)
+                })
                 .collect();
-            pairs.sort_unstable_by_key(|(key, _, _)| *key);
-            let keys = pairs.iter().map(|(key, _, _)| *key).collect();
+            pairs.sort_unstable_by_key(|(key, _, _, _)| *key);
+            let keys = pairs.iter().map(|(key, _, _, _)| *key).collect();
             let merchant_indices = pairs
                 .iter()
-                .map(|(_, merchant_index, _)| *merchant_index)
+                .map(|(_, merchant_index, _, _)| *merchant_index)
                 .collect();
             let use_merchant_beer = pairs
                 .iter()
-                .map(|(_, _, use_merchant)| *use_merchant)
+                .map(|(_, _, use_merchant, _)| *use_merchant)
+                .collect();
+            let beer_sources = pairs
+                .into_iter()
+                .map(|(_, _, _, sources)| sources)
                 .collect();
             MoveKey::Sell {
                 keys,
                 merchant_indices,
                 use_merchant_beer,
+                beer_sources,
             }
         }
         Move::Loan { .. } => MoveKey::Loan,

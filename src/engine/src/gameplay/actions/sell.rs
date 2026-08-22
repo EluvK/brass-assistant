@@ -22,6 +22,60 @@ pub struct SellRoute {
     pub use_merchant_beer: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct SellPlan {
+    pub keys: Vec<usize>,
+    pub merchant_indices: Vec<usize>,
+    pub use_merchant_beer: Vec<bool>,
+    /// Per-tile brewery beer payment. Merchant beer is represented by the
+    /// aligned `use_merchant_beer` flag and is deliberately not duplicated.
+    pub beer_sources: Vec<Vec<BeerSource>>,
+}
+
+pub fn plan_sell_beer_sources(
+    state: &GameState,
+    pid: usize,
+    keys: &[usize],
+    merchant_indices: &[usize],
+    use_merchant_beer: &[bool],
+) -> Result<Vec<Vec<BeerSource>>, String> {
+    if keys.len() != merchant_indices.len() || keys.len() != use_merchant_beer.len() {
+        return Err("Sell move shape mismatch".into());
+    }
+    let mut sim = state.clone();
+    let mut plans = Vec::with_capacity(keys.len());
+    for ((&key, &merchant), &use_merchant) in
+        keys.iter().zip(merchant_indices).zip(use_merchant_beer)
+    {
+        let tile = sim
+            .city_tiles
+            .get(key)
+            .and_then(Option::as_ref)
+            .ok_or("Invalid sell tile")?;
+        let loc = crate::state::loc_from_key(key)
+            .map(|(loc, _)| loc)
+            .ok_or("Invalid sell tile")?;
+        let mut needed = tile.def.beers_to_sell.unwrap_or(0) as usize;
+        if use_merchant && needed > 0 {
+            if !sim.merchants.get(merchant).is_some_and(|mt| mt.has_beer) {
+                return Err("Chosen merchant has no beer".into());
+            }
+            sim.merchants[merchant].has_beer = false;
+            needed -= 1;
+        }
+        let sources = find_beer_sources(&sim, loc, pid, &[]);
+        if sources.len() < needed {
+            return Err("Not enough brewery beer for chosen merchant route".into());
+        }
+        let payment: Vec<BeerSource> = sources.into_iter().take(needed).collect();
+        for source in &payment {
+            sim.consume_beer_source(source);
+        }
+        plans.push(payment);
+    }
+    Ok(plans)
+}
+
 fn sell_routes_for_target(
     state: &GameState,
     pid: usize,
@@ -139,6 +193,7 @@ pub fn execute_sell(
     keys: &[usize],
     merchant_indices: &[usize],
     use_merchant_beer: &[bool],
+    beer_sources: &[Vec<BeerSource>],
     card_index: usize,
 ) -> Result<String, String> {
     let snapshot = state.clone();
@@ -148,6 +203,7 @@ pub fn execute_sell(
         keys,
         merchant_indices,
         use_merchant_beer,
+        beer_sources,
         card_index,
     );
     if result.is_err() {
@@ -162,10 +218,14 @@ fn execute_sell_inner(
     keys: &[usize],
     merchant_indices: &[usize],
     use_merchant_beer: &[bool],
+    beer_sources: &[Vec<BeerSource>],
     card_index: usize,
 ) -> Result<String, String> {
     require_card_index(state, pid, card_index)?;
-    if merchant_indices.len() != keys.len() || use_merchant_beer.len() != keys.len() {
+    if merchant_indices.len() != keys.len()
+        || use_merchant_beer.len() != keys.len()
+        || beer_sources.len() != keys.len()
+    {
         return Err("Sell move shape mismatch".into());
     }
     if keys.is_empty() {
@@ -239,8 +299,7 @@ fn execute_sell_inner(
             if !state.merchants[chosen_merchant].has_beer {
                 return Err("Chosen merchant has no beer".into());
             }
-            let brewery_beer = find_beer_sources(state, loc, pid, &[]);
-            if brewery_beer.len() + 1 < beer_remaining as usize {
+            if beer_sources[entry_idx].len() + 1 < beer_remaining as usize {
                 return Err("Not enough beer available for chosen merchant route".into());
             }
             let mt_loc = state.merchants[chosen_merchant].loc;
@@ -254,27 +313,32 @@ fn execute_sell_inner(
             let bonus = crate::map::merchant_bonus_at(mt_loc);
             let note = apply_merchant_bonus(state, pid, bonus);
             notes.push(note);
-        } else if beer_remaining > 0 {
-            let brewery_beer = find_beer_sources(state, loc, pid, &[]);
-            if brewery_beer.len() < beer_remaining as usize {
-                return Err("Not enough brewery beer for chosen merchant route".into());
-            }
+        }
+
+        if beer_sources[entry_idx].len() != beer_remaining as usize {
+            return Err("Sell beer payment has wrong number of sources".into());
         }
 
         // Remaining beer from breweries (own anywhere, opponents connected)
         if beer_remaining > 0 {
-            let beer = find_beer_sources(state, loc, pid, &[]);
-            if beer.len() < beer_remaining as usize {
-                continue; // can't pay beer; skip tile
+            let available = find_beer_sources(state, loc, pid, &[]);
+            let mut remaining_available = available;
+            for source in &beer_sources[entry_idx] {
+                let Some(position) = remaining_available
+                    .iter()
+                    .position(|candidate| candidate == source)
+                else {
+                    return Err("Chosen brewery beer source is unavailable or unreachable".into());
+                };
+                remaining_available.remove(position);
             }
-            let consumed: Vec<BeerSource> =
-                beer.into_iter().take(beer_remaining as usize).collect();
+            let consumed = &beer_sources[entry_idx];
             let labels: Vec<String> = consumed
                 .iter()
                 .map(|b| beer_source_label(state, b))
                 .collect();
-            for b in consumed {
-                state.consume_beer_source(&b);
+            for source in consumed {
+                state.consume_beer_source(source);
             }
             if !labels.is_empty() {
                 beer_notes.push(format!(

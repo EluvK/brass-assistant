@@ -203,6 +203,7 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
                     keys: plan.0.clone(),
                     merchant_indices: plan.1.clone(),
                     use_merchant_beer: plan.2.clone(),
+                    beer_sources: plan.3.clone(),
                     card_index: *ci,
                 });
             }
@@ -253,8 +254,13 @@ fn build_sell_plans(
     state: &GameState,
     pid: usize,
     targets: &[SellTarget],
-) -> Vec<(Vec<usize>, Vec<usize>, Vec<bool>)> {
-    let mut out: Vec<(Vec<usize>, Vec<usize>, Vec<bool>)> = Vec::new();
+) -> Vec<(
+    Vec<usize>,
+    Vec<usize>,
+    Vec<bool>,
+    Vec<Vec<crate::graph::BeerSource>>,
+)> {
+    let mut out = Vec::new();
     let mut keys = Vec::new();
     let mut merchants = Vec::new();
     let mut use_beer = Vec::new();
@@ -280,14 +286,24 @@ fn enumerate_sell_plans(
     keys: &mut Vec<usize>,
     merchants: &mut Vec<usize>,
     use_beer: &mut Vec<bool>,
-    out: &mut Vec<(Vec<usize>, Vec<usize>, Vec<bool>)>,
+    out: &mut Vec<(
+        Vec<usize>,
+        Vec<usize>,
+        Vec<bool>,
+        Vec<Vec<crate::graph::BeerSource>>,
+    )>,
 ) {
     if target_index == targets.len() {
         if keys.is_empty() {
             return;
         }
+        let Ok(beer_sources) =
+            crate::rules::plan_sell_beer_sources(state, pid, keys, merchants, use_beer)
+        else {
+            return;
+        };
         let mut sim = state.clone();
-        if execute_sell(&mut sim, pid, keys, merchants, use_beer, 0).is_ok()
+        if execute_sell(&mut sim, pid, keys, merchants, use_beer, &beer_sources, 0).is_ok()
             && keys.iter().all(|&key| {
                 sim.city_tiles[key]
                     .as_ref()
@@ -295,7 +311,12 @@ fn enumerate_sell_plans(
                     .unwrap_or(false)
             })
         {
-            out.push((keys.clone(), merchants.clone(), use_beer.clone()));
+            out.push((
+                keys.clone(),
+                merchants.clone(),
+                use_beer.clone(),
+                beer_sources,
+            ));
         }
         return;
     }
