@@ -1,4 +1,4 @@
-//! ISMCTS with determinization + 1-ply heuristic prior & leaf evaluation.
+//! Heuristic-guided ISMCTS with root determinization.
 //!
 //! Design (per project decision):
 //! - Each simulation determinizes ONCE at the root: opponent hands are sampled
@@ -21,17 +21,20 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 
-/// Leaf-evaluation strategy (pluggable, per project decision "1-ply first,
-/// add a switch later").
+/// Experimental leaf mode for the heuristic search.
+///
+/// `RootTwoPly` only changes the root player's leaf estimate. Opponent values
+/// remain position snapshots, keeping the diagnostic mode computationally
+/// bounded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeafEval {
-    /// Position snapshot for each player (`evaluate_position`). Fast but flat:
-    /// shallow leaf values often can't tell good actions apart.
+    /// Position snapshot for every player (`evaluate_position`).
     OnePly,
-    /// Run a 2-ply lookahead at the leaf and use the best resulting move score
-    /// per player. Captures same-turn combos (Build->Sell, Network->Build);
-    /// slower but far more discriminating.
-    TwoPly,
+    /// Two-ply lookahead for the root player only.
+    ///
+    /// This is for diagnostics and parameter experiments, not the default
+    /// production path.
+    RootTwoPly,
 }
 
 pub struct MctsConfig {
@@ -41,11 +44,11 @@ pub struct MctsConfig {
     pub max_depth: usize,
     /// PUCT exploration constant (scaled to the leaf-value magnitude).
     pub c_puct: f64,
-    /// Softmax temperature for converting 1-ply scores into priors.
+    /// Softmax temperature for converting heuristic scores into priors.
     pub prior_temp: f64,
     /// Candidates per action type (build/network get up to K; others 1).
     pub k_candidates: usize,
-    /// Leaf evaluation strategy.
+    /// Leaf evaluation mode; `OnePly` is the production default.
     pub leaf_eval: LeafEval,
 }
 
@@ -429,14 +432,14 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
 
         // Leaf evaluation for EVERY player (MaxN vector).
         // - OnePly: position snapshot per player.
-        // - TwoPly: root player uses 2-ply lookahead score (captures combos);
+        // - RootTwoPly: root player uses a 2-ply lookahead score;
         //   opponents use the cheaper 1-ply snapshot.
         let mut leaf: [f64; MAX_PLAYERS] = [0.0; MAX_PLAYERS];
         for (p, v) in leaf.iter_mut().enumerate() {
             if p >= n_players {
                 break;
             }
-            if cfg.leaf_eval == LeafEval::TwoPly && p == root_pid {
+            if cfg.leaf_eval == LeafEval::RootTwoPly && p == root_pid {
                 let d = heuristic_ai::choose_action(&mut work);
                 *v = d.score;
             } else {
@@ -446,7 +449,7 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
         // Normalize to a small band so PUCT exploration can compete with q.
         // OnePly position values are ~10-70; 2-ply scores are ~-5..10. Use a
         // divisor per strategy so first-visit values don't permanently dominate.
-        let div = if cfg.leaf_eval == LeafEval::TwoPly {
+        let div = if cfg.leaf_eval == LeafEval::RootTwoPly {
             12.0
         } else {
             60.0

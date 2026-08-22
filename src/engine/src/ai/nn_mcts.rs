@@ -1,14 +1,13 @@
-//! Network-guided ISMCTS (the AlphaZero search) running entirely in Rust.
+//! Network-guided ISMCTS (AlphaZero-style search) with batched PyO3 inference.
 //!
-//! The tree lives in Rust as an arena, keyed by **policy slot** (resource/card
-//! choices already folded by `rules::legal_slot_moves`). Per simulation the
-//! root is determinized (opponent hands sampled, reusing `mcts_ai::determinize`).
+//! The tree lives in Rust as an arena. Its children are concrete legal moves,
+//! each assigned a node-local candidate id for policy outputs. Per simulation
+//! the root is determinized by sampling opponent hands via
+//! `mcts_ai::determinize`.
 //!
-//! Priors come from the network's **branched policy head**: one row per request
-//! (the moving player's perspective) returning `type[7], goal[1316]`, and the
-//! prior logit for slot s is `type[slot_type(s)] + goal[s]`, then masked
-//! softmax over the legal slots. Leaf values come from the value head's
-//! 4-player vector directly (single perspective, no 4x encode).
+//! The callback returns one logit per padded concrete legal-action candidate
+//! plus a four-player value vector. Rust masks by construction and applies
+//! softmax only to the legal candidates.
 //!
 //! Network inference is BATCHED: simulations park at expand/leaf points, their
 //! states are encoded in Rust and handed to a Python callback in waves; results

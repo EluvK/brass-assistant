@@ -65,7 +65,7 @@ fn inspect(args: &[String]) {
     let ply = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(60);
     let mut state = midgame(seed, players, ply);
     let leaf_eval = if std::env::var("BRASS_MCTS_TWO_PLY").is_ok() {
-        LeafEval::TwoPly
+        LeafEval::RootTwoPly
     } else {
         LeafEval::OnePly
     };
@@ -108,7 +108,7 @@ fn sweep(args: &[String]) {
     let mut state = midgame(seed, players, 60);
     let reference = heuristic_ai::choose_action(&mut state).mv.describe(&state);
     println!("MCTS parameter sweep | seed={seed} players={players} reference={reference}");
-    for leaf_eval in [LeafEval::OnePly, LeafEval::TwoPly] {
+    for leaf_eval in [LeafEval::OnePly, LeafEval::RootTwoPly] {
         for (max_depth, c_puct) in [(4, 10.0), (6, 10.0), (6, 30.0), (8, 30.0)] {
             let cfg = MctsConfig {
                 simulations: sims,

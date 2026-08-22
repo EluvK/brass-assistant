@@ -72,8 +72,8 @@ cargo run --release --bin mcts_lab -- bench 7 4 5000 10000
 # 检查一个中局局面、MCTS/heuristic 的选择和根节点先验候选
 cargo run --release --bin mcts_lab -- inspect 7 4 2000 60
 
-# 扫描既有的 depth / c_puct / LeafEval 参数组合
+# 扫描既有的 depth / c_puct / 叶评估模式参数组合
 cargo run --release --bin mcts_lab -- sweep 7 4 2000
 ```
 
-三个子命令都先以启发式策略推进到指定中局。`bench` 固定推进 60 步；`inspect` 与 `sweep` 的默认值分别为 60 步和 60 步。设置环境变量 `BRASS_MCTS_TWO_PLY=1` 可让 `inspect` 使用 `TwoPly` 叶节点估值；其余配置使用 `MctsConfig::default()`，仅由子命令覆盖需要扫描的参数。
+三个子命令都先以启发式策略推进到指定中局。`bench` 固定推进 60 步；`inspect` 与 `sweep` 的默认值分别为 60 步和 60 步。设置环境变量 `BRASS_MCTS_TWO_PLY=1` 可让 `inspect` 使用实验性的 `RootTwoPly` 叶节点估值；其余配置使用 `MctsConfig::default()`，仅由子命令覆盖需要扫描的参数。

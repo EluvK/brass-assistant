@@ -79,18 +79,18 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   │   ├─ loan.rs      Loan 评分
 │   │   └─ scout_pass.rs Scout / Pass 评分
 │   ├─ mcts_ai.rs       启发式引导 ISMCTS（determinize + PUCT + MaxN 值向量）
-│   ├─ nn_mcts.rs       网络引导 ISMCTS（slot 树、批量 Python 推理、分叉 policy 合并、4 玩家 value）
+│   ├─ nn_mcts.rs       网络引导 ISMCTS（具体候选动作树、批量 Python 推理、4 玩家 value）
 │   └─ random_ai.rs     随机基线
 │
 └─ bridge/ 桥接 / 序列化层（Python/NN 相关；依赖全部上层）
-    ├─ policy.rs     固定动作表(1316 槽) + move→slot 映射 + `legal_slot_moves` + legal_mask + 槽位类型
+    ├─ action_features.rs 具体合法动作 → 候选动作特征
     ├─ move_codec.rs Move ⇄ canonical 字符串（无损，含资源源/卡牌选择）
     ├─ encode.rs     状态 → 张量特征编码（board/links/global/hands）
     ├─ replay_fmt.rs 中文回放格式化（纯只读，供 replay 二进制与 Python 驱动共用）
     └─ pymod.rs      PyO3 绑定 brass_engine（GameState 类 + search_net + stepwise replay）
 ```
 
-依赖方向大体单向：`model` → `game_state` → `gameplay` → AI / bridge。`gameplay` 只生成规则意义上的合法动作，策略槽编码属于 `bridge::policy`，因此规则层不依赖 bridge。
+依赖方向大体单向：`model` → `game_state` → `gameplay` → AI / bridge。`gameplay` 只生成规则意义上的合法动作；候选动作特征编码属于 bridge，因此规则层不依赖 bridge。
 唯一反向边：`bridge/encode.rs`（桥接层）依赖 `ai/heuristic_ai::estimate_rounds_remaining`（AI 层）——属"胶水层依赖全部"的既有设计，非漂移。
 
 为保持 Rust 调用方、二进制工具及 PyO3 绑定的兼容性，`lib.rs` 仍公开再导出 `brass_engine::rules`、`brass_engine::state` 等原有平铺路径；新代码应使用对应的职责层路径。
@@ -102,7 +102,7 @@ Python 侧位于 `src/ai/`，负责训练编排与模型推理，不重复实现
 ```
 src/ai/
 ├─ brass_ai/
-│  ├─ net.py          Policy-Value 网络：动作类型头 + 1316 槽位头 + 4 玩家价值头
+│  ├─ net.py          Policy-Value 网络：具体候选动作打分 + 动作类型辅助头 + 4 玩家价值头
 │  ├─ rust_mcts.py    `GameState.search_net` 的 PyTorch 回调适配器
 │  ├─ selfplay.py     完整自博弈、访问次数策略目标和终局价值目标采集
 │  ├─ dataset.py      replay 样本的压缩 NPZ 分片读写
@@ -121,11 +121,11 @@ src/ai/
 
 `brass_engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
 
-- `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为  `board`、`links`、`global`、`own_hand`、`opp_hands` 的二维 `float32` 数组，返回 `(type_logits, goal_logits, values)`。
+- `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为 `board`、`links`、`global`、`own_hand`、`opp_hands`、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
 - `state_to_tensor()`：供训练样本采集使用的单状态特征；维度固定为 board `(17, 49)`、links `(6, 39)`、global `(50,)`、own hand `(35,)`、 opponent hands `(105,)`。
 - `legal_mask()`：当前局面合法的策略槽。网络训练和推理均只在这些槽上执行 softmax 或 argmax。
 
-策略空间由 Rust `bridge::policy` 定义，固定为 1316 个槽。网络的完整槽位 logit 为 `type_logits[slot_type(slot)] + goal_logits[slot]`；禁止在 Python 重新实现槽位映射或动作合法性判断。
+网络当前直接对每个具体候选动作输出 logit；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。
 
 #### 自博弈与训练循环
 
