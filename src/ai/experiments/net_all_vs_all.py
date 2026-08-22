@@ -9,9 +9,9 @@ hands across seeds; aggregate per-seat stats cancel most ordering effects.
 
 Run from repo root:
     PYTHONPATH=src/ai ./src/engine/.venv/Scripts/python.exe \\
-        src/ai/experiments/net_all_vs_all.py --ckpt checkpoints/step5_best.pt --start 1 --end 500 --sims 0
+        src/ai/experiments/net_all_vs_all.py --ckpt checkpoints/bootstrap.pt --start 1 --end 500 --sims 0
     # with MCTS (slow, try --end 20 first):
-        ... --ckpt checkpoints/step5_best.pt --start 1 --end 20 --sims 100
+        ... --ckpt checkpoints/bootstrap.pt --start 1 --end 20 --sims 100
 """
 
 from __future__ import annotations

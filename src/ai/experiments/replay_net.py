@@ -16,11 +16,11 @@ Modes for the net seat:
 
 Usage (from repo root):
     PYTHONPATH=src/ai ./src/engine/.venv/Scripts/python.exe \\
-        src/ai/experiments/replay_net.py --ckpt checkpoints/step5_best.pt --seed 14
-    ... --ckpt checkpoints/step5_best.pt --seed 0 --sims 200 --seat 2
-    ... --ckpt checkpoints/step5_best.pt --multi 0-19 --sims 0 --quiet
+        src/ai/experiments/replay_net.py --ckpt checkpoints/bootstrap.pt --seed 14
+    ... --ckpt checkpoints/bootstrap.pt --seed 0 --sims 200 --seat 2
+    ... --ckpt checkpoints/bootstrap.pt --multi 0-19 --sims 0
     # net vs net (all 4 seats the network):
-    ... --ckpt checkpoints/step5_best.pt --seed 14 --all-net
+    ... --ckpt checkpoints/bootstrap.pt --seed 14 --all-net
 """
 
 from __future__ import annotations
@@ -115,8 +115,6 @@ def main():
     ap.add_argument("--c_puct", type=float, default=2.5)
     ap.add_argument("--max_depth", type=int, default=10)
     ap.add_argument("--max_moves", type=int, default=600)
-    ap.add_argument("--quiet", action="store_true",
-                    help="skip per-move state lines (only headers + era/final summaries)")
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--out", type=str, default="auto",
                     help="log path (default: logs/replay_seed<seed>.txt; use '-' for stdout)")

@@ -5,8 +5,6 @@ contract:
   * policy target: heuristic distribution over concrete legal candidates
   * value target: the full 4-player normalized z-vector, MSE (no tanh)
 
-The old `best_masked.pt` is kept as an untouched comparison baseline.
-
 Run from repo root (~15-25 min for --games 2000):
     PYTHONPATH=src/ai ./src/engine/.venv/Scripts/python.exe \\
         src/ai/experiments/bc_baseline.py --games 2000 --steps 4000 \\
@@ -18,13 +16,11 @@ from __future__ import annotations
 import argparse
 import time
 
-import numpy as np
 import torch
 
 from brass_ai import build_input
 from brass_ai.hierarchical_policy import encode_legal_candidates
 from brass_ai.net import PolicyValueNet
-from brass_ai.progress import Progress
 from brass_ai.selfplay import generate_imitation_samples
 from brass_ai.train import TrainConfig, Trainer
 from brass_ai.evaluate import heuristic_policy, play_game_with_policies

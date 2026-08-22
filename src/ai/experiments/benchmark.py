@@ -8,7 +8,7 @@ to judge whether a checkpoint actually improved.
 
 Run from repo root:
     PYTHONPATH=src/ai ./src/engine/.venv/Scripts/python.exe \\
-        src/ai/experiments/benchmark.py --ckpt checkpoints/best_masked.pt --sims 600 --games 20
+        src/ai/experiments/benchmark.py --ckpt checkpoints/bootstrap.pt --sims 600 --games 20
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import time
 import numpy as np
 import torch
 
-import brass_engine as be
 from brass_ai.net import PolicyValueNet
 from brass_ai.evaluate import benchmark_net_vs_heuristic
 

@@ -1,6 +1,6 @@
 # Python AI 架构与操作手册
 
-本文是 `src/ai/` 当前候选动作 Policy 架构的操作手册。它只描述已经迁移到 candidate policy 的主链路，并明确区分已验证和待验证流程。
+本文是 `src/ai/` 当前 concrete-candidate 动作架构的操作手册。
 
 ## 权威边界
 
@@ -63,8 +63,8 @@ src/ai/
 |  |- dataset.py              candidate replay NPZ shard
 |  `- train.py                Trainer、loss、candidate metrics
 |- bootstrap_imitation.py     已验证的 imitation warm-start 入口
-|- train_mp.py                多进程 self-play 训练入口，待验证
-|- experiments/               历史实验脚本，多数待迁移
+|- train_mp.py                多进程 self-play 训练入口
+|- experiments/               可复用的评测、回放和诊断工具
 `- tests/                     当前主链路回归测试
 ```
 
@@ -86,7 +86,7 @@ Pop-Location
 python -m pytest src/ai/tests -q
 ```
 
-上述安装和测试流程已验证。当前测试集为 15 项；它覆盖 candidate feature、teacher shortlist、candidate policy、replay、训练和 Rust MCTS adapter。
+上述安装和测试流程已验证。测试覆盖 candidate feature、teacher shortlist、candidate policy、replay、训练和 Rust MCTS adapter。
 
 ## 已验证流程
 
@@ -129,22 +129,19 @@ python -m pytest src/ai/tests -q
 
 bridge、feature schema、candidate batch 或训练 loss 发生修改后，必须重跑这些检查。
 
-## 待验证流程
+## 工具入口
 
-以下入口在旧 flat policy 架构下存在过，但尚未完成 candidate-policy 端到端验证。
-它们不应作为长期训练基线或结果依据。
+实验脚本均使用当前 concrete-candidate 接口：
 
-| 入口 | 当前状态 | 需要先验证的内容 |
-| --- | --- | --- |
-| `train_mp.py` | 待验证 | worker pool、candidate replay shard、resume、manifest、GPU 主进程训练 |
-| `bench_mp.py` | 待验证 | full-candidate MCTS 的 worker 吞吐、内存和 batch 行为 |
-| `experiments/benchmark.py` | 待验证 | checkpoint 加载、candidate MCTS、固定 seed 对局结果 |
-| `experiments/diagnose.py` | 待迁移 | 仍可能依赖旧 slot API |
-| `experiments/replay_net.py` | 待迁移 | 仍可能依赖旧 slot API |
-| `experiments/net_all_vs_all.py` | 待迁移 | 仍可能依赖旧 slot API |
-| `experiments/bc_baseline.py` | 历史脚本 | 不属于当前训练主链路 |
+| 入口 | 用途 |
+| --- | --- |
+| `experiments/benchmark.py` | 固定 seed 的 MCTS 对 heuristic 基准 |
+| `experiments/replay_net.py` | 单局或多局中文逐步回放，可选 greedy/MCTS |
+| `experiments/net_all_vs_all.py` | 四席位 network-vs-network 统计 |
+| `experiments/diagnose.py` | 逐动作诊断时代得分、翻面和动作分布 |
+| `experiments/bc_baseline.py` | 可选的 heuristic imitation 训练基线 |
 
-验证顺序应为：先用 `train_mp.py` 跑 `1 worker / 1 game / 1 iteration / CPU`，确认 sample、shard、checkpoint 和 resume；再逐步增加 worker、game 数、simulation 数和 GPU 训练。不要直接启动旧文档中的长时间 self-play run。
+实验脚本没有独立的稳定性承诺。修改 Rust bridge、动作特征或网络结构后，应先运行 `src/ai/tests`，再用小规模参数运行对应脚本；不要把单次实验结果当作训练 gate。
 
 ## 训练产物
 
@@ -169,4 +166,4 @@ econ: (2,)
 - imitation shortlist 与 MCTS full legal candidates 存在分布差异；下一步应加入有限 数量的 hard negatives，而不是将完整候选集合写入 replay。
 - policy top-k 当前是在训练数据上评估；需要建立固定 held-out teacher validation。
 - value 是 final normalized VP 预测，不是校准后的 win probability。
-- `train_mp.py` 与实验工具尚未在新架构下验证，使用前需先完成最小 smoke run。
+- `train_mp.py` 和实验工具依赖已安装的 Rust extension；使用前应完成最小 CPU smoke run。

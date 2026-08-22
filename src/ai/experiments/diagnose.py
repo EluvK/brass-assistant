@@ -1,20 +1,15 @@
-"""Step 0 diagnosis: end-of-era scores + disaster-game analysis.
+"""Diagnose candidate-policy MCTS games with era and action statistics.
 
-Goal: understand WHY the reliable benchmark shows 3-5 "disaster games" per 20
-(seeds 0/3/5/11/14 at sims=400) where MCTS lands 0-54 VP. The hypothesis driving
-the schema redesign is that the value head is the weak link: the search is
-misguided into dead lines. This script plays the MCTS seat on the same fixed
-seeds and records, for the MCTS seat, a per-move action trace plus era-end
-score splits and flipped-tile counts — answering:
+The script plays one MCTS seat against the engine heuristic and records a
+per-move action trace, era-end score splits and flipped-tile counts:
 
-  1. Does the net learn to flip (sell) tiles, or does it end with 0 flips?
-  2. Where does the disaster game actually diverge (which era, which action)?
-  3. Is the disaster an "infrastructure built but never flipped" failure or a
-     "loans / overbuild / pass spam" collapse?
+  1. Does the network sell enough tiles?
+  2. In which era does a weak game diverge?
+  3. Which action classes dominate the trace?
 
 Run from repo root:
     PYTHONPATH=src/ai ./src/engine/.venv/Scripts/python.exe \\
-        src/ai/experiments/diagnose.py --ckpt checkpoints/best_masked.pt --sims 400
+        src/ai/experiments/diagnose.py --ckpt checkpoints/bootstrap.pt --sims 400
 """
 
 from __future__ import annotations
