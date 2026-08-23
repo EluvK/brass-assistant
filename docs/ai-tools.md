@@ -181,6 +181,14 @@ canonical action 和 value/econ target；`bootstrap_imitation.py` 加载 shard �
 恢复状态并实时请求 `legal_candidates()`，再以 teacher action 生成 full-legal one-hot policy。短名单旧 shard
 保持原格式和训练路径，便于已有 baseline 复现。
 
+训练时不会先 materialize 整个 shard：`Trainer.train_one_epoch()` 在每个 GPU micro-batch 前恢复该批
+snapshot 并生成候选，然后立即提交前向和反向计算。这样 GPU 与 CPU 候选生成交错执行；同一 shard 不会因
+epoch 外层预处理而额外重复 materialize。
+
+性能注意：snapshot 是“初始状态 + 操作事件流”，恢复和 legal candidate 编码属于 CPU 工作。full-legal
+训练默认使用多个 `ProcessPoolExecutor` worker 并行 materialize 当前 micro-batch；主进程随后将已恢复的
+候选 batch 送入 GPU。worker 数量由 `TrainConfig.materialize_workers` 控制，设为 `1` 可关闭多进程。
+
 ### 2. Rust 和 Python 回归
 
 状态：已验证。

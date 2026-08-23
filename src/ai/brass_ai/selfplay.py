@@ -23,7 +23,7 @@ import brass_engine as be
 
 from typing import Callable, Protocol
 
-from .hierarchical_policy import compress_candidate_features, encode_legal_candidates, encode_teacher_candidates
+from .hierarchical_policy import encode_legal_candidates, encode_teacher_candidates
 
 
 class SearchResultLike(Protocol):

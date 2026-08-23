@@ -39,6 +39,8 @@ def main():
     ap.add_argument("--ckpt", type=str, default="checkpoints/bootstrap.pt")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
                     help="heuristic-game worker processes (use 1 for serial)")
+    ap.add_argument("--materialize-workers", type=int, default=min(4, os.cpu_count() or 1),
+                    help="parallel workers restoring full-legal snapshots during training")
     ap.add_argument("--min-avg-vp", type=float, default=None,
                     help="only keep games whose mean final VP is strictly above this value")
     ap.add_argument("--min-vp", type=float, default=None,
@@ -54,6 +56,8 @@ def main():
     args = ap.parse_args()
     if args.max_candidate_batch < 1:
         ap.error("--max-candidate-batch must be >= 1")
+    if args.materialize_workers < 1:
+        ap.error("--materialize-workers must be >= 1")
 
     # Windows spawn re-imports this script in every imitation worker.  Keep
     # CUDA Torch and MCTS imports here so workers do not load GPU DLLs.
@@ -102,6 +106,7 @@ def main():
         trainer = Trainer(net, TrainConfig(
             device=device, epochs=1, batch_size=args.batch, lr=args.lr,
             max_candidate_batch=args.max_candidate_batch,
+            materialize_workers=args.materialize_workers,
         ))
         t1 = time.time()
         losses = []
@@ -112,7 +117,6 @@ def main():
                 with open(shard, "rb") as f:
                     shard_samples = pickle.load(f)
                 total_samples += len(shard_samples) if epoch == 0 else 0
-                shard_samples = materialize_samples(shard_samples)
                 progress_label = f"train e{epoch+1}/{args.epochs} s{shard_index}/{len(shards)}"
                 # print(f"[{progress_label}] {len(shard_samples)} samples: {shard.name}")
                 losses.extend(trainer.train_one_epoch(shard_samples, progress_label))

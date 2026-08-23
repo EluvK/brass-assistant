@@ -18,6 +18,8 @@ Iteration: self-play with the current net -> trainer.train_on_samples(...) ->
 from __future__ import annotations
 
 import time
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -31,7 +33,7 @@ from .hierarchical_policy import (
     pad_candidate_features,
 )
 from .progress import Progress
-from .selfplay import SelfPlayConfig, Sample, play_batch
+from .selfplay import SelfPlayConfig, Sample, materialize_sample, play_batch
 
 
 @dataclass
@@ -50,6 +52,7 @@ class TrainConfig:
     # Bound the largest padded candidate matrix in one GPU batch. Full-legal
     # states can have hundreds of candidates, so a fixed sample batch is unsafe.
     max_candidate_batch: int = 65536
+    materialize_workers: int = 4
 
 
 class Trainer:
@@ -93,12 +96,28 @@ class Trainer:
         """
         if not samples:
             return []
+        snapshot_mode = samples[0].snapshot is not None
         idx = np.random.permutation(len(samples))
+        pool = None
+        if snapshot_mode and self.cfg.materialize_workers > 1:
+            pool = ProcessPoolExecutor(
+                max_workers=self.cfg.materialize_workers,
+                mp_context=mp.get_context("spawn"),
+            )
         losses = []
         prog = Progress(len(samples), progress_label, every_s=2.0)
         completed = 0
         for start in range(0, len(samples), self.cfg.batch_size):
             raw = [samples[i] for i in idx[start:start + self.cfg.batch_size]]
+            # Snapshot-backed samples are intentionally restored just before
+            # their micro-batch is trained. This keeps GPU work interleaved
+            # with Rust candidate generation and avoids materializing an
+            # entire full-legal shard (or repeating it once per epoch).
+            if raw and raw[0].candidates is None:
+                if pool is not None:
+                    raw = list(pool.map(materialize_sample, raw, chunksize=1))
+                else:
+                    raw = [materialize_sample(s) for s in raw]
             # Padding is determined by the largest candidate row in the batch.
             # Split large-candidate chunks so activation memory scales with the
             # candidate budget rather than the nominal sample batch size.
@@ -112,6 +131,8 @@ class Trainer:
                 chunk_start += len(chunk)
                 completed += len(chunk)
                 prog.update(completed)
+        if pool is not None:
+            pool.shutdown(wait=True)
         prog.done()
         return losses
 
