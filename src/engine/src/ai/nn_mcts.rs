@@ -25,9 +25,9 @@ use numpy::PyArrayMethods;
 use pyo3::Py;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use rand::Rng;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
+use rand::RngExt;
+use rand_chacha::ChaCha12Rng;
+use rand_chacha::rand_core::SeedableRng;
 
 pub const MAX_PLAYERS: usize = 4;
 
@@ -168,7 +168,7 @@ pub fn search_net(
     let mut arena: Vec<Node> = vec![Node::new(root_pid)];
 
     // Independent simulation RNG (state.rng is setup-only and private).
-    let mut sim_rng = StdRng::from_entropy();
+    let mut sim_rng = ChaCha12Rng::from_rng(&mut rand::rng());
     let mut sims_left = sims;
 
     let mut requests: Vec<Request> = Vec::new();
@@ -223,7 +223,7 @@ pub fn search_net(
         // keep every sim on one request and the wave would never flush.
         while sims_left > 0 && parked.len() < cfg.batch_size {
             sims_left -= 1;
-            let _ = sim_rng.r#gen::<u64>(); // vary determinization per simulation
+            let _ = sim_rng.random::<u64>(); // vary determinization per simulation
             let mut work = crate::mcts_ai::determinize(state, &mut sim_rng);
             match descend(
                 &mut work,
@@ -488,13 +488,18 @@ fn terminal_value(vps: Vec<i32>, n_players: usize) -> Vec<f64> {
     vals.iter().map(|v| (v - mean) / std).collect()
 }
 
-fn apply_dirichlet_noise(node: &mut Node, alpha: f64, weight: f64, rng: &mut impl Rng) {
+fn apply_dirichlet_noise(
+    node: &mut Node,
+    alpha: f64,
+    weight: f64,
+    rng: &mut rand_chacha::ChaCha12Rng,
+) {
     use rand_distr::Distribution;
     let n = node.prior.len();
     if n == 0 {
         return;
     }
-    let d = match rand_distr::Dirichlet::new_with_size(alpha, n) {
+    let d = match rand_distr::multi::Dirichlet::new(&vec![alpha; n]) {
         Ok(d) => d,
         Err(_) => return,
     };

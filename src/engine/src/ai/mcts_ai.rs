@@ -16,10 +16,10 @@ use crate::heuristic_ai::{self, Decision};
 use crate::map::Loc;
 use crate::rules::{Move, apply_move};
 use crate::state::{Card, GameState, deck_composition};
-use rand::Rng;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
+use rand::RngExt;
 use rand::seq::SliceRandom;
+use rand_chacha::ChaCha12Rng;
+use rand_chacha::rand_core::SeedableRng;
 
 /// Experimental leaf mode for the heuristic search.
 ///
@@ -231,7 +231,7 @@ fn is_wild(c: &Card) -> bool {
 /// pile, which holds the seeded burns plus all non-wild plays). Excluding
 /// those keeps the determinized world a consistent multiset: a card already
 /// discarded/played can never reappear in an opponent hand or the deck.
-pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {
+pub(crate) fn determinize(state: &GameState, rng: &mut ChaCha12Rng) -> GameState {
     let mut det = state.clone();
     let me = det.current_player_id();
 
@@ -294,7 +294,11 @@ pub(crate) fn determinize(state: &GameState, rng: &mut StdRng) -> GameState {
 
 /// Test-only wrapper around `determinize`.
 #[doc(hidden)]
-pub fn determinize_for_test(state: &GameState, rng: &mut StdRng, _cfg: &MctsConfig) -> GameState {
+pub fn determinize_for_test(
+    state: &GameState,
+    rng: &mut ChaCha12Rng,
+    _cfg: &MctsConfig,
+) -> GameState {
     determinize(state, rng)
 }
 
@@ -337,12 +341,12 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
     });
 
     // Independent simulation RNG (state.rng is setup-only and private).
-    let mut sim_rng = StdRng::from_entropy();
+    let mut sim_rng = ChaCha12Rng::from_rng(&mut rand::rng());
     let mut total_depth = 0u64;
     let mut apply_fail = 0u64;
     let mut empty_cand = 0u64;
     for _ in 0..cfg.simulations {
-        let _ = sim_rng.r#gen::<u64>(); // vary determinization per simulation
+        let _ = sim_rng.random::<u64>(); // vary determinization per simulation
         let mut work = determinize(state, &mut sim_rng);
 
         let mut node_idx = 0usize;

@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IndustryType {
     CottonMill,
     CoalMine,
@@ -52,7 +53,7 @@ impl fmt::Display for IndustryType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Era {
     Canal,
     Rail,
@@ -67,7 +68,7 @@ impl fmt::Display for Era {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
     Build,
     Network,
@@ -120,7 +121,7 @@ impl fmt::Display for Action {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CardType {
     Location,
     Industry,
@@ -132,7 +133,7 @@ pub enum CardType {
 // Tile definitions (from INDUSTRY_DATA in gameData.js)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TileDef {
     pub level: u8,
     pub count: u8,

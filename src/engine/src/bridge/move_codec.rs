@@ -433,11 +433,11 @@ mod tests {
     use super::*;
     use crate::rules::{apply_move, legal_moves};
     use crate::state::GameState;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
+    use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     fn fresh_state(seed: u64, players: usize) -> GameState {
-        GameState::new(StdRng::seed_from_u64(seed), players)
+        GameState::new(ChaCha12Rng::seed_from_u64(seed), players)
     }
 
     #[test]

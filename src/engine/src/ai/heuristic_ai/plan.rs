@@ -66,10 +66,10 @@ pub fn era_profile(state: &GameState) -> EraProfile {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
-    use rand::SeedableRng;
+    use rand_chacha::rand_core::SeedableRng;
     #[test]
     fn show_era_profile() {
-        let mut state = crate::state::GameState::new(rand::rngs::StdRng::seed_from_u64(7), 4);
+        let mut state = crate::state::GameState::new(rand_chacha::ChaCha12Rng::seed_from_u64(7), 4);
         for era in [Era::Canal, Era::Rail] {
             state.era = era;
             for round in 1..=8 {

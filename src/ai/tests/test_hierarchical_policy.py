@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 import brass_engine as be
@@ -71,3 +72,14 @@ def test_snapshot_replay_materializes_current_full_legal_candidates():
     np.testing.assert_array_equal(restored.candidates, features.numpy())
     assert restored.policy.sum() == 1.0
     assert restored.policy[canonical.index(teacher)] == 1.0
+
+
+def test_full_state_snapshot_is_independent_and_not_history_growth():
+    state = be.GameState(seed=61, players=4)
+    sizes = []
+    for _ in range(6):
+        sizes.append(len(state.snapshot()))
+        state.apply_move(state.choose_heuristic()[0])
+    assert max(sizes) - min(sizes) < 512
+    with pytest.raises(ValueError, match="unsupported GameState snapshot version"):
+        be.GameState.from_snapshot(b"BASS\x01" + b"legacy")

@@ -3,21 +3,21 @@
 
 use crate::rules::{Move, legal_moves};
 use crate::state::GameState;
-use rand::Rng;
-use rand::rngs::StdRng;
+use rand::RngExt;
+use rand_chacha::ChaCha12Rng;
 
-pub fn choose_random_move(state: &mut GameState, rng: &mut StdRng) -> Option<Move> {
+pub fn choose_random_move(state: &mut GameState, rng: &mut ChaCha12Rng) -> Option<Move> {
     let moves = legal_moves(state);
     if moves.is_empty() {
         return None;
     }
-    let idx = rng.gen_range(0..moves.len());
+    let idx = rng.random_range(0..moves.len());
     Some(moves[idx].clone())
 }
 
 /// Slightly-smart random: prefers non-Pass actions so games actually produce
 /// buildings/VPs. Useful as a sanity baseline (still essentially random).
-pub fn choose_random_action_first(state: &mut GameState, rng: &mut StdRng) -> Option<Move> {
+pub fn choose_random_action_first(state: &mut GameState, rng: &mut ChaCha12Rng) -> Option<Move> {
     let moves = legal_moves(state);
     if moves.is_empty() {
         return None;
@@ -26,6 +26,6 @@ pub fn choose_random_action_first(state: &mut GameState, rng: &mut StdRng) -> Op
     let (non_pass, pass): (Vec<_>, Vec<_>) =
         moves.iter().partition(|m| !matches!(m, Move::Pass { .. }));
     let pool = if !non_pass.is_empty() { non_pass } else { pass };
-    let idx = rng.gen_range(0..pool.len());
+    let idx = rng.random_range(0..pool.len());
     Some(pool[idx].clone())
 }

@@ -49,7 +49,7 @@ class Sample:
     value: np.ndarray | float = 0.0  # (4,) normalized final VP z-vector
     era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)
     econ: np.ndarray = None  # (2,) = (income_level, money) target for this sample
-    snapshot: bytes | None = None  # opaque Engine snapshot for dynamic full-legal replay
+    snapshot: bytes | None = None  # independent full GameState snapshot
     teacher_canonical: str | None = None
 
 
@@ -451,7 +451,7 @@ def generate_imitation_sample_shards(
     def sink(local, _vps):
         buffered.extend(local)
         # Keep at most a few dozen games' samples in memory while generating.
-        if len(buffered) >= 4096:
+        if len(buffered) >= 32768:
             flush()
 
     _generate_imitation_with_sink(

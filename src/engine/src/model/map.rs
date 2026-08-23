@@ -1,4 +1,5 @@
 use crate::data::IndustryType;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -6,7 +7,7 @@ use std::sync::OnceLock;
 // Locations: cities (20) + merchants (5) + brewery farms (2)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Loc {
     // Cities
     Belper,
@@ -214,7 +215,7 @@ pub fn city_slots(loc: Loc) -> &'static [&'static [IndustryType]] {
 // Merchants
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MerchantBonus {
     Vp(u8),
     Money(i32),
@@ -315,7 +316,7 @@ pub fn merchant_tile_mix(player_count: usize) -> &'static [MerchantMixEntry] {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MerchantMixEntry {
     Blank,
     Any,

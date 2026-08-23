@@ -18,7 +18,7 @@ use brass_engine::replay_fmt;
 use brass_engine::rules::Move;
 use brass_engine::scoring;
 use brass_engine::state::GameState;
-use rand::SeedableRng;
+use rand_chacha::rand_core::SeedableRng;
 use std::cell::{Cell, RefCell};
 use std::env;
 
@@ -126,10 +126,10 @@ fn main() {
     let candidate_k: usize = args.get(8).and_then(|s| s.parse().ok()).unwrap_or(30);
     let max_moves: usize = args.get(9).and_then(|s| s.parse().ok()).unwrap_or(200_000);
 
-    let rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     // RNG for the random baseline (state.rng is setup-only).
-    let mut rand_rng = rand::rngs::StdRng::seed_from_u64(seed ^ 0x5245_504C_4159);
+    let mut rand_rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed ^ 0x5245_504C_4159);
 
     let mut prev_round = state.round;
     let mut prev_era = state.era;

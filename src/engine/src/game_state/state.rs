@@ -1,14 +1,17 @@
 use crate::data::{CardType, Era, IndustryType, TileDef, industry_tiles};
 use crate::map::*;
-use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use rand_chacha::ChaCha12Rng;
+// use rand_core::SeedableRng;
+// use rand_chacha::ChaCha12Rng;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // Cards
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Card {
     Location(Loc),
     /// An industry card may permit up to 2 industry types (dual card).
@@ -64,7 +67,7 @@ impl Card {
 // Board tiles & links
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardTile {
     pub player: usize,
     pub ind: IndustryType,
@@ -73,7 +76,7 @@ pub struct BoardTile {
     pub resource_cubes: u8,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Link {
     pub player: usize,
     pub is_canal: bool,
@@ -120,14 +123,14 @@ pub(crate) struct BeerCubeEntry {
 // Merchant tiles
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuyType {
     Blank,
     Any,
     Industry(IndustryType),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerchantTile {
     pub loc: Loc,
     pub buys: BuyType,
@@ -144,7 +147,7 @@ impl MerchantTile {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PendingBonus {
     FreeDevelop { player_id: usize, count: u8 },
 }
@@ -153,7 +156,7 @@ pub enum PendingBonus {
 // Players
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub money: i32,
     pub income_space: u8,
@@ -271,8 +274,8 @@ impl Player {
 // ---------------------------------------------------------------------------
 
 pub struct GameState {
+    rng: ChaCha12Rng,
     /// Only used during setup (deal/shuffle); engine logic is deterministic.
-    rng: StdRng,
     pub era: Era,
     pub round: u32,
     pub turn_order: Vec<usize>,
@@ -334,6 +337,103 @@ pub struct GameState {
     pub wild_location_pile: u8,
     pub wild_industry_pile: u8,
     pub pending_bonus: Option<PendingBonus>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StateSnapshot {
+    rng: ChaCha12Rng,
+    era: Era,
+    round: u32,
+    turn_order: Vec<usize>,
+    current_index: usize,
+    actions_this_turn: usize,
+    actions_per_turn: usize,
+    is_first_round: bool,
+    game_over: bool,
+    players: Vec<Player>,
+    money_spent_this_round: Vec<i32>,
+    city_tiles: Vec<Option<BoardTile>>,
+    farm_tiles: [Option<BoardTile>; 2],
+    links: Vec<Option<Link>>,
+    coal_market: usize,
+    iron_market: usize,
+    merchants: Vec<MerchantTile>,
+    deck: Vec<Card>,
+    discard_pile: Vec<Card>,
+    wild_location_pile: u8,
+    wild_industry_pile: u8,
+    pending_bonus: Option<PendingBonus>,
+}
+
+impl GameState {
+    /// Serialize the complete current state. Derived resource/connectivity
+    /// caches are intentionally omitted and rebuilt on restore.
+    pub fn snapshot_bytes(&self) -> Result<Vec<u8>, String> {
+        bincode::serialize(&StateSnapshot {
+            rng: self.rng.clone(),
+            era: self.era,
+            round: self.round,
+            turn_order: self.turn_order.clone(),
+            current_index: self.current_index,
+            actions_this_turn: self.actions_this_turn,
+            actions_per_turn: self.actions_per_turn,
+            is_first_round: self.is_first_round,
+            game_over: self.game_over,
+            players: self.players.clone(),
+            money_spent_this_round: self.money_spent_this_round.clone(),
+            city_tiles: self.city_tiles.clone(),
+            farm_tiles: self.farm_tiles.clone(),
+            links: self.links.clone(),
+            coal_market: self.coal_market,
+            iron_market: self.iron_market,
+            merchants: self.merchants.clone(),
+            deck: self.deck.clone(),
+            discard_pile: self.discard_pile.clone(),
+            wild_location_pile: self.wild_location_pile,
+            wild_industry_pile: self.wild_industry_pile,
+            pending_bonus: self.pending_bonus,
+        })
+        .map_err(|e| format!("serialize GameState: {e}"))
+    }
+
+    pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let data: StateSnapshot =
+            bincode::deserialize(bytes).map_err(|e| format!("deserialize GameState: {e}"))?;
+        let mut state = GameState {
+            // RNG is setup/hidden draw machinery rather than a rule-visible
+            // board field. A restored training position never needs to draw
+            // cards; initialize a private stream for any later continuation.
+            rng: data.rng,
+            era: data.era,
+            round: data.round,
+            turn_order: data.turn_order,
+            current_index: data.current_index,
+            actions_this_turn: data.actions_this_turn,
+            actions_per_turn: data.actions_per_turn,
+            is_first_round: data.is_first_round,
+            game_over: data.game_over,
+            players: data.players,
+            money_spent_this_round: data.money_spent_this_round,
+            city_tiles: data.city_tiles,
+            farm_tiles: data.farm_tiles,
+            links: data.links,
+            free_coal_mines: Vec::new(),
+            free_iron_works: Vec::new(),
+            free_beer_cubes: Vec::new(),
+            component_cache: std::sync::RwLock::new((u64::MAX, [0u32; 27])),
+            network_cache: std::sync::RwLock::new(([0u128; 4], [0u32; 4])),
+            coal_market: data.coal_market,
+            iron_market: data.iron_market,
+            merchants: data.merchants,
+            deck: data.deck,
+            discard_pile: data.discard_pile,
+            wild_location_pile: data.wild_location_pile,
+            wild_industry_pile: data.wild_industry_pile,
+            pending_bonus: data.pending_bonus,
+        };
+        state.rebuild_free_sources();
+        Ok(state)
+    }
 }
 
 impl Clone for GameState {
@@ -463,7 +563,7 @@ fn build_deck_composition(player_count: usize) -> Vec<Card> {
 }
 
 impl GameState {
-    pub fn new(rng: StdRng, num_players: usize) -> Self {
+    pub fn new(rng: ChaCha12Rng, num_players: usize) -> Self {
         assert!(num_players >= 2 && num_players <= 4, "2-4 players");
         let mut state = GameState {
             rng,

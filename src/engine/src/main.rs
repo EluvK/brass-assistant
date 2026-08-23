@@ -5,7 +5,7 @@ use brass_engine::random_ai::choose_random_move;
 use brass_engine::rules::Move;
 use brass_engine::scoring;
 use brass_engine::state::GameState;
-use rand::SeedableRng;
+use rand_chacha::rand_core::SeedableRng;
 use rayon::prelude::*;
 use std::env;
 
@@ -36,10 +36,10 @@ struct GameStats {
 }
 
 fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameStats {
-    let rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     // RNG for the random baseline (state.rng is setup-only).
-    let mut rand_rng = rand::rngs::StdRng::from_entropy();
+    let mut rand_rng = rand_chacha::ChaCha12Rng::from_rng(&mut rand::rng());
     let mut canal_events = 0u64;
     let mut stuck = false;
     let mut illegal_move = false;

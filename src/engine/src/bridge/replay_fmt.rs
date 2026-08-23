@@ -606,11 +606,12 @@ mod tests {
     use crate::data::IndustryType;
     use crate::rules::Move;
     use crate::state::GameState;
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     #[test]
     fn same_industry_double_develop_reports_consecutive_tile_levels() {
-        let state = GameState::new(StdRng::seed_from_u64(1), 2);
+        let state = GameState::new(ChaCha12Rng::seed_from_u64(1), 2);
         let develop = Move::Develop {
             ind1: IndustryType::CoalMine,
             ind2: Some(IndustryType::CoalMine),

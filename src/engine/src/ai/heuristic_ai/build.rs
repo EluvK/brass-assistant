@@ -620,7 +620,7 @@ pub(crate) fn score_top_builds(
 
 #[cfg(test)]
 mod tests {
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 
     use super::*;
     use crate::data::industry_tiles;
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn owned_beer_includes_unflipped_farm_brewery() {
-        let mut state = GameState::new(StdRng::seed_from_u64(7), 2);
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(7), 2);
         let pid = state.current_player_id();
         state.farm_tiles[0] = Some(BoardTile {
             player: pid,

@@ -11,7 +11,7 @@ use brass_engine::data::Era;
 use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use brass_engine::mcts_ai::{self, MctsConfig};
 use brass_engine::state::GameState;
-use rand::SeedableRng;
+use rand_chacha::rand_core::SeedableRng;
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -32,7 +32,7 @@ struct SweepResult {
 
 fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bool) -> SweepResult {
     let started = Instant::now();
-    let rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     let res = std::cell::RefCell::new(SweepResult {
         seed,

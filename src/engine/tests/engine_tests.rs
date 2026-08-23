@@ -8,11 +8,11 @@ use brass_engine::rules::{
 };
 use brass_engine::scoring;
 use brass_engine::state::{BoardTile, Card, GameState};
-use rand::SeedableRng;
-use rand::rngs::StdRng;
+use rand_chacha::ChaCha12Rng;
+use rand_chacha::rand_core::SeedableRng;
 
 fn setup(players: usize) -> GameState {
-    let rng = StdRng::seed_from_u64(42);
+    let rng = ChaCha12Rng::seed_from_u64(42);
     GameState::new(rng, players)
 }
 
@@ -31,7 +31,7 @@ fn default_heuristic_entry_point_is_the_search_policy() {
 #[test]
 fn heuristic_candidates_are_legal_and_never_dead_end() {
     for seed in 0..20u64 {
-        let mut state = GameState::new(StdRng::seed_from_u64(seed), 4);
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(seed), 4);
         for _ in 0..120 {
             if state.game_over {
                 break;
@@ -966,7 +966,7 @@ fn mcts_determinize_keeps_own_hand_and_hand_size() {
     let state = setup(4);
     let pid = state.current_player_id();
     let own = state.players[pid].hand.clone();
-    let mut rng = StdRng::seed_from_u64(123);
+    let mut rng = ChaCha12Rng::seed_from_u64(123);
     let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
     // Our own hand is preserved.
     assert_eq!(det.players[pid].hand, own);
@@ -1001,7 +1001,7 @@ fn mcts_determinize_pool_is_multiset_consistent() {
         brass_engine::rules::discard_card(&mut state, pid, idxs[pid]);
     }
 
-    let mut rng = StdRng::seed_from_u64(7);
+    let mut rng = ChaCha12Rng::seed_from_u64(7);
     let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
     let comp = brass_engine::state::deck_composition(state.player_count());
     let mut all: Vec<Card> = Vec::new();
@@ -1047,7 +1047,7 @@ fn determinize_excludes_discarded_cards_from_opponent_hands() {
         "setup: card must enter the discard pile"
     );
 
-    let mut rng = StdRng::seed_from_u64(99);
+    let mut rng = ChaCha12Rng::seed_from_u64(99);
     let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
     for (i, p) in det.players.iter().enumerate() {
         if i != pid {

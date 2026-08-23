@@ -173,19 +173,20 @@ Scout 返回的 card indices 已统一按升序排列；两者现在与 `legal_m
 顺序一致。hard negatives 不作为正式演进方向：少量负样本无法覆盖全部未见合法动作，不能保证
 full-legal MCTS 的分布对齐。最终应改为训练时动态生成候选，而不是把完整候选特征直接持久化到 replay。
 
-动态 full-legal replay 实现状态（2026-08-22）：Rust bridge 已提供 `GameState.snapshot()` 与
-`GameState.from_snapshot(bytes)`。snapshot 是版本化的不透明事件流，包含初始 seed、人数和成功执行的
-engine-level 操作；恢复时由 Rust 从初始状态重放，因此完整保留隐藏手牌、牌堆、市场和所有规则相关状态，
-不将 Python tensor 当作状态来源。`--full-legal-candidates` 的 imitation shard 现保存该 snapshot、teacher
-canonical action 和 value/econ target；`bootstrap_imitation.py` 加载 shard 后调用 `materialize_samples()`，
-恢复状态并实时请求 `legal_candidates()`，再以 teacher action 生成 full-legal one-hot policy。短名单旧 shard
-保持原格式和训练路径，便于已有 baseline 复现。
+动态 full-legal replay 实现状态（2026-08-23）：Rust bridge 已提供 `GameState.snapshot()` 与
+`GameState.from_snapshot(bytes)`。snapshot v2 是当前完整 Rust GameState 的独立二进制序列化，不包含初始
+seed 或历史动作，也不需要重放；恢复时直接反序列化当前回合、玩家、手牌、牌堆、弃牌堆、棋盘、连接、市场、
+商家、pending bonus 和 `ChaCha12Rng` 随机流，并重建派生资源/连通缓存；恢复后继续抽牌/洗牌也保持确定性。
+`--full-legal-candidates` 的 imitation shard 保存该
+snapshot、teacher canonical action 和 value/econ target；`bootstrap_imitation.py` 加载 shard 后调用
+`materialize_samples()`，恢复状态并实时请求 `legal_candidates()`，再以 teacher action 生成 full-legal
+one-hot policy。v1 历史事件流不再兼容，避免把旧格式误当作完整状态。
 
 训练时不会先 materialize 整个 shard：`Trainer.train_one_epoch()` 在每个 GPU micro-batch 前恢复该批
 snapshot 并生成候选，然后立即提交前向和反向计算。这样 GPU 与 CPU 候选生成交错执行；同一 shard 不会因
 epoch 外层预处理而额外重复 materialize。
 
-性能注意：snapshot 是“初始状态 + 操作事件流”，恢复和 legal candidate 编码属于 CPU 工作。full-legal
+性能注意：snapshot 恢复和 legal candidate 编码属于 CPU 工作。full-legal
 训练默认使用多个 `ProcessPoolExecutor` worker 并行 materialize 当前 micro-batch；主进程随后将已恢复的
 候选 batch 送入 GPU。worker 数量由 `TrainConfig.materialize_workers` 控制，设为 `1` 可关闭多进程。
 

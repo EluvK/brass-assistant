@@ -9,10 +9,10 @@ use brass_engine::game_loop;
 use brass_engine::heuristic_ai;
 use brass_engine::mcts_ai::{self, LeafEval, MctsConfig};
 use brass_engine::state::GameState;
-use rand::SeedableRng;
+use rand_chacha::rand_core::SeedableRng;
 
 fn midgame(seed: u64, players: usize, ply: usize) -> GameState {
-    let rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     game_loop::play(&mut state, ply, game_loop::GameHooks::default(), |state| {
         Some(heuristic_ai::choose_action(state).mv)
