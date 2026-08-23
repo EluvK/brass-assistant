@@ -9,6 +9,13 @@ This is a standard warm-start before pure AlphaZero self-play (which needs
 thousands of iterations to bootstrap from random). Run from the repo root:
 
     PYTHONPATH=src/ai ./src/engine/.venv/Scripts/python.exe src/ai/bootstrap_imitation.py
+
+For interruptible training, run one (or a few) epochs at a time.  Each
+completed epoch atomically updates ``--ckpt`` with the model, optimizer and
+scheduler state; restart with ``--resume`` to continue:
+
+    ... bootstrap_imitation.py --epochs 1
+    ... bootstrap_imitation.py --resume --epochs 1
 """
 
 from __future__ import annotations
@@ -37,6 +44,8 @@ def main():
     ap.add_argument("--eval-games", type=int, default=20)
     ap.add_argument("--eval-sims", type=int, default=60)
     ap.add_argument("--ckpt", type=str, default="checkpoints/bootstrap.pt")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume model, optimizer and scheduler from --ckpt")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
                     help="heuristic-game worker processes (use 1 for serial)")
     ap.add_argument("--materialize-workers", type=int, default=min(4, os.cpu_count() or 1),
@@ -51,6 +60,8 @@ def main():
                     help="train on every legal candidate instead of the teacher shortlist")
     ap.add_argument("--sample-dir", type=Path,
                     help="reuse existing imitation-*.pkl shards; skips generation and never deletes this directory")
+    ap.add_argument("--delete-samples-on-success", action="store_true",
+                    help="delete the default --ckpt.imitation shard directory after a successful run")
     ap.add_argument("--mcts-full-legal", action="store_true",
                     help="benchmark with every legal candidate instead of the shortlist")
     args = ap.parse_args()
@@ -63,7 +74,6 @@ def main():
     # CUDA Torch and MCTS imports here so workers do not load GPU DLLs.
     import torch
     from brass_ai.evaluate import benchmark_mcts_vs_heuristic
-    from brass_ai.hierarchical_policy import ACTION_FEATURE_DIM, ACTION_FEATURE_SCHEMA_VERSION
     from brass_ai.net import PolicyValueNet
     from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
     from brass_ai.train import TrainConfig, Trainer, evaluate_policy
@@ -75,14 +85,18 @@ def main():
     t0 = time.time()
     os.makedirs("checkpoints", exist_ok=True)
     owns_sample_dir = args.sample_dir is None
+    # A deterministic directory means an interrupted default run can resume
+    # without asking the user to recover a generated tempfile path.
     sample_dir = (
-        tempfile.mkdtemp(prefix="bootstrap-imitation-", dir="checkpoints")
-        if owns_sample_dir else args.sample_dir
+        Path(f"{args.ckpt}.imitation") if owns_sample_dir else args.sample_dir
     )
     succeeded = False
-    succeeded_imitation = False
     try:
-        if owns_sample_dir:
+        existing_shards = sorted(sample_dir.glob("imitation-*.pkl")) if sample_dir.is_dir() else []
+        if existing_shards:
+            shards = existing_shards
+            print(f"reusing {len(shards)} imitation shards from: {sample_dir}")
+        elif owns_sample_dir:
             shards = generate_imitation_sample_shards(
                 args.games, sample_dir,
                 workers=args.workers,
@@ -100,29 +114,61 @@ def main():
             if not shards:
                 raise ValueError(f"--sample-dir contains no imitation-*.pkl shards: {sample_dir}")
             print(f"reusing {len(shards)} imitation shards from: {sample_dir}")
-        succeeded_imitation = True
-
         net = PolicyValueNet()
         trainer = Trainer(net, TrainConfig(
             device=device, epochs=1, batch_size=args.batch, lr=args.lr,
             max_candidate_batch=args.max_candidate_batch,
             materialize_workers=args.materialize_workers,
         ))
+        ckpt_path = Path(args.ckpt)
+        if args.resume:
+            if not ckpt_path.is_file():
+                raise ValueError(f"--resume requires an existing checkpoint: {ckpt_path}")
+            checkpoint = torch.load(ckpt_path, map_location=device)
+            required = {"model", "optimizer", "scheduler"}
+            missing = required.difference(checkpoint) if isinstance(checkpoint, dict) else required
+            if missing:
+                raise ValueError(
+                    f"checkpoint {ckpt_path} cannot resume training; missing "
+                    f"trainer state: {', '.join(sorted(missing))}. "
+                    "Start a new bootstrap run to create a resumable checkpoint."
+                )
+            trainer.load_state_dict(checkpoint)
+            print(f"resumed trainer state from {ckpt_path} (completed epochs: {trainer.epoch_count})")
+
+        def save_checkpoint() -> None:
+            """Avoid leaving a half-written checkpoint after an interruption."""
+            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb", prefix=f".{ckpt_path.name}.", suffix=".tmp",
+                dir=ckpt_path.parent or Path("."), delete=False,
+            ) as f:
+                tmp_path = Path(f.name)
+            try:
+                torch.save(trainer.state_dict(), tmp_path)
+                os.replace(tmp_path, ckpt_path)
+            finally:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+
         t1 = time.time()
         losses = []
         total_samples = 0
-        for epoch in range(args.epochs):
-            print(f"\nepoch {epoch+1}/{args.epochs} ...")
+        for run_epoch in range(args.epochs):
+            epoch = trainer.epoch_count + 1
+            print(f"\nepoch {epoch} (this run {run_epoch+1}/{args.epochs}) ...")
             for shard_index, shard in enumerate(shards, start=1):
                 with open(shard, "rb") as f:
                     shard_samples = pickle.load(f)
-                total_samples += len(shard_samples) if epoch == 0 else 0
-                progress_label = f"train e{epoch+1}/{args.epochs} s{shard_index}/{len(shards)}"
+                total_samples += len(shard_samples) if run_epoch == 0 else 0
+                progress_label = f"train e{epoch} s{shard_index}/{len(shards)}"
                 # print(f"[{progress_label}] {len(shard_samples)} samples: {shard.name}")
                 losses.extend(trainer.train_one_epoch(shard_samples, progress_label))
                 del shard_samples
             trainer.scheduler.step()
             trainer.epoch_count += 1
+            save_checkpoint()
+            print(f"checkpoint updated after epoch {trainer.epoch_count}: {ckpt_path}")
         mean_losses = {k: sum(x[k] for x in losses) / len(losses) for k in losses[0]}
         print(f"trained {total_samples} samples ({time.time()-t1:.0f}s): "
               f"policy={mean_losses['policy']:.3f} value={mean_losses['value']:.3f}")
@@ -151,13 +197,6 @@ def main():
                   f"candidates={metrics['candidate_count_mean']:.1f}"
                   f"/p95={metrics['candidate_count_p95']:.0f}")
 
-        os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
-        torch.save({
-            "model": net.state_dict(),
-            "action_feature_dim": ACTION_FEATURE_DIM,
-            "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
-        }, args.ckpt)
-
         mcts = RustISMCTS(net, RustMCTSConfig(
             c_puct=2.5, max_depth=10, device=device,
             candidate_k=0 if args.mcts_full_legal else 4,
@@ -168,19 +207,18 @@ def main():
         print(f"MCTS(bootstrap net) vs heuristic: win_rate={result['win_rate']:.0%} "
               f"(mcts_vp={result['mcts_mean']:.1f} "
               f"vs heuristic_vp={result['base_mean']:.1f})")
-        print(f"checkpoint saved: {args.ckpt}")
+        print(f"checkpoint saved: {ckpt_path}")
         succeeded = True
     finally:
         if not owns_sample_dir:
             print(f"reused imitation shards preserved at: {sample_dir}")
-        elif succeeded_imitation and not succeeded:
+        elif not succeeded:
             print(f"bootstrap failed; imitation shards preserved at: {sample_dir}")
-        else:
+        elif args.delete_samples_on_success:
             shutil.rmtree(sample_dir, ignore_errors=True)
-            if not succeeded_imitation:
-                print(f"bootstrap failed; no imitation shards generated")
-            elif succeeded:
-                print(f"bootstrap succeeded; imitation shards deleted: {sample_dir}")
+            print(f"bootstrap succeeded; imitation shards deleted: {sample_dir}")
+        else:
+            print(f"imitation shards preserved for --resume at: {sample_dir}")
 
 
 
