@@ -8,7 +8,7 @@ data, then its MCTS is evaluated vs the heuristic.
 This is a standard warm-start before pure AlphaZero self-play (which needs
 thousands of iterations to bootstrap from random). Run from the repo root:
 
-    PYTHONPATH=src/ai ./src/engine/.venv/Scripts/python.exe src/ai/bootstrap_imitation.py
+    ./.venv/Scripts/python.exe python/bootstrap_imitation.py
 
 For interruptible training, run one (or a few) epochs at a time.  Each
 completed epoch atomically updates ``--ckpt`` with the model, optimizer and

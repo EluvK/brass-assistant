@@ -1,9 +1,9 @@
 //! Replay a single AI game with a detailed, human-readable log.
 //!
 //! All the human-readable Chinese formatting lives in the library
-//! (`brass_engine::replay_fmt`); this binary only drives the game loop and
+//! (`_engine::replay_fmt`); this binary only drives the game loop and
 //! prints the formatted lines — the SAME formatting the Python network-replay
-//! driver (`src/ai/experiments/replay_net.py`) uses, so both produce
+//! driver (`python/experiments/replay_net.py`) uses, so both produce
 //! byte-identical log structure.
 //!
 //! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary] [trace] [candidate-k] [max-moves]

@@ -1,4 +1,4 @@
-python src/ai/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-
+python python/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-
   avg-vp 80 --min-vp 58 --max-attempts 20000 --ckpt checkpoints/bootstrap.pt
   device: cuda
   [accepted imitation game] 2000/2000 elapsed: 140s |ETA:   0s                                       , samples: 250898
@@ -119,7 +119,7 @@ ReplaySample = 可恢复的 Rust GameState 快照 + teacher canonical action + v
 
 
 ---  0819 修复 engine 一些问题后再次 bootstrap结果：
-python src/ai/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-avg-vp 95 --min-vp 88 --max-attempts 20000 --ckpt checkpoints/bootstrap-test0819.pt  
+python python/bootstrap_imitation.py --games 2000 --epochs 10 --workers 8 --min-avg-vp 95 --min-vp 88 --max-attempts 20000 --ckpt checkpoints/bootstrap-test0819.pt  
 device: cuda
 [accepted imitation game] 2000/2000 elapsed: 390s |ETA:   0s                                       , samples: 250915  
 generated 250915 imitation samples from 2000 heuristic games (390s)
@@ -129,7 +129,7 @@ MCTS(bootstrap net) vs heuristic: win_rate=0% (mcts_vp=33.3 vs heuristic_vp=106.
 checkpoint saved: checkpoints/bootstrap-test0819.pt
 
 --- 0822 修改动作空间以后，训练用的
-python src/ai/bootstrap_imitation.py --games 1000 --epochs 10 --workers 8 --min-avg-vp 90 --min-vp 78 --max-attempts 20000 --ckpt checkpoints/bootstrap-0822.pt
+python python/bootstrap_imitation.py --games 1000 --epochs 10 --workers 8 --min-avg-vp 90 --min-vp 78 --max-attempts 20000 --ckpt checkpoints/bootstrap-0822.pt
  policy=1.625 value=0.788 top1=55.3% top3=82.4% top5=94.8% type_top1=58.5% entropy=1.37 candidates=11.2/p95=13
 [bench sims=60] 20/20 elapsed:  10s |ETA:   0s
 MCTS(bootstrap net) vs heuristic: win_rate=5% (mcts_vp=82.7 vs heuristic_vp=102.2)

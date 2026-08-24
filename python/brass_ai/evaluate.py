@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-import python.brass_ai.brass_engine as be
+from . import _engine as be
 
 from .progress import Progress
 

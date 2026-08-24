@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-import python.brass_ai.brass_engine as be
+from brass_ai import _engine as be
 
 from brass_ai.hierarchical_policy import (
     ACTION_FEATURE_SCHEMA_VERSION,

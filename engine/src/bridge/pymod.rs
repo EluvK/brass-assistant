@@ -1,6 +1,6 @@
-//! PyO3 bindings: expose the Rust engine to Python (package `brass_engine`).
+//! PyO3 bindings: expose the Rust engine to Python (module `brass_ai._engine`).
 //!
-//! Raw API surface (`import brass_engine`):
+//! Raw API surface (`from brass_ai import _engine`):
 //!   GameState(seed, players)                # 2-4 players
 //!     .current_player_id / .player_count    # int properties
 //!     .era                                   # 0 = canal, 1 = rail
@@ -516,7 +516,7 @@ fn reshape2<'py>(
 }
 
 #[pymodule(name = "_engine")]
-fn brass_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
     m.add(
         "ACTION_FEATURE_DIM",

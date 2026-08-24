@@ -1,12 +1,13 @@
-"""Python-side alignment tests for the brass_engine PyO3 bindings.
+"""Python-side alignment tests for the brass_ai._engine PyO3 bindings.
 
-Run with the venv python:  .venv/Scripts/python.exe -m pytest tests/test_engine.py
+Run from the repository root with:
+    .venv/Scripts/python.exe -m pytest python/tests/test_engine.py
 """
 
 import numpy as np
 import pytest
 
-import brass_engine as be
+from brass_ai import _engine as be
 
 
 def test_constants_shape_consistency():

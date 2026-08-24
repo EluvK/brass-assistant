@@ -34,7 +34,7 @@
 
 ## 模块职责
 
-### 模块划分（`src/engine/src/`）
+### 模块划分（`engine/src/`）
 
 ```
 lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块路径）
@@ -87,20 +87,20 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
     ├─ move_codec.rs Move ⇄ canonical 字符串（无损，含资源源/卡牌选择）
     ├─ encode.rs     状态 → 张量特征编码（board/links/global/hands）
     ├─ replay_fmt.rs 中文回放格式化（纯只读，供 replay 二进制与 Python 驱动共用）
-    └─ pymod.rs      PyO3 绑定 brass_engine（GameState 类 + search_net + stepwise replay）
+    └─ pymod.rs      PyO3 绑定 brass_ai._engine（GameState 类 + search_net + stepwise replay）
 ```
 
 依赖方向大体单向：`model` → `game_state` → `gameplay` → AI / bridge。`gameplay` 只生成规则意义上的合法动作；候选动作特征编码属于 bridge，因此规则层不依赖 bridge。
 唯一反向边：`bridge/encode.rs`（桥接层）依赖 `ai/heuristic_ai::estimate_rounds_remaining`（AI 层）——属"胶水层依赖全部"的既有设计，非漂移。
 
-为保持 Rust 调用方、二进制工具及 PyO3 绑定的兼容性，`lib.rs` 仍公开再导出 `brass_engine::rules`、`brass_engine::state` 等原有平铺路径；新代码应使用对应的职责层路径。
+为保持 Rust 调用方、二进制工具及 PyO3 绑定的兼容性，`lib.rs` 仍公开再导出 `_engine::rules`、`_engine::state` 等原有平铺路径；新代码应使用对应的职责层路径。
 
 ### Python AI 训练
 
-Python 侧位于 `src/ai/`，负责训练编排与模型推理，不重复实现游戏规则、合法动作生成或搜索树。规则执行、信息集确定化、状态特征编码和网络引导 ISMCTS 均以 Rust `brass_engine` 为唯一权威实现。
+Python 侧位于 `python/`，负责训练编排与模型推理，不重复实现游戏规则、合法动作生成或搜索树。规则执行、信息集确定化、状态特征编码和网络引导 ISMCTS 均以 Rust `brass_ai._engine` 为唯一权威实现。
 
 ```
-src/ai/
+python/
 ├─ brass_ai/
 │  ├─ net.py          Policy-Value 网络：具体候选动作打分 + 动作类型辅助头 + 4 玩家价值头
 │  ├─ rust_mcts.py    `GameState.search_net` 的 PyTorch 回调适配器
@@ -119,7 +119,7 @@ src/ai/
 
 #### Rust-Python 契约
 
-`brass_engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
+`brass_ai._engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
 
 - `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为 `board`、`links`、`global`、`own_hand`、`opp_hands`、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
 - `state_to_tensor()`：供训练样本采集使用的单状态特征；维度固定为 board `(17, 49)`、links `(6, 39)`、global `(50,)`、own hand `(35,)`、 opponent hands `(105,)`。

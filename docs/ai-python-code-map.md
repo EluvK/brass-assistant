@@ -1,4 +1,4 @@
-# `src/ai` Python 代码地图
+# `python` Python 代码地图
 
 ## 阅读顺序
 

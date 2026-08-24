@@ -45,7 +45,7 @@ reference/ikegami-tts-brass 是 TTS 伯明翰 Mod 的 Lua 脚本，后续做 TTS
 
 docs 目录为本项目文档，其中 docs/archived/ 下的文档为历史记录，docs/ 下的其余文档为当前有效文档。历史文档非直接指令请勿阅读和参考。
 
-src 目录为本项目源码，其中 src/engine 为 Rust 游戏引擎，src/ai 为 Python AI 模块
+`engine` 为 Rust 游戏引擎，`python` 为 Python AI 模块。
 
 ## 7. Agent 工作准则
 

@@ -18,13 +18,13 @@
 ### 2.2 玩家资产
 - 起始资金 £17、收入标记位于收入轨道（最高 30，可为负，下限 -10）
 - 个人产业板块（每类产业各等级若干块）+ 研发面板（Development Card）
-- 具体张数与等级分布见 `src/engine/src/data.rs`
+- 具体张数与等级分布见 `engine/src/model/data.rs`
 
 ### 2.3 地图
 - 若干城市（节点）+ 连接（边）：运河（时代1）/ 铁路（时代2）
 - 每个城市有若干建筑槽位（限定可建的产业类型）
 - 商家（Merchant）点位、市场（Market）轨道
-- 具体数据参照 `src/engine/src/map.rs`
+- 具体数据参照 `engine/src/model/map.rs`
 
 ## 3. 回合结构
 

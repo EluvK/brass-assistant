@@ -1,7 +1,7 @@
 """Rust ISMCTS adapter.
 
 The search tree lives entirely in Rust (`GameState.search_net` in the
-`brass_engine` extension); the network is queried through a batched Python
+`brass_ai._engine` extension); the network is queried through a batched Python
 callback. This is the supported search implementation for self-play and
 evaluation. Its `search(...) -> SearchResult` contract exposes `.best`,
 `.visits`, and `.canon_by_candidate`.
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-import python.brass_ai.brass_engine as be
+from . import _engine as be
 from .net import PolicyValueNet
 
 

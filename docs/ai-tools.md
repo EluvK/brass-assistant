@@ -1,10 +1,10 @@
 # Python AI 当前架构与操作手册
 
-本文只描述当前保留在 `src/ai/` 的代码。
+本文只描述当前保留在 `python/` 的代码。
 
 ## 职责边界
 
-Rust 扩展 `brass_engine` 是游戏规则与动作语义的唯一权威，负责：
+Rust 扩展 `brass_ai._engine` 是游戏规则与动作语义的唯一权威，负责：
 
 - `GameState`、回合推进、合法动作与 canonical action；
 - 状态 tensor 和候选动作特征编码；
@@ -52,7 +52,7 @@ Rust heuristic self-play
 ## 当前目录
 
 ```text
-src/ai/
+python/
 |- bootstrap_imitation.py     heuristic imitation warm-start 入口
 |- brass_ai/
 |  |- hierarchical_policy.py  Rust 候选动作和 teacher adapter
@@ -72,16 +72,15 @@ src/ai/
 从仓库根目录执行：
 
 ```powershell
-.\src\engine\.venv\Scripts\Activate.ps1
-$env:PYTHONPATH = "src/ai"
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
 
 # Rust bridge 有修改时重新安装扩展
-Push-Location src/engine
 python -m maturin develop --release
-Pop-Location
 
 # Python 当前回归测试
-python -m pytest src/ai/tests -q
+python -m pytest python/tests -q
 ```
 
 ## 当前可运行入口
@@ -91,7 +90,7 @@ python -m pytest src/ai/tests -q
 `bootstrap_imitation.py` 是保留的训练入口。Rust heuristic 进行完整对局，Python 使用每步 teacher 候选集训练候选评分、value 和经济辅助头，再让网络引导 Rust MCTS 与 heuristic 对战。
 
 ```powershell
-python src/ai/bootstrap_imitation.py `
+python python/bootstrap_imitation.py `
   --games 20 --epochs 1 --workers 1 `
   --eval-games 2 --eval-sims 10 `
   --ckpt checkpoints/bootstrap-smoke.pt
@@ -136,6 +135,6 @@ action_feature_schema_version
 
 ## 修改后的最低验证标准
 
-- 修改 Rust bridge、候选特征或网络输入：重新构建 Rust 扩展，并运行 `python -m pytest src/ai/tests -q`。
+- 修改 Rust bridge、候选特征或网络输入：重新构建 Rust 扩展，并运行 `python -m pytest python/tests -q`。
 - 修改 loss、`Sample` 或训练 batch：运行全部 Python 测试，并用小规模 bootstrap smoke 验证。
 - 修改 Rust 搜索 callback：至少确认 `test_mcts_selfplay.py` 通过，且 smoke benchmark 能完成。

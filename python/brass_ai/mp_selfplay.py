@@ -16,7 +16,7 @@ dominated by Python/Rust bookkeeping, so many workers do not contend for the
 GPU, which is reserved for the main process's training.
 
 Windows notes: spawn re-imports the target module in each child; the child
-inherits sys.path, so `brass_engine` (PyO3 .pyd) must be importable there.
+inherits sys.path, so `brass_ai._engine` (PyO3 .pyd) must be importable there.
 Each worker pins `torch.set_num_threads(1)` so 8-16 processes really use the
 16 CPU cores.
 """
@@ -38,7 +38,7 @@ _PACK_TIMEOUT_S = 1800  # per packet; a full game at sims=200 can take minutes
 
 def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
     # Imports happen inside the child (spawn re-imports everything anyway).
-    import python.brass_ai.brass_engine as be  # noqa: F401  (ensure the extension loads here)
+    from . import _engine as be  # noqa: F401  (ensure the extension loads here)
     from .net import PolicyValueNet
     from .rust_mcts import RustISMCTS, RustMCTSConfig
 

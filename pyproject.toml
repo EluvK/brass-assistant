@@ -8,6 +8,9 @@ version = "0.1.0"
 requires-python = ">=3.9"
 dependencies = ["numpy", "torch"]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [tool.maturin]
 python-source = "python"
 module-name = "brass_ai._engine"
