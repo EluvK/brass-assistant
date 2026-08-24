@@ -4,7 +4,6 @@ import torch
 
 import brass_engine as be
 
-from brass_ai import build_input
 from brass_ai.hierarchical_policy import (
     ACTION_FEATURE_SCHEMA_VERSION,
     compress_candidate_features,
@@ -14,19 +13,6 @@ from brass_ai.hierarchical_policy import (
 )
 from brass_ai.net import PolicyValueNet
 from brass_ai.selfplay import Sample, materialize_sample
-
-
-def test_engine_candidates_feed_variable_candidate_policy():
-    states = [be.GameState(seed=11, players=4), be.GameState(seed=12, players=4)]
-    candidates = [encode_legal_candidates(state) for state in states]
-    canonical, rows = zip(*candidates)
-    features, mask = pad_candidate_features(list(rows))
-    out = PolicyValueNet()(build_input.encode_states(states), features, mask)
-
-    assert len(canonical[0]) > 0
-    assert features.shape[-1] == be.ACTION_FEATURE_DIM
-    assert out["candidate_logits"].shape == mask.shape
-    assert torch.allclose(out["candidate_log_probs"].exp().sum(1), torch.ones(2))
 
 
 def test_engine_candidate_features_match_declared_schema():

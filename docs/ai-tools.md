@@ -1,256 +1,141 @@
-# Python AI 架构与操作手册
+# Python AI 当前架构与操作手册
 
-本文是 `src/ai/` 当前 concrete-candidate 动作架构的操作手册。
+本文只描述当前保留在 `src/ai/` 的代码。
 
-## 权威边界
+## 职责边界
 
-Rust 扩展 `brass_engine` 是规则和动作语义的唯一权威，负责：
+Rust 扩展 `brass_engine` 是游戏规则与动作语义的唯一权威，负责：
 
-- `GameState`、规则、回合推进和对手手牌确定化；
-- 完整 legal concrete action 的生成；
-- state tensor 编码；
-- action feature 编码；
-- Rust heuristic teacher；
-- candidate-policy-guided ISMCTS。
+- `GameState`、回合推进、合法动作与 canonical action；
+- 状态 tensor 和候选动作特征编码；
+- heuristic teacher；
+- candidate-policy-guided ISMCTS 搜索树。
 
-Python 不实现规则或 canonical action 解析。它负责候选评分网络、样本编排、训练、checkpoint 和评测。
+Python 不实现规则或解析动作。它负责网络前向、训练样本组织、模仿训练、Rust 搜索的网络回调，以及自对弈支持代码。
 
-## 当前架构
+## 当前数据流
 
 ```text
 Rust GameState
-  -> legal concrete candidates / action features
-  -> PolicyValueNet(state, candidates) -> candidate logits + value
-  -> Rust ISMCTS over configured candidate set
+  -> legal_candidates() / heuristic_candidates()
+  -> Python PolicyValueNet(state tensors, candidate features)
+  -> candidate logits + 4-player value + econ prediction
+  -> Rust GameState.search_net() through Python callback
 
-Rust heuristic teacher
-  -> bounded scored shortlist (at most 14 candidates)
-  -> imitation replay / soft policy target
+Rust heuristic self-play
+  -> imitation Sample
+  -> Trainer
+  -> checkpoint
+  -> Rust MCTS vs heuristic benchmark
 ```
 
-默认 MCTS 使用与 teacher 一致的 bounded shortlist（`candidate_k=4`）：top-4 Build、top-4
-Network、其他每类最佳动作，必要时再加入 heuristic 的 2-ply 最终选择。设置
-`candidate_k=0` 时恢复为完整 `legal_moves()`。imitation 默认持久化 teacher shortlist，每个样本最多
-14 个候选；实验开关 `--full-legal-candidates` 会改为保存该状态的全部合法候选，并在 full candidate
-集合上使用 heuristic 选择动作作为 one-hot target。
+候选集中的动作数 `N` 随局面变化。Python 只给 Rust 提供的候选动作打分，不能自行判断合法性。
 
 ## Rust-Python 契约
 
-正式训练路径当前只支持四人局。虽然 `GameState` 支持 2--4 人，但网络 value head 固定为 4 维，手牌编码也固定为三名对手。
+当前训练路径固定为四人局。`GameState` 虽可支持 2--4 人，网络的 value head 和对手手牌编码均固定按四人局设计。
 
-| 数据 | 契约 |
+| 数据 | 形状/含义 |
 | --- | --- |
 | board | `float32 (17, 49)` |
 | links | `float32 (6, 39)` |
 | global | `float32 (50,)` |
 | own_hand | `float32 (35,)` |
-| opp_hands | `float32 (105,)` |
-| action feature | `float32 (N, 235)`，`N` 随状态变化 |
-| feature schema | `ACTION_FEATURE_SCHEMA_VERSION = 2` |
-| policy | 对同一状态的候选集合归一化，而非固定全局动作表 |
-| value target | 四名玩家终局 VP 的标准化向量 `(vp - mean) / std`；平局为全零 |
-| econ target | `(income_level, money)`；仅作辅助监督 |
+| opp_hands | `float32 (105,)`，三名对手手牌 |
+| candidate features | `float32 (N, 235)` |
+| policy target | 对这 `N` 个候选归一化的分布 |
+| value target | 四名玩家终局 VP 标准化向量 `(vp - mean) / std`；平局为全零 |
+| econ target | `(income_level, money)`，辅助监督 |
 
-Python 必须拒绝未知 action feature schema version。修改 Rust action encoding 时，应同时升级 schema version、Python adapter、replay 格式和相关测试。
+动作特征 schema 当前为 `ACTION_FEATURE_SCHEMA_VERSION = 2`。Python adapter 和 checkpoint 会拒绝未知 schema；Rust 修改动作编码时必须同步更新这些位置和测试。
 
-## 目录
+## 当前目录
 
 ```text
 src/ai/
+|- bootstrap_imitation.py     heuristic imitation warm-start 入口
 |- brass_ai/
-|  |- build_input.py          Rust state tensor -> PyTorch batch
-|  |- hierarchical_policy.py  candidate batch 与 teacher bridge adapter
-|  |- net.py                  candidate scorer + value/econ heads
-|  |- rust_mcts.py            Rust MCTS candidate-logit callback
-|  |- selfplay.py             self-play、teacher imitation、Sample
-|  |- mp_selfplay.py          worker pool 与候选样本打包
-|  |- dataset.py              candidate replay NPZ shard
-|  `- train.py                Trainer、loss、candidate metrics
-|- bootstrap_imitation.py     已验证的 imitation warm-start 入口
-|- train_mp.py                多进程 self-play 训练入口
-|- experiments/               可复用的评测、回放和诊断工具
-`- tests/                     当前主链路回归测试
+|  |- hierarchical_policy.py  Rust 候选动作和 teacher adapter
+|  |- net.py                  PolicyValueNet
+|  |- rust_mcts.py            Rust 搜索的 Python 网络回调
+|  |- selfplay.py             Sample、imitation 与 MCTS self-play
+|  |- train.py                Trainer、loss、训练指标
+|  |- evaluate.py             MCTS 对 heuristic 的评测
+|  |- mp_selfplay.py          多进程 self-play worker pool
+|  |- progress.py             长任务进度输出
+|  `- __init__.py             包定义
+`- tests/                     当前回归测试
 ```
 
-## 环境准备
+## 环境与回归
 
-所有命令从仓库根目录运行，PowerShell 示例：
+从仓库根目录执行：
 
 ```powershell
-# 使用项目虚拟环境，并使 Python 能发现 AI 包
 .\src\engine\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = "src/ai"
 
-# Rust bridge 改动后重新构建和安装
+# Rust bridge 有修改时重新安装扩展
 Push-Location src/engine
 python -m maturin develop --release
 Pop-Location
 
-# 当前 AI 主链路回归测试
+# Python 当前回归测试
 python -m pytest src/ai/tests -q
 ```
 
-上述安装和测试流程已验证。测试覆盖 candidate feature、teacher shortlist、candidate policy、replay、训练和 Rust MCTS adapter。
+## 当前可运行入口
 
-## 已验证流程
+### Heuristic imitation bootstrap
 
-### 1. Heuristic Imitation Bootstrap
-
-状态：已验证。
-
-Rust heuristic 生成完整对局；每步返回有界 scored shortlist。Python 将 teacher scores softmax 为 policy target，训练 candidate scorer、value head 和 econ head。
+`bootstrap_imitation.py` 是保留的训练入口。Rust heuristic 进行完整对局，Python 使用每步 teacher 候选集训练候选评分、value 和经济辅助头，再让网络引导 Rust MCTS 与 heuristic 对战。
 
 ```powershell
-python src/ai/bootstrap_imitation.py --games 200 --epochs 3 --workers 4 --min-avg-vp 80 --min-vp 58 --max-attempts 20000 --ckpt checkpoints/bootstrap-smoke.pt
+python src/ai/bootstrap_imitation.py `
+  --games 20 --epochs 1 --workers 1 `
+  --eval-games 2 --eval-sims 10 `
+  --ckpt checkpoints/bootstrap-smoke.pt
 ```
 
-当前输出包含：
+这是一条小规模 smoke 命令。正式训练前应先确认 Rust 扩展已由当前源码构建，且 Python 测试通过。
 
-```text
-policy / value
-top1 / top3 / top5
-type_top1
-entropy
-candidates mean / p95
-MCTS vs heuristic benchmark
-```
-
-解释：top-k 是训练后的 teacher target 命中率；当前先在训练 replay 上计算，不能作为泛化结果。`candidates` 是 teacher shortlist 大小，不是 MCTS 的完整合法动作数。checkpoint 是模型 `state_dict`，不是完整 Trainer 恢复状态。
-
-候选集对齐实验：
-
-```powershell
-# full legal candidates 训练 + full legal MCTS benchmark
-python src/ai/bootstrap_imitation.py --games 100 --epochs 1 --workers 8 `
-  --full-legal-candidates --mcts-full-legal `
-  --ckpt checkpoints/bootstrap-full-legal-test.pt
-```
-
-`--full-legal-candidates` 会显著增加临时 replay shard 体积，建议先用 100 局检查 candidate count、
-生成速度和磁盘占用。`--mcts-full-legal` 仅影响 bootstrap 末尾 benchmark；不加时 benchmark 使用默认
-`candidate_k=4` shortlist。Rust extension 改动后必须重新运行 `maturin develop`。
-
-full-legal 持久化实验结果（2026-08-22）：2 个 worker 可以运行，但 40 局已经产生约 2 GB
-replay 数据；8 个 worker 在把完整 `Sample` 列表通过 multiprocessing queue pickle 回主进程时触发
-`MemoryError`。原因是每个状态平均约 500 个合法候选，每个候选包含 235 维 `float32` 特征，单局
-约 125 个状态，多个 worker 的结果会同时驻留内存。当前不应继续用该模式做正式 bootstrap。
-
-为保留 full-legal 过渡实验能力，replay/进程传输现在对完整候选特征使用无损定点压缩：动作特征值均为
-0.25 的整数倍，保存时乘 4 后转为 `uint8`，训练组 batch 时再还原为 `float32`。这只压缩存储格式，
-不改变网络输入或 policy target；候选特征部分理论上减少约 75% 体积，并降低 worker 返回结果的峰值
-内存。该格式只用于验证和短期实验，不是最终 replay 结构。
-
-2026-08-22 进一步实验：1000 局 full-legal 样本生成成功（约 1325 秒），但训练第一 epoch 使用固定
-`batch=256` 时在 8GB GPU 上 OOM。原因是 batch padding 到该批次最大候选数，候选矩阵和 action encoder
-激活随 `batch_size * max_candidates * 235` 增长。训练器现已按候选数自动拆分 batch（默认限制候选行预算
-为 16384），评估路径同样受限；bootstrap 失败时会保留临时 shard 并打印目录，不再被 finally 静默删除。
-
-已有 shard 可用 `--sample-dir` 跳过生成并重复训练；该参数指向的目录永不由脚本删除。例如：
-
-```powershell
-python src/ai/bootstrap_imitation.py --sample-dir checkpoints/bootstrap-imitation-XXXXXX `
-  --epochs 10 --mcts-full-legal --ckpt checkpoints/bootstrap-0822-full.pt
-```
-
-目录必须包含 `imitation-*.pkl`。传入 `--sample-dir` 后，`--games`、`--workers`、质量筛选和
-`--full-legal-candidates` 都不参与生成；它们不会改变已落盘样本。
-
-训练日志会显示 `train e<epoch>/<total> s<shard>/<total>`、当前 shard 的样本数和文件名。full-legal
-实验应以该 shard 编号判断进度，不要将单个 shard 内部的 progress 重置误认为整轮重新开始。训练进度
-按实际 GPU micro-batch 更新并以 2 秒限流刷新；候选预算导致的 batch 拆分会反映在进度和 ETA 中。
-
-`--max-candidate-batch` 是 GPU batch 内的候选行预算，不是字节数：实际 batch 满足
-`sample_count * max_candidates <= budget`。默认 `16384`；对于一个最大候选数约 600 的 batch，至多约
-27 个 sample。8GB GPU 在默认值稳定后可按 `16384 -> 24576 -> 32768` 逐次提高，每次先跑一个 epoch；
-一旦 OOM 就退回上一个值。GPU 利用率 100% 代表正在算，显存有余量时提高该值才可能减少 batch 拆分、提高吞吐。
-
-bootstrap 默认跳过全 replay 的 policy 指标统计；这一步不更新模型，也不影响 checkpoint 或 MCTS
-benchmark，但 full-legal 时会额外读取全部 shard 并执行一次完整前向。需要 top-k、entropy、候选数
-等指标时显式传入 `--enable-policy-eval`。
-
-同一轮排查还修复了两个 canonical 规范化问题：heuristic Sell 返回的 tile keys 已统一按升序排列，
-Scout 返回的 card indices 已统一按升序排列；两者现在与 `legal_moves()` 的 concrete canonical
-顺序一致。hard negatives 不作为正式演进方向：少量负样本无法覆盖全部未见合法动作，不能保证
-full-legal MCTS 的分布对齐。最终应改为训练时动态生成候选，而不是把完整候选特征直接持久化到 replay。
-
-动态 full-legal replay 实现状态（2026-08-23）：Rust bridge 已提供 `GameState.snapshot()` 与
-`GameState.from_snapshot(bytes)`。snapshot v2 是当前完整 Rust GameState 的独立二进制序列化，不包含初始
-seed 或历史动作，也不需要重放；恢复时直接反序列化当前回合、玩家、手牌、牌堆、弃牌堆、棋盘、连接、市场、
-商家、pending bonus 和 `ChaCha12Rng` 随机流，并重建派生资源/连通缓存；恢复后继续抽牌/洗牌也保持确定性。
-`--full-legal-candidates` 的 imitation shard 保存该
-snapshot、teacher canonical action 和 value/econ target；`bootstrap_imitation.py` 加载 shard 后调用
-`materialize_samples()`，恢复状态并实时请求 `legal_candidates()`，再以 teacher action 生成 full-legal
-one-hot policy。v1 历史事件流不再兼容，避免把旧格式误当作完整状态。
-
-训练时不会先 materialize 整个 shard：`Trainer.train_one_epoch()` 在每个 GPU micro-batch 前恢复该批
-snapshot 并生成候选，然后立即提交前向和反向计算。这样 GPU 与 CPU 候选生成交错执行；同一 shard 不会因
-epoch 外层预处理而额外重复 materialize。
-
-性能注意：snapshot 恢复和 legal candidate 编码属于 CPU 工作。full-legal
-训练默认使用多个 `ProcessPoolExecutor` worker 并行 materialize 当前 micro-batch；主进程随后将已恢复的
-候选 batch 送入 GPU。worker 数量由 `TrainConfig.materialize_workers` 控制，设为 `1` 可关闭多进程。
-
-### 2. Rust 和 Python 回归
-
-状态：已验证。
-
-```powershell
-Push-Location src/engine
-cargo fmt --check
-cargo check
-cargo test --lib
-Pop-Location
-
-python -m pytest src/ai/tests -q
-```
-
-bridge、feature schema、candidate batch 或训练 loss 发生修改后，必须重跑这些检查。
-
-## 工具入口
-
-实验脚本均使用当前 concrete-candidate 接口：
-
-| 入口 | 用途 |
+| 参数 | 用途 |
 | --- | --- |
-| `experiments/benchmark.py` | 固定 seed 的 MCTS 对 heuristic 基准 |
-| `experiments/replay_net.py` | 单局或多局中文逐步回放，可选 greedy/MCTS |
-| `experiments/net_all_vs_all.py` | 四席位 network-vs-network 统计 |
-| `experiments/diagnose.py` | 逐动作诊断时代得分、翻面和动作分布 |
-| `experiments/bc_baseline.py` | 可选的 heuristic imitation 训练基线 |
+| `--games` | heuristic 对局数 |
+| `--epochs` | 每个 replay shard 的训练轮数 |
+| `--workers` | imitation 生成进程数；`1` 为串行 |
+| `--batch` | 每次读取的样本数 |
+| `--max-candidate-batch` | 一个训练 micro-batch 的候选行预算，限制 padding 造成的显存峰值 |
+| `--full-legal-candidates` | 用完整合法候选和 one-hot teacher target；会显著增加 CPU/内存压力 |
+| `--resume` | 从 `--ckpt` 恢复模型、optimizer 和 scheduler |
+| `--sample-dir` | 复用已有 `imitation-*.pkl`，跳过重新生成 |
+| `--mcts-full-legal` | 仅让结尾 benchmark 使用全合法候选 |
 
-实验脚本没有独立的稳定性承诺。修改 Rust bridge、动作特征或网络结构后，应先运行 `src/ai/tests`，再用小规模参数运行对应脚本；不要把单次实验结果当作训练 gate。
+当前源码中 `--max-candidate-batch` 的默认值是 `131072`。GPU 显存有限时应显式设置更小值，例如 `16384`，并从小规模运行开始。
 
-## 训练产物
+### 自对弈模块的状态
 
-candidate replay shard 的每条样本包含：
+`selfplay.py`、`mp_selfplay.py` 和 `train.py` 仍保留网络 MCTS self-play 所需能力，但当前没有保留的顶层长期 self-play 训练脚本。它们是后续重新设计自对弈训练入口时可复用的基础模块，不应把它们当作已完成的端到端训练工作流。
+
+## 样本与 checkpoint
+
+`Sample` 代表一个决策点，可直接保存 state tensor、候选特征与 policy；完整合法候选模仿模式还可保存 Rust state snapshot 和 teacher canonical action，在训练前实时恢复候选集。
+
+Trainer checkpoint 包含：
 
 ```text
-pid, era
-board, links, global_vec, own_hand, opp_hands
-candidates: (N, 235)
-policy: (N,)
-value: (4,)
-econ: (2,)
+model
+optimizer
+scheduler
+epoch
+action_feature_dim
+action_feature_schema_version
 ```
 
-`N` 是样本自己的候选数。落盘时为压缩 NPZ 的 padded array 加 mask；加载后恢复为变长 candidate 数组。旧的 `legal` mask 和固定 1316 维 policy 不属于当前格式。
+因此 `--resume` 只能使用 Trainer 生成的完整 checkpoint，不能使用只含模型参数的文件。
 
-上述格式仍用于 shortlist replay 与旧 full-legal 实验 shard。新的 full-legal imitation replay 保存可恢复的
-Rust `GameState` 快照、teacher canonical action、value/econ target；`candidates` 和 `policy` 的候选维度
-数据在训练加载阶段由 Rust 从快照重新生成，不再作为长期持久化字段。
+## 修改后的最低验证标准
 
-训练中 `evaluate_policy()` 必须分 batch 计算。禁止把整个 replay 按全局最大候选数一次性 padding 后送入 GPU，否则候选 tensor 会造成极高峰值内存。
-
-## 当前风险与下一步
-
-- action feature v2 已将被消耗卡片编码为稳定语义；资源来源和 Sell 结构仍保留在 concrete action 特征中，后续再做 collision 统计。
-- 当前同时支持 shortlist 对齐实验和 full-legal candidate 实验。旧 full-legal shard 直接保存所有候选，
-  已验证会造成 replay shard 体积和 worker IPC 内存不可接受；`uint8` 版本仅用于旧 shard 兼容。
-- full-legal imitation 已改为可恢复 Rust `GameState` 快照：replay 只保存状态快照、teacher canonical
-  action 和 value/econ target；训练时恢复状态并动态生成全部 legal candidates，推理继续使用 full-legal
-  MCTS。仍需用流式 worker/micro-batch 控制训练时的 CPU 和显存开销，并完成 held-out/full-legal benchmark。
-- 在动态候选训练完成并通过 held-out validation、full-legal benchmark 前，当前正式 bootstrap 仍使用
-  bounded shortlist，不启动大规模 self-play。
-- policy top-k 当前是在训练数据上评估；需要建立固定 held-out teacher validation。
-- value 是 final normalized VP 预测，不是校准后的 win probability。
-- `train_mp.py` 和实验工具依赖已安装的 Rust extension；使用前应完成最小 CPU smoke run。
+- 修改 Rust bridge、候选特征或网络输入：重新构建 Rust 扩展，并运行 `python -m pytest src/ai/tests -q`。
+- 修改 loss、`Sample` 或训练 batch：运行全部 Python 测试，并用小规模 bootstrap smoke 验证。
+- 修改 Rust 搜索 callback：至少确认 `test_mcts_selfplay.py` 通过，且 smoke benchmark 能完成。
