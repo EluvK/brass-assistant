@@ -3,11 +3,13 @@ requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "brass-engine"
+name = "brass-assistant"
 version = "0.1.0"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = ["numpy", "torch"]
 
 [tool.maturin]
-module-name = "brass_engine"
+python-source = "python"
+module-name = "brass_ai._engine"
+manifest-path = "engine/Cargo.toml"
 features = ["pyo3/extension-module"]
