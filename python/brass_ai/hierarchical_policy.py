@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-import brass_engine as be
+import python.brass_ai.brass_engine as be
 
 ACTION_FEATURE_SCHEMA_VERSION = 2
 ACTION_FEATURE_DIM = 235

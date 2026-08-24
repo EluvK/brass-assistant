@@ -19,7 +19,7 @@ from pathlib import Path
 from .progress import Progress
 import numpy as np
 
-import brass_engine as be
+import python.brass_ai.brass_engine as be
 
 from typing import Callable, Protocol
 

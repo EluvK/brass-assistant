@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-import brass_engine as be
+import python.brass_ai.brass_engine as be
 
 N_ACTIONS = 7
 N_PLAYERS = 4

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-import brass_engine as be
+import python.brass_ai.brass_engine as be
 
 from brass_ai.net import PolicyValueNet
 from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig

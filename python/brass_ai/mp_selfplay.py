@@ -38,7 +38,7 @@ _PACK_TIMEOUT_S = 1800  # per packet; a full game at sims=200 can take minutes
 
 def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
     # Imports happen inside the child (spawn re-imports everything anyway).
-    import brass_engine as be  # noqa: F401  (ensure the extension loads here)
+    import python.brass_ai.brass_engine as be  # noqa: F401  (ensure the extension loads here)
     from .net import PolicyValueNet
     from .rust_mcts import RustISMCTS, RustMCTSConfig
 

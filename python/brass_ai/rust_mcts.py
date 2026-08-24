@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-import brass_engine as be
+import python.brass_ai.brass_engine as be
 from .net import PolicyValueNet
 
 
