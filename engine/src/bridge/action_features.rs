@@ -9,7 +9,7 @@ use crate::r#move::Move;
 use crate::state::{Card, GameState};
 
 pub const ACTION_FEATURE_DIM: usize = 235;
-pub const ACTION_FEATURE_SCHEMA_VERSION: usize = 2;
+pub const ACTION_FEATURE_SCHEMA_VERSION: usize = 3;
 
 const ACTION: usize = 0; // 7 action-type one-hot entries
 const CARD: usize = 7; // 35 stable card-semantic entries
@@ -149,17 +149,11 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
                 }
             }
         }
-        Move::ResolveFreeDevelop { ind1, ind2 } => {
-            industry(&mut out, INDUSTRY_1, *ind1);
-            if let Some(ind) = ind2 {
-                industry(&mut out, INDUSTRY_2, *ind);
-            }
-            out[SUMMARY + 11] = 1.0;
-        }
         Move::Sell {
             keys,
             merchant_indices,
             use_merchant_beer,
+            free_develop,
             card_index,
             ..
         } => {
@@ -178,6 +172,10 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
                     out[SUMMARY + 6] += 0.25;
                 }
                 out[SUMMARY + 2] += 0.25;
+            }
+            if let Some(ind) = free_develop {
+                industry(&mut out, INDUSTRY_1, *ind);
+                out[SUMMARY + 11] = 1.0;
             }
         }
         Move::Loan { card_index } | Move::Pass { card_index } => card(&mut out, state, *card_index),

@@ -6,17 +6,13 @@
 //!     0 occupied | 1-4 owner one-hot | 5-10 industry one-hot |
 //!     11 flipped | 12 cubes/5 | 13 level/8 | 14 vp/20 | 15 income/7 | 16 is_farm
 //!
-//!   links   (6, 39)  plane-major over the 39 connections.
-//!     0 built | 1 is_canal | 2-5 owner one-hot
+//!   links   (7, 39)  plane-major over the 39 connections.
+//!     0 can_build_canal | 1 can_build_rail | 2 built | 3-6 owner one-hot
 //!
-//!   global  (50,)
-//!     0 era | 1 round/8 | 2 rounds_left/8 | 3-6 cur-player one-hot |
-//!     7 actions_this_turn/actions_per_turn |
-//!     8-39 per-player (8 each, players 0..4):
-//!         money/100, (income+10)/40, vp/200, canal_links/14, rail_links/14,
-//!         has_wild_location, has_wild_industry, develops_sum/8 |
-//!     40 coal_market/14 | 41 iron_market/10 | 42 coal_price/8 | 43 iron_price/6 |
-//!     44-47 turn_order/4 | 48 pending_bonus_active | 49 pending_bonus_player/4
+//!   global  (114,)
+//!     temporal (4) | per-player public state (4 * 16) |
+//!     coal-market one-hot (15) | iron-market one-hot (11) |
+//!     current execution queue (4 * 4)
 //!
 //!   own_hand  (35,)  bag-of-cards for the current player:
 //!     0-26 location counts/8 | 27-32 industry counts/8 |
@@ -26,16 +22,17 @@
 
 use crate::data::Era;
 use crate::heuristic_ai::estimate_rounds_remaining;
-use crate::map::ALL_LOCATIONS;
-use crate::state::{Card, GameState, PendingBonus};
+use crate::map::{ALL_LOCATIONS, CITY_COUNT, connections};
+use crate::state::{Card, GameState};
 
-const LOC_COUNT: usize = ALL_LOCATIONS.len(); // 27
+pub const LOC_COUNT: usize = ALL_LOCATIONS.len(); // 27
 
 pub const BOARD_PLANES: usize = 17;
 pub const BOARD_CELLS: usize = 49; // 47 city slots + 2 farms
-pub const LINK_PLANES: usize = 6;
+pub const LINK_PLANES: usize = 7;
 pub const LINK_CELLS: usize = 39;
-pub const GLOBAL_LEN: usize = 50;
+pub const GLOBAL_LEN: usize = 114;
+pub const STATE_FEATURE_SCHEMA_VERSION: usize = 3;
 pub const HAND_LEN: usize = 35; // 27 locations + 6 industries + 2 wilds
 pub const MAX_PLAYERS: usize = 4;
 pub const MAX_OPPONENTS: usize = 3;
@@ -82,48 +79,86 @@ fn hand_bag(state: &GameState, pid: usize) -> Vec<f32> {
     bag
 }
 
-fn global_vec(state: &GameState, pid: usize) -> Vec<f32> {
+/// Public board-cell -> location mapping, owned by the engine so Python graph
+/// models never duplicate the static map definition. City cells precede the
+/// two brewery-farm cells, matching `board_vec`.
+pub fn board_cell_locations() -> Vec<usize> {
+    let mut out = Vec::with_capacity(BOARD_CELLS);
+    for &loc in ALL_LOCATIONS[..CITY_COUNT].iter() {
+        out.extend(std::iter::repeat_n(
+            loc as usize,
+            crate::map::city_slots(loc).len(),
+        ));
+    }
+    out.push(crate::map::Loc::BreweryNorth as usize);
+    out.push(crate::map::Loc::BrewerySouth as usize);
+    debug_assert_eq!(out.len(), BOARD_CELLS);
+    out
+}
+
+/// Flat `(a, b)` endpoint pairs for the 39 map connections. A via-farm edge
+/// retains its rule-level endpoints; `connection_via_farms` exposes its farm.
+pub fn connection_endpoints() -> Vec<usize> {
+    connections()
+        .iter()
+        .flat_map(|c| [c.a as usize, c.b as usize])
+        .collect()
+}
+
+/// Per-connection via-farm location, or `LOC_COUNT` when none exists.
+pub fn connection_via_farms() -> Vec<usize> {
+    connections()
+        .iter()
+        .map(|c| c.via_farm.map(|loc| loc as usize).unwrap_or(LOC_COUNT))
+        .collect()
+}
+
+fn global_vec(state: &GameState, _pid: usize) -> Vec<f32> {
     let mut g = vec![0.0f32; GLOBAL_LEN];
 
     g[0] = if state.era == Era::Rail { 1.0 } else { 0.0 };
     g[1] = (state.round as f32 / 8.0).min(1.0);
     g[2] = (estimate_rounds_remaining(state) as f32 / 8.0).min(1.0);
-    g[3 + pid.min(MAX_PLAYERS - 1)] = 1.0;
-    g[7] = if state.actions_per_turn > 0 {
+    g[3] = if state.actions_per_turn > 0 {
         state.actions_this_turn as f32 / state.actions_per_turn as f32
     } else {
         0.0
     };
 
     for p in 0..MAX_PLAYERS {
-        let base = 8 + p * 8;
-        let player = match state.players.get(p) {
-            Some(x) => x,
-            None => continue,
+        let base = 4 + p * 17;
+        let Some(player) = state.players.get(p) else {
+            continue;
         };
-        g[base] = (player.money as f32 / 100.0).clamp(0.0, 1.0);
-        g[base + 1] = ((player.income_level() as f32 + 10.0) / 40.0).clamp(0.0, 1.0);
-        g[base + 2] = (player.vp as f32 / 200.0).min(1.0);
-        g[base + 3] = (player.canal_links as f32 / 14.0).min(1.0);
-        g[base + 4] = (player.rail_links as f32 / 14.0).min(1.0);
-        g[base + 5] = player.has_wild_location as u8 as f32;
-        g[base + 6] = player.has_wild_industry as u8 as f32;
-        g[base + 7] = ((player.develops_in_canal + player.develops_in_rail) as f32 / 8.0).min(1.0);
+        g[base] = 1.0;
+        g[base + 1] = (player.money as f32 / 200.0).clamp(0.0, 1.0);
+        g[base + 2] = (player.hand.len() as f32 / 8.0).min(1.0);
+        g[base + 3] = (player.income_space as f32 / 99.0).clamp(0.0, 1.0);
+        g[base + 4] = ((player.income_level() as f32 + 10.0) / 40.0).clamp(0.0, 1.0);
+        g[base + 5] = (player.vp as f32 / 200.0).min(1.0);
+        g[base + 6] = (player.canal_links as f32 / 14.0).min(1.0);
+        g[base + 7] = (player.rail_links as f32 / 14.0).min(1.0);
+        g[base + 8] = player.has_wild_location as u8 as f32;
+        g[base + 9] = player.has_wild_industry as u8 as f32;
+        for ind in 0..6 {
+            let total = crate::state::player_industry_stack(crate::data::IndustryType::ALL[ind])
+                .len()
+                .max(1);
+            g[base + 10 + ind] = (player.industry_next[ind] as f32 / total as f32).min(1.0);
+        }
+        g[base + 16] = (state.money_spent_this_round[p] as f32 / 100.0).clamp(0.0, 1.0);
     }
 
-    g[40] = (state.coal_market as f32 / 14.0).min(1.0);
-    g[41] = (state.iron_market as f32 / 10.0).min(1.0);
-    g[42] = (state.coal_price() as f32 / 8.0).min(1.0);
-    g[43] = (state.iron_price() as f32 / 6.0).min(1.0);
+    let market_base = 4 + MAX_PLAYERS * 17;
+    g[market_base + state.coal_market.min(14)] = 1.0;
+    g[market_base + 15 + state.iron_market.min(10)] = 1.0;
 
-    for (i, &t) in state.turn_order.iter().enumerate().take(MAX_PLAYERS) {
-        g[44 + i] = t as f32 / MAX_PLAYERS as f32;
+    let queue_base = market_base + 26;
+    for queue_pos in 0..state.player_count() {
+        let seat = state.turn_order[(state.current_index + queue_pos) % state.player_count()];
+        g[queue_base + queue_pos * MAX_PLAYERS + seat] = 1.0;
     }
 
-    if let Some(PendingBonus::FreeDevelop { player_id, .. }) = state.pending_bonus {
-        g[48] = 1.0;
-        g[49] = (player_id as f32 / MAX_PLAYERS as f32).min(1.0);
-    }
     g
 }
 
@@ -159,14 +194,15 @@ fn board_vec(state: &GameState) -> Vec<f32> {
 
 fn links_vec(state: &GameState) -> Vec<f32> {
     let mut l = vec![0.0f32; LINK_PLANES * LINK_CELLS];
+    for connection in connections() {
+        l[connection.id] = connection.canal as u8 as f32;
+        l[LINK_CELLS + connection.id] = connection.rail as u8 as f32;
+    }
     for (id, link) in state.links.iter().enumerate().take(LINK_CELLS) {
         if let Some(link) = link {
-            l[0 * LINK_CELLS + id] = 1.0;
-            if link.is_canal {
-                l[1 * LINK_CELLS + id] = 1.0;
-            }
+            l[2 * LINK_CELLS + id] = 1.0;
             if link.player < MAX_PLAYERS {
-                l[(2 + link.player) * LINK_CELLS + id] = 1.0;
+                l[(3 + link.player) * LINK_CELLS + id] = 1.0;
             }
         }
     }
@@ -202,5 +238,29 @@ pub fn state_to_tensor(state: &GameState, pid: usize) -> EncodedTensor {
         global,
         own_hand,
         opp_hands,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha12Rng;
+
+    #[test]
+    fn v2_encodes_static_link_capabilities_and_public_turn_economy() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(7), 4);
+        state.spend_money(0, 80);
+        let encoded = state_to_tensor(&state, 0);
+
+        assert_eq!(encoded.links.len(), LINK_PLANES * LINK_CELLS);
+        // Belper-Leek is rail-only and must be distinguishable while unbuilt.
+        assert_eq!(encoded.links[1], 0.0);
+        assert_eq!(encoded.links[LINK_CELLS + 1], 1.0);
+        assert_eq!(encoded.links[2 * LINK_CELLS + 1], 0.0);
+
+        let p0 = 4;
+        assert_eq!(encoded.global[p0 + 2], 1.0, "opening hand has eight cards");
+        assert_eq!(encoded.global[p0 + 16], 0.8);
     }
 }

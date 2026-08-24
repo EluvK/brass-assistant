@@ -20,14 +20,11 @@ pub enum TurnResult {
 
 /// Record one completed action and advance to the next action or player.
 ///
-/// Call this only after a successful action. A pending merchant bonus is a
-/// continuation of the same action, so it must be resolved before the clock
+/// Call this only after a successful action. Merchant bonuses, including a
+/// free develop, are resolved atomically by that action before the clock
 /// advances. Normal game states always give the active player a card to play;
 /// an empty hand is not treated as an implicit pass.
 pub fn advance_turn(state: &mut GameState) -> TurnResult {
-    if state.pending_bonus.is_some() {
-        return TurnResult::Continue;
-    }
     state.actions_this_turn += 1;
 
     // Era may end mid-turn when all hands empty and deck exhausted.
@@ -209,7 +206,6 @@ fn end_canal_era(state: &mut GameState) {
     state.actions_per_turn = ACTIONS_PER_TURN;
     state.current_index = 0;
     state.actions_this_turn = 0;
-    state.pending_bonus = None;
 
     // Reset merchant beer.
     for mt in state.merchants.iter_mut() {

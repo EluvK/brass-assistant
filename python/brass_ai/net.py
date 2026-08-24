@@ -21,6 +21,7 @@ N_PLAYERS = 4
 class NetConfig:
     board_emb: int = 128
     links_emb: int = 64
+    graph_layers: int = 3
     trunk: int = 256
     action_emb: int = 128
     action_features: int = getattr(be, "ACTION_FEATURE_DIM", 235)
@@ -37,6 +38,30 @@ class PolicyValueNet(nn.Module):
         self.cfg = cfg or NetConfig()
         self.board_enc = nn.Sequential(nn.Linear(be.BOARD_PLANES, self.cfg.board_emb), nn.ReLU())
         self.links_enc = nn.Sequential(nn.Linear(be.LINK_PLANES, self.cfg.links_emb), nn.ReLU())
+        self.node_position = nn.Embedding(be.LOCATION_COUNT, self.cfg.board_emb)
+        self.edge_position = nn.Embedding(be.LINK_CELLS, self.cfg.links_emb)
+        self.edge_updates = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.cfg.links_emb + 3 * self.cfg.board_emb, self.cfg.links_emb),
+                nn.ReLU(),
+            )
+            for _ in range(self.cfg.graph_layers)
+        ])
+        self.node_updates = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.cfg.board_emb + self.cfg.links_emb, self.cfg.board_emb),
+                nn.ReLU(),
+            )
+            for _ in range(self.cfg.graph_layers)
+        ])
+        cell_locations = torch.as_tensor(be.BOARD_CELL_LOCATIONS, dtype=torch.long)
+        endpoints = torch.as_tensor(be.CONNECTION_ENDPOINTS, dtype=torch.long).reshape(be.LINK_CELLS, 2)
+        via_farms = torch.as_tensor(be.CONNECTION_VIA_FARMS, dtype=torch.long)
+        if cell_locations.numel() != be.BOARD_CELLS or endpoints.shape != (be.LINK_CELLS, 2):
+            raise RuntimeError("engine returned invalid state-graph topology")
+        self.register_buffer("cell_locations", cell_locations)
+        self.register_buffer("edge_endpoints", endpoints)
+        self.register_buffer("edge_via_farms", via_farms)
         trunk_in = (
             2 * self.cfg.board_emb + 2 * self.cfg.links_emb + self.cfg.global_len
             + self.cfg.hand_len + self.cfg.opp_hands_len
@@ -57,11 +82,40 @@ class PolicyValueNet(nn.Module):
         self.value_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
         self.econ_head = nn.Linear(self.cfg.trunk, 2)
 
+    @staticmethod
+    def _scatter_mean(values: torch.Tensor, indices: torch.Tensor, size: int) -> torch.Tensor:
+        """Mean-pool `(B,N,D)` values into `size` graph nodes."""
+        batch, _, dim = values.shape
+        out = values.new_zeros((batch, size, dim))
+        expanded = indices.view(1, -1, 1).expand(batch, -1, dim)
+        out.scatter_add_(1, expanded, values)
+        counts = values.new_zeros((batch, size, 1))
+        counts.scatter_add_(1, indices.view(1, -1, 1).expand(batch, -1, 1),
+                            values.new_ones((batch, indices.numel(), 1)))
+        return out / counts.clamp_min(1.0)
+
     def encode_state(self, batch: dict) -> torch.Tensor:
-        board = self.board_enc(batch["board"].transpose(1, 2))
-        board = torch.cat([board.mean(dim=1), board.max(dim=1).values], dim=1)
-        links = self.links_enc(batch["links"].transpose(1, 2))
-        links = torch.cat([links.mean(dim=1), links.max(dim=1).values], dim=1)
+        board_cells = self.board_enc(batch["board"].transpose(1, 2))
+        node = self._scatter_mean(board_cells, self.cell_locations, be.LOCATION_COUNT)
+        node = node + self.node_position.weight.unsqueeze(0)
+        edge = self.links_enc(batch["links"].transpose(1, 2))
+        edge = edge + self.edge_position.weight.unsqueeze(0)
+
+        a, b = self.edge_endpoints[:, 0], self.edge_endpoints[:, 1]
+        via_valid = self.edge_via_farms < be.LOCATION_COUNT
+        via = self.edge_via_farms.clamp_max(be.LOCATION_COUNT - 1)
+        for edge_update, node_update in zip(self.edge_updates, self.node_updates):
+            via_node = node[:, via] * via_valid.view(1, -1, 1)
+            edge = edge_update(torch.cat([edge, node[:, a], node[:, b], via_node], dim=-1))
+            # An edge informs both endpoints and its brewery farm when present.
+            incident = torch.cat([a, b, via[via_valid]], dim=0)
+            messages = torch.cat([edge, edge, edge[:, via_valid]], dim=1)
+            node = node_update(torch.cat([
+                node, self._scatter_mean(messages, incident, be.LOCATION_COUNT)
+            ], dim=-1))
+
+        board = torch.cat([node.mean(dim=1), node.max(dim=1).values], dim=1)
+        links = torch.cat([edge.mean(dim=1), edge.max(dim=1).values], dim=1)
         return self.trunk(torch.cat(
             [board, links, batch["global"], batch["own_hand"], batch["opp_hands"]], dim=1
         ))

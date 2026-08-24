@@ -2,7 +2,7 @@ use _engine::data::{Era, IndustryType, industry_tiles};
 use _engine::engine::{TurnResult, advance_turn, handle_turn_result, step};
 use _engine::map::*;
 use _engine::rules::{
-    Move, apply_move, execute_build, execute_network, execute_network_double, execute_sell,
+    Move, apply_move, execute_build, execute_network, execute_network_double,
     get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links,
     iron_source_options, legal_moves,
 };
@@ -1174,21 +1174,21 @@ fn discarding_a_wild_returns_it_to_supply_and_skips_played() {
 fn wild_holding_is_public_and_encoded_in_training_tensor() {
     let mut state = setup(4);
     let pid = state.current_player_id();
-    let base = 8 + pid * 8;
+    let base = 4 + pid * 17;
     let t = _engine::encode::state_to_tensor(&state, pid);
-    assert_eq!(t.global[base + 5], 0.0, "no wilds held before scout");
-    assert_eq!(t.global[base + 6], 0.0, "no wilds held before scout");
+    assert_eq!(t.global[base + 8], 0.0, "no wilds held before scout");
+    assert_eq!(t.global[base + 9], 0.0, "no wilds held before scout");
 
     let res = _engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
     assert!(res.is_ok(), "scout failed: {res:?}");
     let t = _engine::encode::state_to_tensor(&state, pid);
     assert_eq!(
-        t.global[base + 5],
+        t.global[base + 8],
         1.0,
         "wild-location holding encoded separately"
     );
     assert_eq!(
-        t.global[base + 6],
+        t.global[base + 9],
         1.0,
         "wild-industry holding encoded separately"
     );
@@ -1201,11 +1201,11 @@ fn wild_holding_is_public_and_encoded_in_training_tensor() {
     _engine::rules::discard_card(&mut state, pid, wl_idx);
     let t = _engine::encode::state_to_tensor(&state, pid);
     assert_eq!(
-        t.global[base + 5],
+        t.global[base + 8],
         0.0,
         "wild-location flag reflects the discard"
     );
-    assert_eq!(t.global[base + 6], 1.0, "wild-industry flag unaffected");
+    assert_eq!(t.global[base + 9], 1.0, "wild-industry flag unaffected");
 }
 
 #[test]
@@ -1542,13 +1542,14 @@ fn sell_uses_the_explicitly_chosen_merchant_bonus() {
         &[true],
     )
     .expect("test sale should have a valid beer payment");
-    let res = execute_sell(
+    let res = _engine::rules::execute_sell_with_free_develop(
         &mut state,
         pid,
         &[tile_key],
         &[warrington_idx],
         &[true],
         &beer_sources,
+        None,
         0,
     );
 
@@ -1613,49 +1614,23 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
     let beer_sources =
         _engine::rules::plan_sell_beer_sources(&state, pid, &[tile_key], &[0], &[true])
             .expect("test sale should have a valid beer payment");
-    let res = execute_sell(
+    let res = _engine::rules::execute_sell_with_free_develop(
         &mut state,
         pid,
         &[tile_key],
         &[0],
         &[true],
         &beer_sources,
+        Some(IndustryType::CottonMill),
         0,
     );
     assert!(res.is_ok(), "sell to gloucester should succeed: {res:?}");
-    assert!(matches!(
-        state.pending_bonus,
-        Some(_engine::state::PendingBonus::FreeDevelop { player_id, count }) if player_id == pid && count == 1
-    ));
-
     let turn_result = advance_turn(&mut state);
     assert!(matches!(turn_result, _engine::engine::TurnResult::Continue));
-    assert_eq!(
-        state.current_player_id(),
-        pid,
-        "pending bonus should keep the same player active"
-    );
-
-    let moves = legal_moves(&mut state);
     assert!(
-        !moves.is_empty(),
-        "pending bonus should expose resolve moves"
-    );
-    assert!(
-        moves
-            .iter()
-            .all(|mv| matches!(mv, _engine::rules::Move::ResolveFreeDevelop { .. }))
-    );
-
-    let first = moves[0].clone();
-    let res = _engine::rules::apply_move(&mut state, &first);
-    assert!(
-        res.is_ok(),
-        "resolving pending free develop should succeed: {res:?}"
-    );
-    assert!(
-        state.pending_bonus.is_none(),
-        "pending bonus should clear after resolution"
+        state.players[pid].remaining_count(IndustryType::CottonMill)
+            < _engine::state::player_industry_stack(IndustryType::CottonMill).len(),
+        "free develop resolves within the sell action"
     );
 }
 
@@ -1706,6 +1681,7 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
                 use_merchant_beer,
                 beer_sources,
                 card_index,
+                ..
             } => Some((
                 keys,
                 merchant_indices,
@@ -2227,21 +2203,5 @@ fn heuristic_keeps_same_industry_double_develop_as_a_candidate() {
             }
         )),
         "heuristic must retain a legal same-industry double develop; candidates: {candidate_moves:?}"
-    );
-
-    state.pending_bonus = Some(_engine::state::PendingBonus::FreeDevelop {
-        player_id: pid,
-        count: 2,
-    });
-    let free_candidates = _engine::heuristic_ai::candidate_actions_k(&mut state, 1);
-    assert!(
-        free_candidates.iter().any(|decision| matches!(
-            decision.mv,
-            Move::ResolveFreeDevelop {
-                ind1: IndustryType::Brewery,
-                ind2: Some(IndustryType::Brewery),
-            }
-        )),
-        "free-develop heuristic must retain a legal same-industry double develop"
     );
 }

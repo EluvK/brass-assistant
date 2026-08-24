@@ -26,6 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from . import _engine as be
 from .net import PolicyValueNet
 from .hierarchical_policy import (
     ACTION_FEATURE_DIM,
@@ -173,6 +174,13 @@ class Trainer:
             "epoch": self.epoch_count,
             "action_feature_dim": ACTION_FEATURE_DIM,
             "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
+            "state_feature_schema_version": be.STATE_FEATURE_SCHEMA_VERSION,
+            "state_feature_shapes": {
+                "board": (be.BOARD_PLANES, be.BOARD_CELLS),
+                "links": (be.LINK_PLANES, be.LINK_CELLS),
+                "global": be.GLOBAL_LEN,
+                "hand": be.HAND_LEN,
+            },
         }
 
     def load_state_dict(self, sd: dict) -> None:
@@ -183,6 +191,19 @@ class Trainer:
                 "incompatible checkpoint action-feature schema: "
                 f"got version={schema_version}, dim={feature_dim}; expected "
                 f"version={ACTION_FEATURE_SCHEMA_VERSION}, dim={ACTION_FEATURE_DIM}"
+            )
+        state_version = sd.get("state_feature_schema_version")
+        expected_shapes = {
+            "board": (be.BOARD_PLANES, be.BOARD_CELLS),
+            "links": (be.LINK_PLANES, be.LINK_CELLS),
+            "global": be.GLOBAL_LEN,
+            "hand": be.HAND_LEN,
+        }
+        if state_version != be.STATE_FEATURE_SCHEMA_VERSION or sd.get("state_feature_shapes") != expected_shapes:
+            raise ValueError(
+                "incompatible checkpoint state-feature schema: "
+                f"got version={state_version}, shapes={sd.get('state_feature_shapes')}; expected "
+                f"version={be.STATE_FEATURE_SCHEMA_VERSION}, shapes={expected_shapes}"
             )
         self.net.load_state_dict(sd["model"])
         self.optimizer.load_state_dict(sd["optimizer"])

@@ -3,7 +3,7 @@
 use crate::data::{Era, IndustryType};
 use crate::gameplay::actions::{
     SellTarget, affordable_develop_iron_count, any_card_indices, can_develop, can_scout,
-    coal_options_for_connection, coal_source_options, execute_sell, get_second_rail_options,
+    coal_options_for_connection, coal_source_options, get_second_rail_options,
     get_valid_build_targets, get_valid_network_targets, get_valid_sell_targets,
     iron_source_options, valid_build_cards,
 };
@@ -19,37 +19,6 @@ use crate::state::GameState;
 pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
     state.ensure_network_masks();
     let pid = state.current_player_id();
-
-    if let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus
-    {
-        if player_id != pid {
-            return Vec::new();
-        }
-        let types: Vec<IndustryType> = state.players[pid]
-            .developable_types()
-            .into_iter()
-            .map(|(ind, _)| ind)
-            .collect();
-        let mut moves = Vec::new();
-        for &ind1 in &types {
-            if count >= 2 {
-                let rem1 = state.players[pid].remaining_count(ind1);
-                let mut second_types = types.clone();
-                if rem1 < 2 {
-                    second_types.retain(|&x| x != ind1);
-                }
-                for &ind2 in &second_types {
-                    moves.push(Move::ResolveFreeDevelop {
-                        ind1,
-                        ind2: Some(ind2),
-                    });
-                }
-            } else {
-                moves.push(Move::ResolveFreeDevelop { ind1, ind2: None });
-            }
-        }
-        return moves;
-    }
 
     let player_hand_len = state.players[pid].hand.len();
     if player_hand_len == 0 {
@@ -199,13 +168,16 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
         let sell_plans = build_sell_plans(state, pid, &sell_targets);
         for ci in &cards {
             for plan in &sell_plans {
-                moves.push(Move::Sell {
-                    keys: plan.0.clone(),
-                    merchant_indices: plan.1.clone(),
-                    use_merchant_beer: plan.2.clone(),
-                    beer_sources: plan.3.clone(),
-                    card_index: *ci,
-                });
+                for free_develop in sell_free_develop_options(state, pid, &plan.1, &plan.2) {
+                    moves.push(Move::Sell {
+                        keys: plan.0.clone(),
+                        merchant_indices: plan.1.clone(),
+                        use_merchant_beer: plan.2.clone(),
+                        beer_sources: plan.3.clone(),
+                        free_develop,
+                        card_index: *ci,
+                    });
+                }
             }
         }
     }
@@ -302,22 +274,12 @@ fn enumerate_sell_plans(
         else {
             return;
         };
-        let mut sim = state.clone();
-        if execute_sell(&mut sim, pid, keys, merchants, use_beer, &beer_sources, 0).is_ok()
-            && keys.iter().all(|&key| {
-                sim.city_tiles[key]
-                    .as_ref()
-                    .map(|tile| tile.flipped)
-                    .unwrap_or(false)
-            })
-        {
-            out.push((
-                keys.clone(),
-                merchants.clone(),
-                use_beer.clone(),
-                beer_sources,
-            ));
-        }
+        out.push((
+            keys.clone(),
+            merchants.clone(),
+            use_beer.clone(),
+            beer_sources,
+        ));
         return;
     }
 
@@ -352,5 +314,35 @@ fn enumerate_sell_plans(
         keys.pop();
         merchants.pop();
         use_beer.pop();
+    }
+}
+
+fn sell_free_develop_options(
+    state: &GameState,
+    pid: usize,
+    merchant_indices: &[usize],
+    use_merchant_beer: &[bool],
+) -> Vec<Option<IndustryType>> {
+    let awards = merchant_indices
+        .iter()
+        .zip(use_merchant_beer)
+        .filter(|(merchant, uses_beer)| {
+            **uses_beer
+                && state.merchants.get(**merchant).is_some_and(|mt| {
+                    matches!(
+                        crate::map::merchant_bonus_at(mt.loc),
+                        crate::map::MerchantBonus::Develop(_)
+                    )
+                })
+        })
+        .count();
+    match awards {
+        0 => vec![None],
+        1 => state.players[pid]
+            .developable_types()
+            .into_iter()
+            .map(|(ind, _)| Some(ind))
+            .collect(),
+        _ => Vec::new(),
     }
 }

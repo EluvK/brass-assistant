@@ -87,7 +87,6 @@ fn choose_heuristic_action(
             | _engine::r#move::Move::Loan { card_index }
             | _engine::r#move::Move::Pass { card_index } => vec![*card_index],
             _engine::r#move::Move::Scout { card_indices } => card_indices.to_vec(),
-            _engine::r#move::Move::ResolveFreeDevelop { .. } => Vec::new(),
         };
         let ranked = heuristic_ai::ranked_card_choices(state, pid);
         println!("卡片保留价值(越低越适合消耗):");

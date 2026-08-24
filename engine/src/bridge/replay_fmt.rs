@@ -151,7 +151,6 @@ pub fn mv_card_index(mv: &Move) -> usize {
         Move::NetworkDouble { card_index, .. } => *card_index,
         Move::Develop { card_index, .. } => *card_index,
         Move::Sell { card_index, .. } => *card_index,
-        Move::ResolveFreeDevelop { .. } => 0,
         Move::Loan { card_index } => *card_index,
         Move::Pass { card_index } => *card_index,
         Move::Scout { .. } => 0,
@@ -224,22 +223,6 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
                 s
             };
             format!("{s}，用牌[{}]", card_name)
-        }
-        Move::ResolveFreeDevelop { ind1, ind2 } => {
-            let lv1 = state.players[pid]
-                .next_tile(*ind1)
-                .map(|t| t.level)
-                .unwrap_or(0);
-            let s = format!("结算免费研发 {} Lv{}", industry_label(*ind1), lv1);
-            if let Some(i2) = ind2 {
-                let lv2 = state.players[pid]
-                    .tile_after(*i2, usize::from(*ind1 == *i2))
-                    .map(|t| t.level)
-                    .unwrap_or(0);
-                format!("{s} + {} Lv{}", industry_label(*i2), lv2)
-            } else {
-                s
-            }
         }
         Move::Sell {
             keys,
@@ -499,7 +482,7 @@ impl PStats {
             Move::Build { ind, .. } => self.build[*ind as usize] += 1,
             Move::Network { .. } => self.network += 1,
             Move::NetworkDouble { .. } => self.dbl_rail += 1,
-            Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => self.develop += 1,
+            Move::Develop { .. } => self.develop += 1,
             Move::Sell { .. } => self.sell += 1,
             Move::Loan { .. } => self.loan += 1,
             Move::Pass { .. } => self.pass += 1,
@@ -519,7 +502,7 @@ fn action_abbrev(mv: &Move, era: Era) -> String {
             Era::Rail => "路".to_string(),
         },
         Move::NetworkDouble { .. } => "双修".to_string(),
-        Move::Develop { ind1, ind2, .. } | Move::ResolveFreeDevelop { ind1, ind2, .. } => {
+        Move::Develop { ind1, ind2, .. } => {
             let mut label = format!("研{}", ind(*ind1));
             if let Some(ind2) = ind2 {
                 label.push_str(ind(*ind2));
@@ -618,18 +601,9 @@ mod tests {
             iron: Vec::new(),
             card_index: 0,
         };
-        let free_develop = Move::ResolveFreeDevelop {
-            ind1: IndustryType::CoalMine,
-            ind2: Some(IndustryType::CoalMine),
-        };
-
         assert!(
             move_detail(&state, &develop).contains("煤矿 Lv1 + 煤矿 Lv2"),
             "double develop must report both consecutively removed tiles"
-        );
-        assert!(
-            move_detail(&state, &free_develop).contains("煤矿 Lv1 + 煤矿 Lv2"),
-            "free double develop must report both consecutively removed tiles"
         );
     }
 }

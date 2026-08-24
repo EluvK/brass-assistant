@@ -9,10 +9,10 @@ pub use crate::gameplay::actions::{
     BuildCost, BuildTarget, SecondRailOption, SellRoute, SellTarget, any_card_indices,
     beer_sources_for_link, calculate_build_cost, can_develop, can_scout,
     coal_options_for_connection, coal_source_options, discard_card, execute_build, execute_develop,
-    execute_loan, execute_network, execute_network_double, execute_pass,
-    execute_resolve_free_develop, execute_scout, execute_sell, get_second_rail_options,
-    get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links,
-    get_valid_sell_targets, iron_source_options, plan_sell_beer_sources, valid_build_cards,
+    execute_loan, execute_network, execute_network_double, execute_pass, execute_scout,
+    execute_sell, execute_sell_with_free_develop, get_second_rail_options, get_valid_build_targets,
+    get_valid_network_targets, get_valid_second_rail_links, get_valid_sell_targets,
+    iron_source_options, plan_sell_beer_sources, valid_build_cards,
 };
 pub use crate::gameplay::legal_moves::legal_moves;
 pub use crate::r#move::Move;
@@ -63,19 +63,18 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
             merchant_indices,
             use_merchant_beer,
             beer_sources,
+            free_develop,
             card_index,
-        } => execute_sell(
+        } => execute_sell_with_free_develop(
             state,
             pid,
             keys,
             merchant_indices,
             use_merchant_beer,
             beer_sources,
+            *free_develop,
             *card_index,
         ),
-        Move::ResolveFreeDevelop { ind1, ind2 } => {
-            execute_resolve_free_develop(state, pid, *ind1, *ind2)
-        }
         Move::Loan { card_index } => execute_loan(state, pid, *card_index),
         Move::Scout { card_indices } => execute_scout(state, pid, *card_indices),
         Move::Pass { card_index } => execute_pass(state, pid, *card_index),

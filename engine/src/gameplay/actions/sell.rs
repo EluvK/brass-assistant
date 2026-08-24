@@ -196,6 +196,50 @@ pub fn execute_sell(
     beer_sources: &[Vec<BeerSource>],
     card_index: usize,
 ) -> Result<String, String> {
+    // Compatibility helper for internal simulations. Concrete executable
+    // moves always carry the selected industry; callers that only ask whether
+    // a plan works receive the first available legal choice.
+    let free_develop = merchant_indices
+        .iter()
+        .zip(use_merchant_beer)
+        .any(|(&merchant, &uses_beer)| {
+            uses_beer
+                && state.merchants.get(merchant).is_some_and(|mt| {
+                    matches!(
+                        crate::map::merchant_bonus_at(mt.loc),
+                        MerchantBonus::Develop(_)
+                    )
+                })
+        })
+        .then(|| {
+            state.players[pid]
+                .developable_types()
+                .first()
+                .map(|(ind, _)| *ind)
+        })
+        .flatten();
+    execute_sell_with_free_develop(
+        state,
+        pid,
+        keys,
+        merchant_indices,
+        use_merchant_beer,
+        beer_sources,
+        free_develop,
+        card_index,
+    )
+}
+
+pub fn execute_sell_with_free_develop(
+    state: &mut GameState,
+    pid: usize,
+    keys: &[usize],
+    merchant_indices: &[usize],
+    use_merchant_beer: &[bool],
+    beer_sources: &[Vec<BeerSource>],
+    free_develop: Option<IndustryType>,
+    card_index: usize,
+) -> Result<String, String> {
     let snapshot = state.clone();
     let result = execute_sell_inner(
         state,
@@ -204,6 +248,7 @@ pub fn execute_sell(
         merchant_indices,
         use_merchant_beer,
         beer_sources,
+        free_develop,
         card_index,
     );
     if result.is_err() {
@@ -219,6 +264,7 @@ fn execute_sell_inner(
     merchant_indices: &[usize],
     use_merchant_beer: &[bool],
     beer_sources: &[Vec<BeerSource>],
+    free_develop: Option<IndustryType>,
     card_index: usize,
 ) -> Result<String, String> {
     require_card_index(state, pid, card_index)?;
@@ -230,6 +276,37 @@ fn execute_sell_inner(
     }
     if keys.is_empty() {
         return Err("Sell move must include at least one tile".into());
+    }
+    let free_develop_count = merchant_indices
+        .iter()
+        .zip(use_merchant_beer)
+        .filter(|&(&merchant, &uses_beer)| {
+            uses_beer
+                && state.merchants.get(merchant).is_some_and(|mt| {
+                    matches!(
+                        crate::map::merchant_bonus_at(mt.loc),
+                        MerchantBonus::Develop(_)
+                    )
+                })
+        })
+        .count();
+    if free_develop_count > 1 {
+        return Err("A sell action cannot award more than one free develop".into());
+    }
+    match (free_develop_count, free_develop) {
+        (0, None) => {}
+        (0, Some(_)) => return Err("Sell does not award a free develop".into()),
+        (1, None) => return Err("Sell must choose its free develop".into()),
+        (1, Some(ind)) => {
+            if !state.players[pid]
+                .developable_types()
+                .iter()
+                .any(|(x, _)| *x == ind)
+            {
+                return Err("Free develop choice is not developable".into());
+            }
+        }
+        _ => unreachable!(),
     }
     let mut seen = std::collections::HashSet::new();
     for (entry_idx, &key) in keys.iter().enumerate() {
@@ -368,6 +445,21 @@ fn execute_sell_inner(
         return Err("Nothing could be sold".into());
     }
 
+    if let Some(ind) = free_develop {
+        let tile = state.players[pid]
+            .consume_tile(ind)
+            .ok_or("No tile available to free develop")?;
+        match state.era {
+            crate::data::Era::Canal => state.players[pid].develops_in_canal += 1,
+            crate::data::Era::Rail => state.players[pid].develops_in_rail += 1,
+        }
+        notes.push(format!(
+            "free develop {} Lv{}",
+            log_industry_label(ind),
+            tile.level
+        ));
+    }
+
     discard_card(state, pid, card_index);
     let mut extra = Vec::new();
     if !notes.is_empty() {
@@ -401,73 +493,6 @@ fn apply_merchant_bonus(state: &mut GameState, pid: usize, bonus: MerchantBonus)
             state.advance_income_spaces(pid, spaces);
             format!("+{} income spaces (merchant)", spaces)
         }
-        MerchantBonus::Develop(_n) => {
-            state.pending_bonus = Some(crate::state::PendingBonus::FreeDevelop {
-                player_id: pid,
-                count: 1,
-            });
-            "free develop pending".to_string()
-        }
+        MerchantBonus::Develop(_) => "free develop".to_string(),
     }
-}
-
-pub fn execute_resolve_free_develop(
-    state: &mut GameState,
-    pid: usize,
-    ind1: IndustryType,
-    ind2: Option<IndustryType>,
-) -> Result<String, String> {
-    let Some(crate::state::PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus
-    else {
-        return Err("No pending free develop bonus".into());
-    };
-    if player_id != pid {
-        return Err("Pending bonus belongs to another player".into());
-    }
-
-    let available: Vec<IndustryType> = state.players[pid]
-        .developable_types()
-        .into_iter()
-        .map(|(ind, _)| ind)
-        .collect();
-    if !available.contains(&ind1) {
-        return Err("First free develop choice is not developable".into());
-    }
-
-    let remaining_first = state.players[pid].remaining_count(ind1);
-    if count >= 2 {
-        let Some(ind2) = ind2 else {
-            return Err("Free develop bonus requires two choices".into());
-        };
-        if !available.contains(&ind2) {
-            return Err("Second free develop choice is not developable".into());
-        }
-        if ind1 == ind2 && remaining_first < 2 {
-            return Err(
-                "Not enough tiles remaining to free develop the same industry twice".into(),
-            );
-        }
-    } else if ind2.is_some() {
-        return Err("This free develop bonus only allows one choice".into());
-    }
-
-    let first = state.players[pid]
-        .consume_tile(ind1)
-        .ok_or("No tile available to develop for first industry")?;
-    let mut removed = vec![format!("{} Lv{}", log_industry_label(ind1), first.level)];
-    if let Some(i2) = ind2 {
-        let t2 = state.players[pid]
-            .consume_tile(i2)
-            .ok_or("No tile available to develop for second industry")?;
-        removed.push(format!("{} Lv{}", log_industry_label(i2), t2.level));
-    }
-    // Track develop-action economy (the free-develop bonus path does NOT go
-    // through here, so it never counts against the action budget).
-    match state.era {
-        crate::data::Era::Canal => state.players[pid].develops_in_canal += 1,
-        crate::data::Era::Rail => state.players[pid].develops_in_rail += 1,
-    }
-
-    state.pending_bonus = None;
-    Ok(format!("Resolved free develop: {}", removed.join(", ")))
 }

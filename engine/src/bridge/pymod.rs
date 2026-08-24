@@ -4,7 +4,7 @@
 //!   GameState(seed, players)                # 2-4 players
 //!     .current_player_id / .player_count    # int properties
 //!     .era                                   # 0 = canal, 1 = rail
-//!     .round / .game_over / .current_player_money / .has_pending_bonus
+//!     .round / .game_over / .current_player_money
 //!     .legal_moves() -> list[(action_id:int, canonical:str, describe:str)]
 //!     .legal_candidates() -> list[(canonical:str, features: float32[235])]
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
@@ -12,14 +12,14 @@
 //!     .legal_candidates() -> list[(canonical:str, features: float32[235])]
 //!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
 //!     .choose_heuristic() -> (canonical, describe, score)
-//!   module: ACTION_FEATURE_DIM, ACTION_FEATURE_SCHEMA_VERSION
+//!   module: action/state feature schemas and state-graph topology constants
 
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use rand_chacha::ChaCha12Rng;
 use rand::SeedableRng;
+use rand_chacha::ChaCha12Rng;
 // use rand_core::SeedableRng;
 
 use crate::encode;
@@ -35,7 +35,7 @@ pub struct PyGame {
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"BASS";
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 #[pymethods]
 impl PyGame {
@@ -88,11 +88,6 @@ impl PyGame {
     #[getter]
     fn current_player_money(&self) -> i32 {
         self.state.current_player().money
-    }
-
-    #[getter]
-    fn has_pending_bonus(&self) -> bool {
-        self.state.pending_bonus.is_some()
     }
 
     /// Independent deep clone of the game state (for MCTS child nodes).
@@ -228,8 +223,7 @@ impl PyGame {
     /// Apply a canonical move string; returns a human-readable summary.
     /// The full game step is performed: move + turn advance + era/game end
     /// transitions (mirrors `engine::step` plus the era handlers used by
-    /// `main.rs`). A free-develop bonus leaves the same player to move again
-    /// (`has_pending_bonus`).
+    /// `main.rs`). Merchant free-develop bonuses resolve within the Sell move.
     fn apply_move(&mut self, canonical: &str) -> PyResult<String> {
         let mv = move_codec::decode(canonical)
             .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
@@ -320,9 +314,7 @@ impl PyGame {
             crate::rules::Move::Build { ind, .. } => ("build".to_string(), *ind as usize),
             crate::rules::Move::Network { .. } => ("network".to_string(), 0),
             crate::rules::Move::NetworkDouble { .. } => ("network_double".to_string(), 0),
-            crate::rules::Move::Develop { .. } | crate::rules::Move::ResolveFreeDevelop { .. } => {
-                ("develop".to_string(), 0)
-            }
+            crate::rules::Move::Develop { .. } => ("develop".to_string(), 0),
             crate::rules::Move::Sell { .. } => ("sell".to_string(), 0),
             crate::rules::Move::Loan { .. } => ("loan".to_string(), 0),
             crate::rules::Move::Pass { .. } => ("pass".to_string(), 0),
@@ -427,7 +419,7 @@ impl PyGame {
     }
 
     /// Encode the state into numpy arrays:
-    /// board (17,49), links (6,39), global (50,), own_hand (35,), opp_hands (105,).
+    /// board (17,49), links (7,39), global (114,), own_hand (35,), opp_hands (105,).
     /// `perspective` defaults to the current player; pass another player id to
     /// encode from that player's viewpoint (used for MaxN value evaluation).
     #[pyo3(signature = (perspective=None))]
@@ -533,5 +525,13 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("GLOBAL_LEN", encode::GLOBAL_LEN)?;
     m.add("HAND_LEN", encode::HAND_LEN)?;
     m.add("MAX_PLAYERS", encode::MAX_PLAYERS)?;
+    m.add(
+        "STATE_FEATURE_SCHEMA_VERSION",
+        encode::STATE_FEATURE_SCHEMA_VERSION,
+    )?;
+    m.add("LOCATION_COUNT", encode::LOC_COUNT)?;
+    m.add("BOARD_CELL_LOCATIONS", encode::board_cell_locations())?;
+    m.add("CONNECTION_ENDPOINTS", encode::connection_endpoints())?;
+    m.add("CONNECTION_VIA_FARMS", encode::connection_via_farms())?;
     Ok(())
 }

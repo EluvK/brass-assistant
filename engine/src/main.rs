@@ -65,7 +65,7 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
     let mut on_move = |_state: &mut GameState, mv: &Move| match mv {
         Move::Build { .. } => builds += 1,
         Move::Network { .. } | Move::NetworkDouble { .. } => networks += 1,
-        Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => develops += 1,
+        Move::Develop { .. } => develops += 1,
         Move::Sell { .. } => sells += 1,
         Move::Loan { .. } => loans += 1,
         Move::Pass { .. } => passes += 1,

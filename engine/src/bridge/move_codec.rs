@@ -286,21 +286,19 @@ pub fn encode(mv: &Move) -> String {
             merchant_indices,
             use_merchant_beer,
             beer_sources,
+            free_develop,
             card_index,
         } => format!(
-            "Sell{{keys:{},merchants:{},beer:{},sources:{},card:{}}}",
+            "Sell{{keys:{},merchants:{},beer:{},sources:{},free:{},card:{}}}",
             u_list(keys),
             u_list(merchant_indices),
             b_list(use_merchant_beer),
             beer_plan(beer_sources),
-            card_enc(*card_index)
-        ),
-        Move::ResolveFreeDevelop { ind1, ind2 } => format!(
-            "FreeDevelop{{ind1:{},ind2:{}}}",
-            *ind1 as usize,
-            ind2.map(|x| x as usize)
+            free_develop
+                .map(|x| x as usize)
                 .map(|x| x.to_string())
-                .unwrap_or_else(|| NONE_STR.to_string())
+                .unwrap_or_else(|| NONE_STR.to_string()),
+            card_enc(*card_index)
         ),
         Move::Loan { card_index } => format!("Loan{{card:{}}}", card_enc(*card_index)),
         Move::Scout { card_indices } => format!(
@@ -404,13 +402,10 @@ pub fn decode(s: &str) -> Result<Move, String> {
                 merchant_indices,
                 use_merchant_beer,
                 beer_sources,
+                free_develop: field_opt_ind(body, "free")?,
                 card_index: field_u(body, "card")?,
             })
         }
-        "FreeDevelop" => Ok(Move::ResolveFreeDevelop {
-            ind1: field_ind(body, "ind1")?,
-            ind2: field_opt_ind(body, "ind2")?,
-        }),
         "Loan" => Ok(Move::Loan {
             card_index: field_u(body, "card")?,
         }),

@@ -15,7 +15,7 @@ use crate::rules::{
     get_valid_network_targets, get_valid_second_rail_links, get_valid_sell_targets, legal_moves,
     valid_build_cards,
 };
-use crate::state::{Card, GameState, PendingBonus, city_slot_offsets};
+use crate::state::{Card, GameState, city_slot_offsets};
 
 // Scoring weights (from aiPlayer.js).
 const VP_WEIGHT: f64 = 1.0;
@@ -197,15 +197,6 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // redundant ensure here (hot path: MCTS calls this once per tree node).
     let pid = state.current_player_id();
 
-    if let Some(PendingBonus::FreeDevelop { player_id, count }) = state.pending_bonus {
-        if player_id != pid {
-            return Vec::new();
-        }
-        return score_pending_free_develop(state, pid, count)
-            .into_iter()
-            .collect();
-    }
-
     // Card utility is state-wide and independent of the concrete action type.
     // Compute it once for this candidate batch and share it with all consumers.
     let build_targets = get_valid_build_targets(state, pid);
@@ -239,8 +230,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     }
 
     // Candidate pruning must never turn a position with executable actions
-    // into a dead end (notably pending free-develop states filtered by a
-    // strategic guardrail, or callers passing k=0). Keep one legal fallback
+    // into a dead end (for example callers passing k=0). Keep one legal fallback
     // so MCTS always has a path to explore.
     if out.is_empty() {
         if let Some(mv) = legal_moves(state).into_iter().next() {
@@ -264,72 +254,6 @@ pub fn pass_decision(state: &GameState) -> Decision {
         mv: Move::Pass { card_index },
         score: -0.5,
     }
-}
-
-fn score_pending_free_develop(state: &GameState, pid: usize, count: u8) -> Option<Decision> {
-    let mut types = state.players[pid].developable_types();
-    if BAN_DEVELOP_IRON_LV2_PLUS {
-        types.retain(|(ind, tile)| !(*ind == IndustryType::IronWorks && tile.level >= 2));
-    }
-    if types.is_empty() {
-        return None;
-    }
-
-    let score_target = |ind: IndustryType, tile: crate::data::TileDef, unlock_offset: usize| {
-        let unlocked = state.players[pid].tile_after(ind, unlock_offset);
-        let mut v = if tile.rail_era { 0.35 } else { 0.12 };
-        v += 0.18 * tile.level as f64;
-        if let Some(ut) = unlocked {
-            if ut.rail_era {
-                v += 0.25;
-            }
-        }
-        if ind == IndustryType::Brewery {
-            v += 0.55;
-        }
-        if state.era == Era::Canal {
-            v += 0.15;
-        }
-        if player_has_buildable_card(state, pid, ind) {
-            v += 0.3;
-        }
-        v - develop_guardrail_penalty(ind, tile.level)
-    };
-    let mut scored: Vec<(IndustryType, f64)> = types
-        .into_iter()
-        .map(|(ind, tile)| (ind, score_target(ind, tile, 1)))
-        .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    let first = scored[0].0;
-    let second = if count >= 2 {
-        let best_other = scored.iter().skip(1).map(|s| (s.0, s.1)).next();
-        let same_industry = state.players[pid]
-            .tile_after(first, 1)
-            .filter(|tile| {
-                tile.can_develop
-                    && !(BAN_DEVELOP_IRON_LV2_PLUS
-                        && first == IndustryType::IronWorks
-                        && tile.level >= 2)
-            })
-            .map(|tile| (first, score_target(first, tile, 2)));
-        [best_other, same_industry]
-            .into_iter()
-            .flatten()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-    } else {
-        None
-    };
-
-    let second_score = second.map(|(_, score)| score * 0.4).unwrap_or(0.0);
-
-    Some(Decision {
-        mv: Move::ResolveFreeDevelop {
-            ind1: first,
-            ind2: second.map(|(ind, _)| ind),
-        },
-        score: scored[0].1 + second_score,
-    })
 }
 
 /// Position-value estimator for player `pid`, used as the MCTS leaf evaluator.

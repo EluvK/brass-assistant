@@ -29,6 +29,7 @@ import queue as _queue
 import numpy as np
 import torch
 
+from . import _engine as be
 from .progress import Progress
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .hierarchical_policy import ACTION_FEATURE_DIM, pad_candidate_features
@@ -93,11 +94,11 @@ def _pack_samples(samples: list[Sample]) -> dict:
             "count": 0,
             "pid": np.empty(0, dtype=np.int64),
             "era": np.empty(0, dtype=np.int64),
-            "board": np.empty((0, 17, 49), dtype=np.float32),
-            "links": np.empty((0, 6, 39), dtype=np.float32),
-            "global": np.empty((0, 50), dtype=np.float32),
-            "own_hand": np.empty((0, 35), dtype=np.float32),
-            "opp_hands": np.empty((0, 105), dtype=np.float32),
+            "board": np.empty((0, be.BOARD_PLANES, be.BOARD_CELLS), dtype=np.float32),
+            "links": np.empty((0, be.LINK_PLANES, be.LINK_CELLS), dtype=np.float32),
+            "global": np.empty((0, be.GLOBAL_LEN), dtype=np.float32),
+            "own_hand": np.empty((0, be.HAND_LEN), dtype=np.float32),
+            "opp_hands": np.empty((0, be.HAND_LEN * 3), dtype=np.float32),
             "candidates": np.empty((0, 0, ACTION_FEATURE_DIM), dtype=np.float32),
             "candidate_mask": np.empty((0, 0), dtype=np.bool_),
             "policy": np.empty((0, 0), dtype=np.float32),

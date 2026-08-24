@@ -55,6 +55,15 @@ def test_trainer_state_roundtrip():
         assert torch.equal(p1.detach().cpu(), p2.detach().cpu())
 
 
+def test_trainer_rejects_old_state_feature_schema():
+    trainer = Trainer(PolicyValueNet(), TrainConfig(device="cpu", epochs=1, batch_size=2))
+    checkpoint = trainer.state_dict()
+    checkpoint.pop("state_feature_schema_version")
+    checkpoint.pop("state_feature_shapes")
+    with pytest.raises(ValueError, match="state-feature schema"):
+        trainer.load_state_dict(checkpoint)
+
+
 def test_imitation_quality_filter_retries_until_it_has_requested_games(monkeypatch):
     seen_seeds = []
 

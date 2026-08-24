@@ -247,6 +247,24 @@ fn score_sell_plan(
         state, pid, &keys, &merchant_indices, &use_merchant,
     )
     .ok()?;
+    let free_develop = merchant_indices
+        .iter()
+        .zip(use_merchant.iter())
+        .find_map(|(&merchant, &uses_beer)| {
+            (uses_beer
+                && matches!(
+                    crate::map::merchant_bonus_at(state.merchants[merchant].loc),
+                    crate::map::MerchantBonus::Develop(_)
+                ))
+            .then(|| {
+                state.players[pid]
+                    .developable_types()
+                    .into_iter()
+                    .max_by_key(|(_, tile)| tile.level)
+                    .map(|(ind, _)| ind)
+            })
+            .flatten()
+        });
 
     Some(Decision {
         mv: Move::Sell {
@@ -254,6 +272,7 @@ fn score_sell_plan(
             merchant_indices,
             use_merchant_beer: use_merchant,
             beer_sources,
+            free_develop,
             card_index,
         },
         score,

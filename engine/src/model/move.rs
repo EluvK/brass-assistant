@@ -39,11 +39,10 @@ pub enum Move {
         merchant_indices: Vec<usize>,
         use_merchant_beer: Vec<bool>,
         beer_sources: Vec<Vec<BeerSource>>,
+        /// Gloucester's merchant bonus is resolved atomically with this sell.
+        /// `None` means the selected sale does not award a free develop.
+        free_develop: Option<IndustryType>,
         card_index: usize,
-    },
-    ResolveFreeDevelop {
-        ind1: IndustryType,
-        ind2: Option<IndustryType>,
     },
     Loan {
         card_index: usize,
@@ -61,7 +60,7 @@ impl Move {
         match self {
             Move::Build { .. } => Action::Build,
             Move::Network { .. } | Move::NetworkDouble { .. } => Action::Network,
-            Move::Develop { .. } | Move::ResolveFreeDevelop { .. } => Action::Develop,
+            Move::Develop { .. } => Action::Develop,
             Move::Sell { .. } => Action::Sell,
             Move::Loan { .. } => Action::Loan,
             Move::Scout { .. } => Action::Scout,
@@ -91,10 +90,11 @@ impl Move {
                 Some(i2) => format!("Develop {} + {}", ind1.name(), i2.name()),
                 None => format!("Develop {}", ind1.name()),
             },
-            Move::Sell { keys, .. } => format!("Sell {} tile(s)", keys.len()),
-            Move::ResolveFreeDevelop { ind1, ind2 } => match ind2 {
-                Some(i2) => format!("Resolve free develop {} + {}", ind1.name(), i2.name()),
-                None => format!("Resolve free develop {}", ind1.name()),
+            Move::Sell {
+                keys, free_develop, ..
+            } => match free_develop {
+                Some(ind) => format!("Sell {} tile(s) + free develop {}", keys.len(), ind.name()),
+                None => format!("Sell {} tile(s)", keys.len()),
             },
             Move::Loan { .. } => "Take loan".to_string(),
             Move::Scout { .. } => "Scout (wild cards)".to_string(),

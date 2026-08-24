@@ -13,10 +13,14 @@ from brass_ai import _engine as be
 def test_constants_shape_consistency():
     assert be.BOARD_PLANES == 17
     assert be.BOARD_CELLS == 49
-    assert be.LINK_PLANES == 6
+    assert be.LINK_PLANES == 7
     assert be.LINK_CELLS == 39
-    assert be.GLOBAL_LEN == 50
+    assert be.GLOBAL_LEN == 114
     assert be.HAND_LEN == 35
+    assert be.STATE_FEATURE_SCHEMA_VERSION == 3
+    assert len(be.BOARD_CELL_LOCATIONS) == be.BOARD_CELLS
+    assert len(be.CONNECTION_ENDPOINTS) == be.LINK_CELLS * 2
+    assert len(be.CONNECTION_VIA_FARMS) == be.LINK_CELLS
 
 
 def test_new_state_basics():
@@ -77,8 +81,8 @@ def test_state_to_tensor_shapes_and_determinism():
     g = be.GameState(seed=11, players=4)
     board, links, global_vec, own_hand, opp_hands = g.state_to_tensor()
     assert board.shape == (17, 49)
-    assert links.shape == (6, 39)
-    assert global_vec.shape == (50,)
+    assert links.shape == (7, 39)
+    assert global_vec.shape == (114,)
     assert own_hand.shape == (35,)
     assert opp_hands.shape == (105,)
 
@@ -88,6 +92,12 @@ def test_state_to_tensor_shapes_and_determinism():
     np.testing.assert_array_equal(global_vec, g2)
     np.testing.assert_array_equal(own_hand, o2)
     np.testing.assert_array_equal(opp_hands, op2)
+
+    # Connection 1 is rail-only; its static legality must be visible even
+    # before any player builds it.
+    assert links[0, 1] == 0.0
+    assert links[1, 1] == 1.0
+    assert links[2, 1] == 0.0
 
     # sanity: values are in [0,1]
     for arr in (board, links, global_vec, own_hand, opp_hands):

@@ -19,6 +19,11 @@ LINK_CELLS: int
 GLOBAL_LEN: int
 HAND_LEN: int
 MAX_PLAYERS: int
+STATE_FEATURE_SCHEMA_VERSION: int
+LOCATION_COUNT: int
+BOARD_CELL_LOCATIONS: List[int]
+CONNECTION_ENDPOINTS: List[int]
+CONNECTION_VIA_FARMS: List[int]
 
 NetCallback = Callable[
     [Any, Any, Any, Any, Any, Any, Any],
@@ -44,8 +49,6 @@ class GameState:
     def game_over(self) -> bool: ...
     @property
     def current_player_money(self) -> int: ...
-    @property
-    def has_pending_bonus(self) -> bool: ...
 
     def clone(self) -> "GameState": ...
     def snapshot(self) -> bytes: ...

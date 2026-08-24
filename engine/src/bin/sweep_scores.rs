@@ -43,10 +43,10 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
         let mut r = res.borrow_mut();
         match mv {
             _engine::rules::Move::Build { .. } => r.actions[0] += 1,
-            _engine::rules::Move::Network { .. }
-            | _engine::rules::Move::NetworkDouble { .. } => r.actions[1] += 1,
-            _engine::rules::Move::Develop { .. }
-            | _engine::rules::Move::ResolveFreeDevelop { .. } => r.actions[2] += 1,
+            _engine::rules::Move::Network { .. } | _engine::rules::Move::NetworkDouble { .. } => {
+                r.actions[1] += 1
+            }
+            _engine::rules::Move::Develop { .. } => r.actions[2] += 1,
             _engine::rules::Move::Sell { .. } => r.actions[3] += 1,
             _engine::rules::Move::Loan { .. } => r.actions[4] += 1,
             _engine::rules::Move::Pass { .. } => r.actions[5] += 1,

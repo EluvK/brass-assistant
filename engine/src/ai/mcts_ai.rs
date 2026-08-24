@@ -96,10 +96,6 @@ enum MoveKey {
         i2: Option<IndustryType>,
         iron: Vec<(usize, bool)>,
     },
-    ResolveFreeDevelop {
-        i1: IndustryType,
-        i2: Option<IndustryType>,
-    },
     Sell {
         keys: Vec<usize>,
         merchant_indices: Vec<usize>,
@@ -165,10 +161,6 @@ fn move_key(mv: &Move) -> MoveKey {
                 iron: iron_ids,
             }
         }
-        Move::ResolveFreeDevelop { ind1, ind2 } => MoveKey::ResolveFreeDevelop {
-            i1: *ind1,
-            i2: *ind2,
-        },
         Move::Sell {
             keys,
             merchant_indices,

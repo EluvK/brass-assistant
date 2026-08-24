@@ -147,11 +147,6 @@ impl MerchantTile {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PendingBonus {
-    FreeDevelop { player_id: usize, count: u8 },
-}
-
 // ---------------------------------------------------------------------------
 // Players
 // ---------------------------------------------------------------------------
@@ -336,7 +331,6 @@ pub struct GameState {
     pub discard_pile: Vec<Card>,
     pub wild_location_pile: u8,
     pub wild_industry_pile: u8,
-    pub pending_bonus: Option<PendingBonus>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -362,7 +356,6 @@ struct StateSnapshot {
     discard_pile: Vec<Card>,
     wild_location_pile: u8,
     wild_industry_pile: u8,
-    pending_bonus: Option<PendingBonus>,
 }
 
 impl GameState {
@@ -391,7 +384,6 @@ impl GameState {
             discard_pile: self.discard_pile.clone(),
             wild_location_pile: self.wild_location_pile,
             wild_industry_pile: self.wild_industry_pile,
-            pending_bonus: self.pending_bonus,
         })
         .map_err(|e| format!("serialize GameState: {e}"))
     }
@@ -429,7 +421,6 @@ impl GameState {
             discard_pile: data.discard_pile,
             wild_location_pile: data.wild_location_pile,
             wild_industry_pile: data.wild_industry_pile,
-            pending_bonus: data.pending_bonus,
         };
         state.rebuild_free_sources();
         Ok(state)
@@ -470,7 +461,6 @@ impl Clone for GameState {
             discard_pile: self.discard_pile.clone(),
             wild_location_pile: self.wild_location_pile,
             wild_industry_pile: self.wild_industry_pile,
-            pending_bonus: self.pending_bonus,
         }
     }
 }
@@ -592,7 +582,6 @@ impl GameState {
             discard_pile: Vec::new(),
             wild_location_pile: WILD_LOCATION_PILE,
             wild_industry_pile: WILD_INDUSTRY_PILE,
-            pending_bonus: None,
         };
 
         state.turn_order.shuffle(&mut state.rng);
