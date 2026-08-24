@@ -1,13 +1,13 @@
-use brass_engine::data::{Era, IndustryType, industry_tiles};
-use brass_engine::engine::{TurnResult, advance_turn, handle_turn_result, step};
-use brass_engine::map::*;
-use brass_engine::rules::{
+use _engine::data::{Era, IndustryType, industry_tiles};
+use _engine::engine::{TurnResult, advance_turn, handle_turn_result, step};
+use _engine::map::*;
+use _engine::rules::{
     Move, apply_move, execute_build, execute_network, execute_network_double, execute_sell,
     get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links,
     iron_source_options, legal_moves,
 };
-use brass_engine::scoring;
-use brass_engine::state::{BoardTile, Card, GameState};
+use _engine::scoring;
+use _engine::state::{BoardTile, Card, GameState};
 use rand_chacha::ChaCha12Rng;
 use rand_chacha::rand_core::SeedableRng;
 
@@ -19,7 +19,7 @@ fn setup(players: usize) -> GameState {
 #[test]
 fn default_heuristic_entry_point_is_the_search_policy() {
     let mut heuristic_state = setup(4);
-    let heuristic = brass_engine::heuristic_ai::choose_action(&mut heuristic_state);
+    let heuristic = _engine::heuristic_ai::choose_action(&mut heuristic_state);
     assert!(heuristic.score.is_finite());
     assert!(
         legal_moves(&mut heuristic_state)
@@ -37,7 +37,7 @@ fn heuristic_candidates_are_legal_and_never_dead_end() {
                 break;
             }
             let legal = legal_moves(&mut state);
-            let candidates = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 3);
+            let candidates = _engine::heuristic_ai::candidate_actions_k(&mut state, 3);
             if !legal.is_empty() {
                 assert!(!candidates.is_empty(), "seed={seed} produced no candidate");
                 for candidate in candidates {
@@ -56,7 +56,7 @@ fn heuristic_candidates_are_legal_and_never_dead_end() {
                     }
                 }
             }
-            let decision = brass_engine::heuristic_ai::choose_action(&mut state);
+            let decision = _engine::heuristic_ai::choose_action(&mut state);
             let mut decision_state = state.clone();
             assert!(apply_move(&mut decision_state, &decision.mv).is_ok());
             apply_move(&mut state, &decision.mv).expect("heuristic decision must apply");
@@ -120,12 +120,12 @@ fn place_test_brewery(state: &mut GameState, loc: Loc, owner: usize, cubes: u8) 
     );
 }
 
-fn test_coal_from_cannock(state: &GameState) -> brass_engine::graph::CoalSource {
+fn test_coal_from_cannock(state: &GameState) -> _engine::graph::CoalSource {
     let key = state
         .city_slot_key(Loc::Cannock, 0)
         .expect("cannock coal slot");
-    brass_engine::graph::CoalSource {
-        kind: brass_engine::graph::CoalSourceKind::Mine,
+    _engine::graph::CoalSource {
+        kind: _engine::graph::CoalSourceKind::Mine,
         key,
         price: 0,
         free: true,
@@ -214,11 +214,11 @@ fn merchant_tile_composition_matches_rulebook() {
         let mut cotton = 0;
         let mut mfr = 0;
         let mut pottery = 0;
-        for e in brass_engine::map::merchant_tile_mix(p) {
+        for e in _engine::map::merchant_tile_mix(p) {
             match e {
-                brass_engine::map::MerchantMixEntry::Blank => blanks += 1,
-                brass_engine::map::MerchantMixEntry::Any => any += 1,
-                brass_engine::map::MerchantMixEntry::Buys(t) => match t {
+                _engine::map::MerchantMixEntry::Blank => blanks += 1,
+                _engine::map::MerchantMixEntry::Any => any += 1,
+                _engine::map::MerchantMixEntry::Buys(t) => match t {
                     IndustryType::CottonMill => cotton += 1,
                     IndustryType::Manufacturer => mfr += 1,
                     IndustryType::Pottery => pottery += 1,
@@ -242,7 +242,7 @@ fn every_4p_merchant_slot_gets_a_tile() {
     let any_count = s4
         .merchants
         .iter()
-        .filter(|m| m.buys == brass_engine::state::BuyType::Any)
+        .filter(|m| m.buys == _engine::state::BuyType::Any)
         .count();
     assert_eq!(any_count, 1);
 }
@@ -315,22 +315,22 @@ fn build_changes_board_and_discards_card() {
         .hand
         .iter()
         .position(|c| match c {
-            brass_engine::state::Card::Location(l) => *l == t.loc && !t.loc.is_farm(),
-            brass_engine::state::Card::Industry { .. } => {
+            _engine::state::Card::Location(l) => *l == t.loc && !t.loc.is_farm(),
+            _engine::state::Card::Industry { .. } => {
                 c.is_industry(t.ind)
-                    && (brass_engine::graph::is_in_network(&state, pid, t.loc)
-                        || !brass_engine::graph::player_has_presence(&state, pid))
+                    && (_engine::graph::is_in_network(&state, pid, t.loc)
+                        || !_engine::graph::player_has_presence(&state, pid))
             }
-            brass_engine::state::Card::WildLocation => !t.loc.is_farm(),
-            brass_engine::state::Card::WildIndustry => true,
+            _engine::state::Card::WildLocation => !t.loc.is_farm(),
+            _engine::state::Card::WildIndustry => true,
         })
         .expect("valid build target must have a matching card");
 
-    let coal = brass_engine::rules::coal_source_options(&state, t.loc, t.cost_coal as usize)
+    let coal = _engine::rules::coal_source_options(&state, t.loc, t.cost_coal as usize)
         .into_iter()
         .next()
         .unwrap_or_default();
-    let iron = brass_engine::rules::iron_source_options(&state, t.cost_iron as usize)
+    let iron = _engine::rules::iron_source_options(&state, t.cost_iron as usize)
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -377,19 +377,14 @@ fn raw_invalid_actions_are_rejected_without_state_changes() {
         .into_iter()
         .next()
         .expect("expected an initial build target");
-    let card = brass_engine::rules::valid_build_cards(
-        &state,
-        &state.players[pid],
-        pid,
-        target.loc,
-        target.ind,
-    )[0];
-    let coal =
-        brass_engine::rules::coal_source_options(&state, target.loc, target.cost_coal as usize)
-            .into_iter()
-            .next()
-            .unwrap_or_default();
-    let iron = brass_engine::rules::iron_source_options(&state, target.cost_iron as usize)
+    let card =
+        _engine::rules::valid_build_cards(&state, &state.players[pid], pid, target.loc, target.ind)
+            [0];
+    let coal = _engine::rules::coal_source_options(&state, target.loc, target.cost_coal as usize)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let iron = _engine::rules::iron_source_options(&state, target.cost_iron as usize)
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -409,7 +404,7 @@ fn raw_scout_and_double_rail_reject_malformed_indices() {
     let mut state = setup(4);
     let pid = state.current_player_id();
     let hand_before = state.players[pid].hand.clone();
-    assert!(brass_engine::rules::execute_scout(&mut state, pid, [0, 0, 1]).is_err());
+    assert!(_engine::rules::execute_scout(&mut state, pid, [0, 0, 1]).is_err());
     assert_eq!(state.players[pid].hand, hand_before);
 
     let mut rail = setup_clean_rail_state(2);
@@ -423,8 +418,8 @@ fn raw_scout_and_double_rail_reject_malformed_indices() {
             0,
             invalid_coal,
             invalid_coal,
-            brass_engine::graph::BeerSource {
-                kind: brass_engine::graph::BeerSourceKind::Merchant,
+            _engine::graph::BeerSource {
+                kind: _engine::graph::BeerSourceKind::Merchant,
                 key: usize::MAX,
                 farm_idx: None,
                 merchant_idx: Some(usize::MAX),
@@ -448,7 +443,7 @@ fn failed_step_does_not_advance_turn() {
         },
     );
     assert!(result.is_err());
-    assert!(matches!(turn, brass_engine::engine::TurnResult::Continue));
+    assert!(matches!(turn, _engine::engine::TurnResult::Continue));
     assert_eq!(state.current_index, before);
 }
 
@@ -463,7 +458,7 @@ fn scoring_produces_nonzero_total() {
     state.place_tile(
         Loc::Birmingham,
         0,
-        brass_engine::state::BoardTile {
+        _engine::state::BoardTile {
             player: pid,
             ind: IndustryType::CottonMill,
             def,
@@ -504,7 +499,7 @@ fn link_scoring_ignores_unflipped_tiles_until_they_flip() {
             resource_cubes: 0,
         },
     );
-    state.links[0] = Some(brass_engine::state::Link {
+    state.links[0] = Some(_engine::state::Link {
         player: pid,
         is_canal: true,
     });
@@ -604,8 +599,8 @@ fn canal_era_rejects_brewery4_and_pottery5() {
     let pid = 0;
 
     // Advance both stacks to their top (rail-only) tile.
-    let b_stack = brass_engine::state::player_industry_stack(IndustryType::Brewery);
-    let p_stack = brass_engine::state::player_industry_stack(IndustryType::Pottery);
+    let b_stack = _engine::state::player_industry_stack(IndustryType::Brewery);
+    let p_stack = _engine::state::player_industry_stack(IndustryType::Pottery);
     state.players[pid].industry_next[IndustryType::Brewery as usize] = (b_stack.len() - 1) as u8;
     state.players[pid].industry_next[IndustryType::Pottery as usize] = (p_stack.len() - 1) as u8;
 
@@ -634,7 +629,7 @@ fn canal_era_rejects_brewery4_and_pottery5() {
     );
 
     // 2) Raw execution must also reject them (defense in depth).
-    let iron = brass_engine::rules::iron_source_options(&state, 1)
+    let iron = _engine::rules::iron_source_options(&state, 1)
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -672,11 +667,11 @@ fn canal_era_rejects_brewery4_and_pottery5() {
             resource_cubes: 2,
         },
     );
-    state.links[16] = Some(brass_engine::state::Link {
+    state.links[16] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.links[15] = Some(brass_engine::state::Link {
+    state.links[15] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
@@ -740,7 +735,7 @@ fn canal_era_one_build_per_city_per_player() {
     // Rail era: the restriction is lifted — a second tile in Derby is legal.
     state.era = Era::Rail;
     state.players[pid].industry_next[IndustryType::Manufacturer as usize] = 1; // Mfg II
-    let iron = brass_engine::rules::iron_source_options(&state, 1)
+    let iron = _engine::rules::iron_source_options(&state, 1)
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -792,7 +787,7 @@ fn industry_card_build_requires_network() {
     ];
 
     // The industry card must NOT permit a build in Birmingham (not in network).
-    let valid = brass_engine::rules::valid_build_cards(
+    let valid = _engine::rules::valid_build_cards(
         &state,
         &state.players[pid],
         pid,
@@ -865,7 +860,7 @@ fn kidderminster_worcester_link_connects_southern_brewery_farm() {
     state.set_link(connection_via_farm(), pid);
 
     assert!(
-        brass_engine::graph::is_in_network(&state, pid, Loc::BrewerySouth),
+        _engine::graph::is_in_network(&state, pid, Loc::BrewerySouth),
         "the Kidderminster-Worcester link must put the southern farm in the network"
     );
     let iron_sources = iron_source_options(&state, 1)
@@ -894,7 +889,7 @@ fn loan_lowers_income_by_three_levels() {
     let pid = state.current_player_id();
     assert!(state.can_take_loan(pid));
     let before = state.players[pid].income_level();
-    let res = brass_engine::rules::execute_loan(&mut state, pid, 0);
+    let res = _engine::rules::execute_loan(&mut state, pid, 0);
     assert!(res.is_ok());
     let after = state.players[pid].income_level();
     assert_eq!(before - after, 3, "loan should drop income 3 levels");
@@ -913,11 +908,11 @@ fn discard_tracks_face_down_pile() {
         .position(|c| {
             !matches!(
                 c,
-                brass_engine::state::Card::WildLocation | brass_engine::state::Card::WildIndustry
+                _engine::state::Card::WildLocation | _engine::state::Card::WildIndustry
             )
         })
         .unwrap();
-    brass_engine::rules::discard_card(&mut state, pid, idx);
+    _engine::rules::discard_card(&mut state, pid, idx);
     assert_eq!(
         state.discard_pile.len(),
         before + 1,
@@ -928,22 +923,22 @@ fn discard_tracks_face_down_pile() {
 #[test]
 fn deck_composition_matches_era_card_count() {
     // 4p composition: location + industry + dual cotton/mfr cards.
-    let comp = brass_engine::state::deck_composition(4);
-    let loc_cards: usize = brass_engine::map::location_cards(4)
+    let comp = _engine::state::deck_composition(4);
+    let loc_cards: usize = _engine::map::location_cards(4)
         .iter()
         .map(|(_, c)| *c as usize)
         .sum();
-    let ind_cards: usize = brass_engine::map::industry_cards(4)
+    let ind_cards: usize = _engine::map::industry_cards(4)
         .iter()
         .map(|(_, c)| *c as usize)
         .sum();
-    let dual = brass_engine::map::dual_cotton_manufacturer_cards(4) as usize;
+    let dual = _engine::map::dual_cotton_manufacturer_cards(4) as usize;
     assert_eq!(comp.len(), loc_cards + ind_cards + dual);
 }
 
 #[test]
 fn mcts_returns_a_legal_pass_fallback_on_empty_hand() {
-    use brass_engine::mcts_ai::{self, MctsConfig};
+    use _engine::mcts_ai::{self, MctsConfig};
     let mut state = setup(2);
     // Empty the current player's hand: only Pass (and no legal moves) remains.
     let pid = state.current_player_id();
@@ -962,12 +957,12 @@ fn mcts_returns_a_legal_pass_fallback_on_empty_hand() {
 
 #[test]
 fn mcts_determinize_keeps_own_hand_and_hand_size() {
-    use brass_engine::mcts_ai::MctsConfig;
+    use _engine::mcts_ai::MctsConfig;
     let state = setup(4);
     let pid = state.current_player_id();
     let own = state.players[pid].hand.clone();
     let mut rng = ChaCha12Rng::seed_from_u64(123);
-    let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    let det = _engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
     // Our own hand is preserved.
     assert_eq!(det.players[pid].hand, own);
     // Opponent hands keep their size.
@@ -984,7 +979,7 @@ fn mcts_determinize_keeps_own_hand_and_hand_size() {
 /// `mcts_ai::determinize` (a played card must never reappear in a hand/deck).
 #[test]
 fn mcts_determinize_pool_is_multiset_consistent() {
-    use brass_engine::mcts_ai::MctsConfig;
+    use _engine::mcts_ai::MctsConfig;
     let mut state = setup(4);
     // Discard one card per player so the pool actually has out-of-circulation
     // cards to subtract.
@@ -998,12 +993,12 @@ fn mcts_determinize_pool_is_multiset_consistent() {
         })
         .collect();
     for pid in 0..4 {
-        brass_engine::rules::discard_card(&mut state, pid, idxs[pid]);
+        _engine::rules::discard_card(&mut state, pid, idxs[pid]);
     }
 
     let mut rng = ChaCha12Rng::seed_from_u64(7);
-    let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
-    let comp = brass_engine::state::deck_composition(state.player_count());
+    let det = _engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    let comp = _engine::state::deck_composition(state.player_count());
     let mut all: Vec<Card> = Vec::new();
     for p in &det.players {
         for c in &p.hand {
@@ -1032,7 +1027,7 @@ fn mcts_determinize_pool_is_multiset_consistent() {
 /// must not reappear in any opponent hand or the deck after determinization.
 #[test]
 fn determinize_excludes_discarded_cards_from_opponent_hands() {
-    use brass_engine::mcts_ai::MctsConfig;
+    use _engine::mcts_ai::MctsConfig;
     let mut state = setup(4);
     let pid = state.current_player_id();
     let idx = state.players[pid]
@@ -1041,14 +1036,14 @@ fn determinize_excludes_discarded_cards_from_opponent_hands() {
         .position(|c| !matches!(c, Card::WildLocation | Card::WildIndustry))
         .unwrap();
     let discarded = state.players[pid].hand[idx].clone();
-    brass_engine::rules::discard_card(&mut state, pid, idx);
+    _engine::rules::discard_card(&mut state, pid, idx);
     assert!(
         state.discard_pile.contains(&discarded),
         "setup: card must enter the discard pile"
     );
 
     let mut rng = ChaCha12Rng::seed_from_u64(99);
-    let det = brass_engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    let det = _engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
     for (i, p) in det.players.iter().enumerate() {
         if i != pid {
             assert!(
@@ -1082,7 +1077,7 @@ fn end_canal_era_resets_discard_pile_and_played() {
         })
         .collect();
     for pid in 0..4 {
-        brass_engine::rules::discard_card(&mut state, pid, idxs[pid]);
+        _engine::rules::discard_card(&mut state, pid, idxs[pid]);
     }
     assert!(state.discard_pile.len() >= 4);
     assert!(state.players.iter().any(|p| !p.played.is_empty()));
@@ -1111,12 +1106,12 @@ fn discard_and_scout_record_per_player_played() {
         .position(|c| !matches!(c, Card::WildLocation | Card::WildIndustry))
         .unwrap();
     let discarded = state.players[pid].hand[idx].clone();
-    brass_engine::rules::discard_card(&mut state, pid, idx);
+    _engine::rules::discard_card(&mut state, pid, idx);
     assert_eq!(state.players[pid].played.len(), 1);
     assert_eq!(state.players[pid].played[0], discarded);
 
     let three: [usize; 3] = [0, 1, 2];
-    let res = brass_engine::rules::execute_scout(&mut state, pid, three);
+    let res = _engine::rules::execute_scout(&mut state, pid, three);
     assert!(res.is_ok(), "scout failed: {res:?}");
     let p = &state.players[pid];
     assert_eq!(p.played.len(), 1 + 3, "1 discard + 3 scout cards recorded");
@@ -1133,7 +1128,7 @@ fn discarding_a_wild_returns_it_to_supply_and_skips_played() {
     let pid = state.current_player_id();
 
     // Scout to gain both wilds.
-    let res = brass_engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
+    let res = _engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
     assert!(res.is_ok(), "scout failed: {res:?}");
     assert!(state.players[pid].has_wild_location);
     assert!(state.players[pid].has_wild_industry);
@@ -1146,7 +1141,7 @@ fn discarding_a_wild_returns_it_to_supply_and_skips_played() {
         .iter()
         .position(|c| matches!(c, Card::WildLocation))
         .unwrap();
-    brass_engine::rules::discard_card(&mut state, pid, wl_idx);
+    _engine::rules::discard_card(&mut state, pid, wl_idx);
 
     assert_eq!(
         state.players[pid].played.len(),
@@ -1180,13 +1175,13 @@ fn wild_holding_is_public_and_encoded_in_training_tensor() {
     let mut state = setup(4);
     let pid = state.current_player_id();
     let base = 8 + pid * 8;
-    let t = brass_engine::encode::state_to_tensor(&state, pid);
+    let t = _engine::encode::state_to_tensor(&state, pid);
     assert_eq!(t.global[base + 5], 0.0, "no wilds held before scout");
     assert_eq!(t.global[base + 6], 0.0, "no wilds held before scout");
 
-    let res = brass_engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
+    let res = _engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
     assert!(res.is_ok(), "scout failed: {res:?}");
-    let t = brass_engine::encode::state_to_tensor(&state, pid);
+    let t = _engine::encode::state_to_tensor(&state, pid);
     assert_eq!(
         t.global[base + 5],
         1.0,
@@ -1203,8 +1198,8 @@ fn wild_holding_is_public_and_encoded_in_training_tensor() {
         .iter()
         .position(|c| matches!(c, Card::WildLocation))
         .unwrap();
-    brass_engine::rules::discard_card(&mut state, pid, wl_idx);
-    let t = brass_engine::encode::state_to_tensor(&state, pid);
+    _engine::rules::discard_card(&mut state, pid, wl_idx);
+    let t = _engine::encode::state_to_tensor(&state, pid);
     assert_eq!(
         t.global[base + 5],
         0.0,
@@ -1234,11 +1229,11 @@ fn legal_moves_do_not_offer_unaffordable_double_develop() {
     let moves = legal_moves(&mut state);
     let single_develops = moves
         .iter()
-        .filter(|mv| matches!(mv, brass_engine::rules::Move::Develop { ind2: None, .. }))
+        .filter(|mv| matches!(mv, _engine::rules::Move::Develop { ind2: None, .. }))
         .count();
     let double_develops = moves
         .iter()
-        .filter(|mv| matches!(mv, brass_engine::rules::Move::Develop { ind2: Some(_), .. }))
+        .filter(|mv| matches!(mv, _engine::rules::Move::Develop { ind2: Some(_), .. }))
         .count();
 
     assert!(
@@ -1290,8 +1285,8 @@ fn execute_network_double_consumes_two_coal_and_one_own_beer() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
 
-    let own_beer = brass_engine::graph::BeerSource {
-        kind: brass_engine::graph::BeerSourceKind::Own,
+    let own_beer = _engine::graph::BeerSource {
+        kind: _engine::graph::BeerSourceKind::Own,
         key: usize::MAX,
         farm_idx: Some(1),
         merchant_idx: None,
@@ -1339,8 +1334,8 @@ fn execute_network_double_can_use_connected_opponent_beer() {
     let stone_key = state
         .city_slot_key(Loc::Stone, 0)
         .expect("stone slot should exist");
-    let opp_beer = brass_engine::graph::BeerSource {
-        kind: brass_engine::graph::BeerSourceKind::Opponent,
+    let opp_beer = _engine::graph::BeerSource {
+        kind: _engine::graph::BeerSourceKind::Opponent,
         key: stone_key,
         farm_idx: None,
         merchant_idx: None,
@@ -1370,8 +1365,8 @@ fn execute_network_double_without_connected_beer_rolls_back_temp_changes() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::BrewerySouth, 1, 1);
 
-    let opp_beer = brass_engine::graph::BeerSource {
-        kind: brass_engine::graph::BeerSourceKind::Opponent,
+    let opp_beer = _engine::graph::BeerSource {
+        kind: _engine::graph::BeerSourceKind::Opponent,
         key: usize::MAX,
         farm_idx: Some(1),
         merchant_idx: None,
@@ -1423,15 +1418,15 @@ fn network_rejects_market_coal_while_free_source_available() {
     // Player has presence + a connected free coal source (Cannock mine).
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
     place_test_coal_mine(&mut state, 1);
-    state.links[15] = Some(brass_engine::state::Link {
+    state.links[15] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
 
     // Build a rail link using a PAID market coal source while a free connected
     // mine (Cannock) is available -> must fail under the free-first rule.
-    let market_coal = brass_engine::graph::CoalSource {
-        kind: brass_engine::graph::CoalSourceKind::Market,
+    let market_coal = _engine::graph::CoalSource {
+        kind: _engine::graph::CoalSourceKind::Market,
         key: usize::MAX,
         price: state.coal_price(),
         free: false,
@@ -1462,15 +1457,15 @@ fn network_uses_the_explicitly_chosen_free_coal_source() {
     let pid = 0;
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
     place_test_coal_mine(&mut state, 1);
-    state.links[15] = Some(brass_engine::state::Link {
+    state.links[15] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
 
     // Explicitly choose the Cannock free mine as the rail coal source.
     let coal_key = state.city_slot_key(Loc::Cannock, 0).expect("cannock slot");
-    let coal = brass_engine::graph::CoalSource {
-        kind: brass_engine::graph::CoalSourceKind::Mine,
+    let coal = _engine::graph::CoalSource {
+        kind: _engine::graph::CoalSourceKind::Mine,
         key: coal_key,
         price: 0,
         free: true,
@@ -1505,31 +1500,31 @@ fn sell_uses_the_explicitly_chosen_merchant_bonus() {
         },
     );
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
-    state.links[34] = Some(brass_engine::state::Link {
+    state.links[34] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.links[35] = Some(brass_engine::state::Link {
+    state.links[35] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.links[29] = Some(brass_engine::state::Link {
+    state.links[29] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.links[28] = Some(brass_engine::state::Link {
+    state.links[28] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
     state.merchants = vec![
-        brass_engine::state::MerchantTile {
+        _engine::state::MerchantTile {
             loc: Loc::Oxford,
-            buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+            buys: _engine::state::BuyType::Industry(IndustryType::CottonMill),
             has_beer: true,
         },
-        brass_engine::state::MerchantTile {
+        _engine::state::MerchantTile {
             loc: Loc::Warrington,
-            buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+            buys: _engine::state::BuyType::Industry(IndustryType::CottonMill),
             has_beer: true,
         },
     ];
@@ -1539,7 +1534,7 @@ fn sell_uses_the_explicitly_chosen_merchant_bonus() {
     let tile_key = state
         .city_slot_key(Loc::Stone, 0)
         .expect("stone slot should exist");
-    let beer_sources = brass_engine::rules::plan_sell_beer_sources(
+    let beer_sources = _engine::rules::plan_sell_beer_sources(
         &state,
         pid,
         &[tile_key],
@@ -1598,17 +1593,17 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
         },
     );
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
-    state.links[29] = Some(brass_engine::state::Link {
+    state.links[29] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.links[28] = Some(brass_engine::state::Link {
+    state.links[28] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.merchants = vec![brass_engine::state::MerchantTile {
+    state.merchants = vec![_engine::state::MerchantTile {
         loc: Loc::Gloucester,
-        buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+        buys: _engine::state::BuyType::Industry(IndustryType::CottonMill),
         has_beer: true,
     }];
 
@@ -1616,7 +1611,7 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
         .city_slot_key(Loc::Kidderminster, 1)
         .expect("kidderminster slot should exist");
     let beer_sources =
-        brass_engine::rules::plan_sell_beer_sources(&state, pid, &[tile_key], &[0], &[true])
+        _engine::rules::plan_sell_beer_sources(&state, pid, &[tile_key], &[0], &[true])
             .expect("test sale should have a valid beer payment");
     let res = execute_sell(
         &mut state,
@@ -1630,14 +1625,11 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
     assert!(res.is_ok(), "sell to gloucester should succeed: {res:?}");
     assert!(matches!(
         state.pending_bonus,
-        Some(brass_engine::state::PendingBonus::FreeDevelop { player_id, count }) if player_id == pid && count == 1
+        Some(_engine::state::PendingBonus::FreeDevelop { player_id, count }) if player_id == pid && count == 1
     ));
 
     let turn_result = advance_turn(&mut state);
-    assert!(matches!(
-        turn_result,
-        brass_engine::engine::TurnResult::Continue
-    ));
+    assert!(matches!(turn_result, _engine::engine::TurnResult::Continue));
     assert_eq!(
         state.current_player_id(),
         pid,
@@ -1652,11 +1644,11 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
     assert!(
         moves
             .iter()
-            .all(|mv| matches!(mv, brass_engine::rules::Move::ResolveFreeDevelop { .. }))
+            .all(|mv| matches!(mv, _engine::rules::Move::ResolveFreeDevelop { .. }))
     );
 
     let first = moves[0].clone();
-    let res = brass_engine::rules::apply_move(&mut state, &first);
+    let res = _engine::rules::apply_move(&mut state, &first);
     assert!(
         res.is_ok(),
         "resolving pending free develop should succeed: {res:?}"
@@ -1695,20 +1687,20 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
             resource_cubes: 0,
         },
     );
-    state.links[28] = Some(brass_engine::state::Link {
+    state.links[28] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.merchants = vec![brass_engine::state::MerchantTile {
+    state.merchants = vec![_engine::state::MerchantTile {
         loc: Loc::Gloucester,
-        buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+        buys: _engine::state::BuyType::Industry(IndustryType::CottonMill),
         has_beer: true,
     }];
 
-    let sell = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 1)
+    let sell = _engine::heuristic_ai::candidate_actions_k(&mut state, 1)
         .into_iter()
         .find_map(|d| match d.mv {
-            brass_engine::rules::Move::Sell {
+            _engine::rules::Move::Sell {
                 keys,
                 merchant_indices,
                 use_merchant_beer,
@@ -1732,9 +1724,8 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
     );
 
     let mut sim = state.clone();
-    let res = brass_engine::rules::execute_sell(
-        &mut sim, pid, &sell.0, &sell.1, &sell.2, &sell.3, sell.4,
-    );
+    let res =
+        _engine::rules::execute_sell(&mut sim, pid, &sell.0, &sell.1, &sell.2, &sell.3, sell.4);
     assert!(
         res.is_ok(),
         "generated sell plan must execute successfully: {res:?}"
@@ -1743,7 +1734,7 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
 
 #[test]
 fn every_double_rail_move_from_legal_moves_executes() {
-    use brass_engine::rules::{Move, apply_move, legal_moves};
+    use _engine::rules::{Move, apply_move, legal_moves};
     let mut state = setup_clean_rail_state(2);
     let pid = 0;
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
@@ -1767,7 +1758,7 @@ fn every_double_rail_move_from_legal_moves_executes() {
 
 #[test]
 fn legal_moves_include_executable_multi_tile_sell() {
-    use brass_engine::rules::{Move, apply_move, legal_moves};
+    use _engine::rules::{Move, apply_move, legal_moves};
     let mut state = setup_clean_rail_state(3);
     let pid = 0;
     state.players[pid].hand = vec![Card::WildLocation];
@@ -1806,17 +1797,17 @@ fn legal_moves_include_executable_multi_tile_sell() {
         },
     );
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 4);
-    state.links[34] = Some(brass_engine::state::Link {
+    state.links[34] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.links[35] = Some(brass_engine::state::Link {
+    state.links[35] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     });
-    state.merchants = vec![brass_engine::state::MerchantTile {
+    state.merchants = vec![_engine::state::MerchantTile {
         loc: Loc::Warrington,
-        buys: brass_engine::state::BuyType::Industry(IndustryType::CottonMill),
+        buys: _engine::state::BuyType::Industry(IndustryType::CottonMill),
         has_beer: true,
     }];
 
@@ -1866,7 +1857,7 @@ fn market_iron_multicube_purchase_pays_ascending_slot_prices() {
     // slots 3..9 (prices 2,3,3,4,4,5): the two cheapest are £2 and £3, so a
     // 2-iron market purchase must cost £5 — NOT 2x the cheapest (£4).
     state.iron_market = 7;
-    let opts = brass_engine::rules::iron_source_options(&state, 2);
+    let opts = _engine::rules::iron_source_options(&state, 2);
     assert!(!opts.is_empty(), "expected legal 2-iron market selections");
     for sel in &opts {
         assert_eq!(sel.len(), 2);
@@ -1881,7 +1872,7 @@ fn market_iron_even_market_two_cheapest_share_a_price_pair() {
     // With 8 cubes (initial) slots 2..9 hold prices 2,2,3,3,4,4,5,5; the two
     // cheapest are £2+£2 = £4.
     assert_eq!(state.iron_market, 8);
-    let opts = brass_engine::rules::iron_source_options(&state, 2);
+    let opts = _engine::rules::iron_source_options(&state, 2);
     assert!(!opts.is_empty(), "expected legal 2-iron market selections");
     for sel in &opts {
         assert_eq!(sel.len(), 2);
@@ -1901,7 +1892,7 @@ fn market_coal_multicube_purchase_pays_ascending_slot_prices() {
     // £5+£6 = £11, NOT 2x £5 = £10. Gloucester is a merchant, so the market is
     // reachable with no links built.
     state.coal_market = 5;
-    let sources = brass_engine::graph::find_coal_sources(&state, Loc::Gloucester);
+    let sources = _engine::graph::find_coal_sources(&state, Loc::Gloucester);
     let market_prices: Vec<u8> = sources
         .iter()
         .filter(|s| !s.free)
@@ -1913,7 +1904,7 @@ fn market_coal_multicube_purchase_pays_ascending_slot_prices() {
         "second-cheapest market coal must be £6"
     );
 
-    let opts = brass_engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
+    let opts = _engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
     assert!(!opts.is_empty(), "expected legal 2-coal market selections");
     for sel in &opts {
         assert_eq!(sel.len(), 2);
@@ -1926,21 +1917,19 @@ fn market_coal_multicube_purchase_pays_ascending_slot_prices() {
 fn empty_market_draws_from_general_supply_at_empty_price() {
     let mut state = setup(4);
     state.coal_market = 0;
-    let sources = brass_engine::graph::find_coal_sources(&state, Loc::Gloucester);
+    let sources = _engine::graph::find_coal_sources(&state, Loc::Gloucester);
     let market: Vec<u8> = sources
         .iter()
         .filter(|s| !s.free)
         .map(|s| s.price)
         .collect();
-    assert_eq!(market.len(), brass_engine::map::GENERAL_SUPPLY_CAP);
+    assert_eq!(market.len(), _engine::map::GENERAL_SUPPLY_CAP);
     assert!(
-        market
-            .iter()
-            .all(|&p| p == brass_engine::map::COAL_EMPTY_PRICE),
+        market.iter().all(|&p| p == _engine::map::COAL_EMPTY_PRICE),
         "empty market should only offer General Supply at the empty price"
     );
     // A 2-coal draw from an empty market is still legal at £8 + £8.
-    let opts = brass_engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
+    let opts = _engine::rules::coal_source_options(&state, Loc::Gloucester, 2);
     assert!(
         !opts.is_empty(),
         "expected General Supply 2-coal selections"
@@ -1979,18 +1968,18 @@ fn coal_purchase_cost_is_free_first_then_slot_prices_then_general_supply() {
     // No merchant reachable yet (no links): free coal only, paid shortfall is
     // infeasible even though the mine is at the queried city itself.
     assert_eq!(
-        brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 2),
+        _engine::graph::coal_purchase_cost(&state, Loc::Cannock, 2),
         Some(0)
     );
     assert_eq!(
-        brass_engine::graph::coal_purchase_cost(&state, Loc::Cannock, 3),
+        _engine::graph::coal_purchase_cost(&state, Loc::Cannock, 3),
         None
     );
 
     // Connect Cannock -> Walsall -> Birmingham -> Oxford (merchant), and
     // Cannock -> Stafford, so the mine is reachable and a merchant is too.
     let link = |p| {
-        Some(brass_engine::state::Link {
+        Some(_engine::state::Link {
             player: p,
             is_canal: false,
         })
@@ -2001,24 +1990,24 @@ fn coal_purchase_cost_is_free_first_then_slot_prices_then_general_supply() {
     state.links[15] = link(0); // Cannock-Stafford
 
     assert_eq!(
-        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 2),
+        _engine::graph::coal_purchase_cost(&state, Loc::Oxford, 2),
         Some(0)
     );
     // Free 2 + one market cube at the cheapest slot (£1, market has 13).
     assert_eq!(
-        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 3),
+        _engine::graph::coal_purchase_cost(&state, Loc::Oxford, 3),
         Some(1)
     );
 
     // Odd market (5 cubes => slots 5,6,6,7,7): 2 free + 2 market = £5+£6.
     state.coal_market = 5;
     assert_eq!(
-        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 4),
+        _engine::graph::coal_purchase_cost(&state, Loc::Oxford, 4),
         Some(11)
     );
     // 2 free + 5 market + 1 General Supply at £8.
     assert_eq!(
-        brass_engine::graph::coal_purchase_cost(&state, Loc::Oxford, 8),
+        _engine::graph::coal_purchase_cost(&state, Loc::Oxford, 8),
         Some(31 + 8)
     );
 }
@@ -2027,18 +2016,18 @@ fn coal_purchase_cost_is_free_first_then_slot_prices_then_general_supply() {
 fn iron_purchase_cost_is_free_first_then_slot_prices_then_general_supply() {
     let mut state = setup(4);
     // Full market (8 cubes => slots 2,2,3,3,4,4,5,5): 2 iron = £2+£2.
-    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 2), 4);
+    assert_eq!(_engine::graph::iron_purchase_cost(&state, 2), 4);
     // Odd market (7 cubes => slots 2,3,3,4,4,5): two cheapest are £2+£3.
     state.iron_market = 7;
-    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 2), 5);
+    assert_eq!(_engine::graph::iron_purchase_cost(&state, 2), 5);
     // Market exhausted then General Supply at £6: 8 slots sum to 28 + 2x£6.
     state.iron_market = 8;
-    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 10), 28 + 12);
+    assert_eq!(_engine::graph::iron_purchase_cost(&state, 10), 28 + 12);
 
     // Free-first: an unflipped iron works with 3 cubes covers the draw.
     place_test_iron_works(&mut state, 0, 3);
-    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 3), 0);
-    assert_eq!(brass_engine::graph::iron_purchase_cost(&state, 4), 2); // one market cube £2
+    assert_eq!(_engine::graph::iron_purchase_cost(&state, 3), 0);
+    assert_eq!(_engine::graph::iron_purchase_cost(&state, 4), 2); // one market cube £2
 }
 
 #[test]
@@ -2060,12 +2049,12 @@ fn free_source_cache_tracks_placement_consume_and_era_end() {
     // free-source cache must be rebuilt to empty.
     handle_turn_result(&mut state, TurnResult::EndCanalEra);
     state.assert_caches_consistent();
-    let coal = brass_engine::graph::find_coal_sources(&state, Loc::Cannock);
+    let coal = _engine::graph::find_coal_sources(&state, Loc::Cannock);
     assert!(
         coal.iter().all(|s| !s.free),
         "era end must drop the level-1 coal mine from free sources"
     );
-    let iron = brass_engine::graph::find_iron_sources(&state);
+    let iron = _engine::graph::find_iron_sources(&state);
     assert!(
         iron.iter().all(|s| !s.free),
         "era end must drop the level-1 iron works"
@@ -2079,14 +2068,14 @@ fn connectivity_cache_self_heals_after_direct_link_writes() {
 
     // Direct link writes (bypass any maintenance hook): not reachable yet.
     let free = |s: &GameState, loc: Loc| {
-        brass_engine::graph::find_coal_sources(s, loc)
+        _engine::graph::find_coal_sources(s, loc)
             .iter()
             .filter(|x| x.free)
             .count()
     };
     assert_eq!(free(&state, Loc::Oxford), 0);
 
-    let link = Some(brass_engine::state::Link {
+    let link = Some(_engine::state::Link {
         player: 0,
         is_canal: false,
     });
@@ -2113,38 +2102,30 @@ fn network_mask_is_kept_by_moves_and_self_heals_after_direct_link_writes() {
 
     // Maintained path: a placed tile enters the player's network immediately.
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
-    assert!(brass_engine::graph::is_in_network(
-        &state,
-        pid,
-        Loc::Stafford
-    ));
-    assert!(!brass_engine::graph::is_in_network(
-        &state,
-        pid,
-        Loc::Birmingham
-    ));
-    assert!(brass_engine::graph::player_has_presence(&state, pid));
-    assert!(!brass_engine::graph::player_has_presence(&state, 1));
+    assert!(_engine::graph::is_in_network(&state, pid, Loc::Stafford));
+    assert!(!_engine::graph::is_in_network(&state, pid, Loc::Birmingham));
+    assert!(_engine::graph::player_has_presence(&state, pid));
+    assert!(!_engine::graph::player_has_presence(&state, 1));
 
     // Direct link writes bypass the maintenance hooks; the mask must self-heal
     // on the next batch entry (get_valid_network_targets) and, once healed,
     // direct is_in_network reads agree with the scan.
-    state.links[15] = Some(brass_engine::state::Link {
+    state.links[15] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     }); // Cannock-Stafford
     let _ = get_valid_network_targets(&state, pid);
     assert!(
-        brass_engine::graph::is_in_network(&state, pid, Loc::Cannock),
+        _engine::graph::is_in_network(&state, pid, Loc::Cannock),
         "network mask must self-heal after a direct link write"
     );
-    state.links[8] = Some(brass_engine::state::Link {
+    state.links[8] = Some(_engine::state::Link {
         player: pid,
         is_canal: false,
     }); // Walsall-Birmingham
     let _ = get_valid_network_targets(&state, pid);
     assert!(
-        brass_engine::graph::is_in_network(&state, pid, Loc::Birmingham),
+        _engine::graph::is_in_network(&state, pid, Loc::Birmingham),
         "network mask must reflect chained direct link writes"
     );
 
@@ -2153,23 +2134,19 @@ fn network_mask_is_kept_by_moves_and_self_heals_after_direct_link_writes() {
     state.links[8] = None;
     let _ = get_valid_network_targets(&state, pid);
     assert!(
-        !brass_engine::graph::is_in_network(&state, pid, Loc::Birmingham),
+        !_engine::graph::is_in_network(&state, pid, Loc::Birmingham),
         "removing the last link must sever the location from the network"
     );
     // The own tile keeps its own location in the network.
-    assert!(brass_engine::graph::is_in_network(
-        &state,
-        pid,
-        Loc::Stafford
-    ));
+    assert!(_engine::graph::is_in_network(&state, pid, Loc::Stafford));
 
     // A committed network move updates the mask through the rules layer.
     let conn_id = get_valid_network_targets(&state, pid)[0];
     execute_network(&mut state, pid, conn_id, None, 0).expect("network must succeed");
     let c = &connections()[conn_id];
     assert!(
-        brass_engine::graph::is_in_network(&state, pid, c.a)
-            && brass_engine::graph::is_in_network(&state, pid, c.b),
+        _engine::graph::is_in_network(&state, pid, c.a)
+            && _engine::graph::is_in_network(&state, pid, c.b),
         "executed network must extend the player's network mask"
     );
 }
@@ -2235,7 +2212,7 @@ fn heuristic_keeps_same_industry_double_develop_as_a_candidate() {
         }
     }
 
-    let candidates = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 1);
+    let candidates = _engine::heuristic_ai::candidate_actions_k(&mut state, 1);
     let candidate_moves: Vec<String> = candidates
         .iter()
         .map(|decision| format!("{:?}", decision.mv))
@@ -2252,11 +2229,11 @@ fn heuristic_keeps_same_industry_double_develop_as_a_candidate() {
         "heuristic must retain a legal same-industry double develop; candidates: {candidate_moves:?}"
     );
 
-    state.pending_bonus = Some(brass_engine::state::PendingBonus::FreeDevelop {
+    state.pending_bonus = Some(_engine::state::PendingBonus::FreeDevelop {
         player_id: pid,
         count: 2,
     });
-    let free_candidates = brass_engine::heuristic_ai::candidate_actions_k(&mut state, 1);
+    let free_candidates = _engine::heuristic_ai::candidate_actions_k(&mut state, 1);
     assert!(
         free_candidates.iter().any(|decision| matches!(
             decision.mv,

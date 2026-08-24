@@ -7,10 +7,10 @@
 //!   policy: heuristic | mcts
 //!   mcts uses sims (default 200); heuristic ignores sims.
 
-use brass_engine::data::Era;
-use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
-use brass_engine::mcts_ai::{self, MctsConfig};
-use brass_engine::state::GameState;
+use _engine::data::Era;
+use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
+use _engine::mcts_ai::{self, MctsConfig};
+use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
 use rayon::prelude::*;
 use std::time::Instant;
@@ -39,18 +39,18 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
         ..Default::default()
     });
 
-    let mut on_move = |_state: &mut GameState, mv: &brass_engine::rules::Move| {
+    let mut on_move = |_state: &mut GameState, mv: &_engine::rules::Move| {
         let mut r = res.borrow_mut();
         match mv {
-            brass_engine::rules::Move::Build { .. } => r.actions[0] += 1,
-            brass_engine::rules::Move::Network { .. }
-            | brass_engine::rules::Move::NetworkDouble { .. } => r.actions[1] += 1,
-            brass_engine::rules::Move::Develop { .. }
-            | brass_engine::rules::Move::ResolveFreeDevelop { .. } => r.actions[2] += 1,
-            brass_engine::rules::Move::Sell { .. } => r.actions[3] += 1,
-            brass_engine::rules::Move::Loan { .. } => r.actions[4] += 1,
-            brass_engine::rules::Move::Pass { .. } => r.actions[5] += 1,
-            brass_engine::rules::Move::Scout { .. } => {}
+            _engine::rules::Move::Build { .. } => r.actions[0] += 1,
+            _engine::rules::Move::Network { .. }
+            | _engine::rules::Move::NetworkDouble { .. } => r.actions[1] += 1,
+            _engine::rules::Move::Develop { .. }
+            | _engine::rules::Move::ResolveFreeDevelop { .. } => r.actions[2] += 1,
+            _engine::rules::Move::Sell { .. } => r.actions[3] += 1,
+            _engine::rules::Move::Loan { .. } => r.actions[4] += 1,
+            _engine::rules::Move::Pass { .. } => r.actions[5] += 1,
+            _engine::rules::Move::Scout { .. } => {}
         }
     };
     let mut on_era = |state: &mut GameState, era: Era| -> AfterEra {
@@ -96,7 +96,7 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
     };
     let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
         Some(match policy {
-            "heuristic" => brass_engine::heuristic_ai::choose_action(state).mv,
+            "heuristic" => _engine::heuristic_ai::choose_action(state).mv,
             "mcts" => {
                 let cfg = MctsConfig {
                     simulations: sims,
@@ -104,7 +104,7 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
                 };
                 mcts_ai::choose_action_mcts(state, &cfg).mv
             }
-            _ => brass_engine::heuristic_ai::choose_action(state).mv,
+            _ => _engine::heuristic_ai::choose_action(state).mv,
         })
     });
     if !canal_only {

@@ -5,10 +5,10 @@
 //!   cargo run --release --bin mcts_lab -- inspect [seed] [players] [sims] [ply]
 //!   cargo run --release --bin mcts_lab -- sweep [seed] [players] [sims]
 
-use brass_engine::game_loop;
-use brass_engine::heuristic_ai;
-use brass_engine::mcts_ai::{self, LeafEval, MctsConfig};
-use brass_engine::state::GameState;
+use _engine::game_loop;
+use _engine::heuristic_ai;
+use _engine::mcts_ai::{self, LeafEval, MctsConfig};
+use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
 
 fn midgame(seed: u64, players: usize, ply: usize) -> GameState {

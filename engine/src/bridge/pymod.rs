@@ -515,7 +515,7 @@ fn reshape2<'py>(
     Ok(PyArray2::from_vec2(py, &vv)?)
 }
 
-#[pymodule]
+#[pymodule(name = "_engine")]
 fn brass_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
     m.add(

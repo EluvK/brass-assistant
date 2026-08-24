@@ -5,7 +5,7 @@ edition = "2024"
 description = "Brass: Birmingham game engine (Rust) - phase 1"
 
 [lib]
-name = "brass_engine"
+name = "_engine"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

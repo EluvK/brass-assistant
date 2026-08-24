@@ -10,14 +10,14 @@
 //!   canal-only: "1"/"true" stops after the canal era (no rail era played).
 //!   trace: "trace" prints scored heuristic candidates before each heuristic decision.
 
-use brass_engine::data::Era;
-use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
-use brass_engine::heuristic_ai;
-use brass_engine::random_ai;
-use brass_engine::replay_fmt;
-use brass_engine::rules::Move;
-use brass_engine::scoring;
-use brass_engine::state::GameState;
+use _engine::data::Era;
+use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
+use _engine::heuristic_ai;
+use _engine::random_ai;
+use _engine::replay_fmt;
+use _engine::rules::Move;
+use _engine::scoring;
+use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
 use std::cell::{Cell, RefCell};
 use std::env;
@@ -79,15 +79,15 @@ fn choose_heuristic_action(
         );
         let pid = state.current_player_id();
         let selected: Vec<usize> = match &decision.mv {
-            brass_engine::r#move::Move::Build { card_index, .. }
-            | brass_engine::r#move::Move::Network { card_index, .. }
-            | brass_engine::r#move::Move::NetworkDouble { card_index, .. }
-            | brass_engine::r#move::Move::Develop { card_index, .. }
-            | brass_engine::r#move::Move::Sell { card_index, .. }
-            | brass_engine::r#move::Move::Loan { card_index }
-            | brass_engine::r#move::Move::Pass { card_index } => vec![*card_index],
-            brass_engine::r#move::Move::Scout { card_indices } => card_indices.to_vec(),
-            brass_engine::r#move::Move::ResolveFreeDevelop { .. } => Vec::new(),
+            _engine::r#move::Move::Build { card_index, .. }
+            | _engine::r#move::Move::Network { card_index, .. }
+            | _engine::r#move::Move::NetworkDouble { card_index, .. }
+            | _engine::r#move::Move::Develop { card_index, .. }
+            | _engine::r#move::Move::Sell { card_index, .. }
+            | _engine::r#move::Move::Loan { card_index }
+            | _engine::r#move::Move::Pass { card_index } => vec![*card_index],
+            _engine::r#move::Move::Scout { card_indices } => card_indices.to_vec(),
+            _engine::r#move::Move::ResolveFreeDevelop { .. } => Vec::new(),
         };
         let ranked = heuristic_ai::ranked_card_choices(state, pid);
         println!("卡片保留价值(越低越适合消耗):");
@@ -96,7 +96,7 @@ fn choose_heuristic_action(
             let label = state.players[pid]
                 .hand
                 .get(index)
-                .map(brass_engine::replay_fmt::card_label)
+                .map(_engine::replay_fmt::card_label)
                 .unwrap_or_else(|| "?".to_string());
             println!("  {marker} 手牌[{index}] {label} keep_score={score:.3}");
         }
@@ -259,7 +259,7 @@ fn main() {
             "mcts-vs-random" => {
                 let mcts_seat = (seed as usize) % players;
                 if pid == mcts_seat {
-                    use brass_engine::mcts_ai::{self, MctsConfig};
+                    use _engine::mcts_ai::{self, MctsConfig};
                     let cfg = MctsConfig {
                         simulations: sims,
                         ..Default::default()
@@ -273,7 +273,7 @@ fn main() {
             "mcts-vs-heur" => {
                 let mcts_seat = (seed as usize) % players;
                 if pid == mcts_seat {
-                    use brass_engine::mcts_ai::{self, MctsConfig};
+                    use _engine::mcts_ai::{self, MctsConfig};
                     let cfg = MctsConfig {
                         simulations: sims,
                         ..Default::default()
@@ -287,7 +287,7 @@ fn main() {
                 choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get())
             }
             "mcts" => {
-                use brass_engine::mcts_ai::{self, MctsConfig};
+                use _engine::mcts_ai::{self, MctsConfig};
                 let cfg = MctsConfig {
                     simulations: sims,
                     ..Default::default()

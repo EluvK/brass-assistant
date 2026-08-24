@@ -1,10 +1,10 @@
-use brass_engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
-use brass_engine::heuristic_ai;
-use brass_engine::mcts_ai::{self, MctsConfig};
-use brass_engine::random_ai::choose_random_move;
-use brass_engine::rules::Move;
-use brass_engine::scoring;
-use brass_engine::state::GameState;
+use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
+use _engine::heuristic_ai;
+use _engine::mcts_ai::{self, MctsConfig};
+use _engine::random_ai::choose_random_move;
+use _engine::rules::Move;
+use _engine::scoring;
+use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
 use rayon::prelude::*;
 use std::env;
@@ -86,8 +86,8 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
             );
         }
     };
-    let mut on_era = |_state: &mut GameState, era: brass_engine::data::Era| -> AfterEra {
-        if era == brass_engine::data::Era::Canal {
+    let mut on_era = |_state: &mut GameState, era: _engine::data::Era| -> AfterEra {
+        if era == _engine::data::Era::Canal {
             canal_events += 1;
         }
         AfterEra::Continue
