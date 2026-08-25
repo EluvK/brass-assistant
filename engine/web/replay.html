@@ -88,6 +88,7 @@ body {
 
 .timeline { grid-column:1; }
 .right { grid-column:2; }
+
 .board {
   grid-column:3;
   padding:12px;
@@ -95,6 +96,7 @@ body {
   display:flex;
   flex-direction:column;
 }
+
 .actions { grid-column:4; }
 
 h2 {
@@ -203,9 +205,14 @@ h2 {
   border-top-style:dashed;
 }
 
-.legend i.rail { border-color:var(--rail); }
+.legend i.rail {
+  border-color:var(--rail);
+}
 
-.player-key { font-weight:700; }
+.player-key {
+  font-weight:700;
+}
+
 .player-key.p0 { color:var(--p0); }
 .player-key.p1 { color:var(--p1); }
 .player-key.p2 { color:var(--p2); }
@@ -218,7 +225,9 @@ h2 {
   overflow:hidden;
   border:1px solid var(--line);
   background:#edf3ef;
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.55),0 1px 3px rgba(30,50,50,.08);
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.55),
+    0 1px 3px rgba(30,50,50,.08);
   display:flex;
   align-items:center;
   justify-content:center;
@@ -254,8 +263,13 @@ h2 {
   transition:stroke-width .12s,opacity .12s;
 }
 
-.route.cap-canal { stroke-dasharray:9 6; }
-.route.cap-rail { stroke-dasharray:none; }
+.route.cap-canal {
+  stroke-dasharray:9 6;
+}
+
+.route.cap-rail {
+  stroke-dasharray:none;
+}
 
 .route.used {
   stroke-width:6;
@@ -263,15 +277,22 @@ h2 {
   filter:drop-shadow(0 1px 1px rgba(0,0,0,.38));
 }
 
-.route.used.cap-canal { stroke-dasharray:10 6; }
-.route.used.cap-rail { stroke-dasharray:none; }
+.route.used.cap-canal {
+  stroke-dasharray:10 6;
+}
+
+.route.used.cap-rail {
+  stroke-dasharray:none;
+}
 
 .route.p0 { stroke:var(--p0); }
 .route.p1 { stroke:var(--p1); }
 .route.p2 { stroke:var(--p2); }
 .route.p3 { stroke:var(--p3); }
 
-.route-owner { pointer-events:none; }
+.route-owner {
+  pointer-events:none;
+}
 
 .route-owner circle {
   stroke:#fff;
@@ -299,6 +320,24 @@ h2 {
   cursor:default;
 }
 
+.city-boundary {
+  fill:#f1f5f3;
+  fill-opacity:.98;
+  stroke:#65777a;
+  stroke-width:2;
+  rx:13;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.12));
+  pointer-events:none;
+}
+
+.city-boundary-inner {
+  fill:none;
+  stroke:rgba(255,255,255,.9);
+  stroke-width:1;
+  rx:11;
+  pointer-events:none;
+}
+
 .city-name {
   fill:var(--ink);
   font-size:14px;
@@ -311,7 +350,7 @@ h2 {
 }
 
 .city-slots {
-  transform:translate(0,8px);
+  pointer-events:none;
 }
 
 .city-slot {
@@ -466,7 +505,9 @@ th.sortable .sort-icon {
   font-size:11px;
 }
 
-tr.sel { background:#dcefe7; }
+tr.sel {
+  background:#dcefe7;
+}
 
 .canonical {
   max-width:340px;
@@ -476,7 +517,9 @@ tr.sel { background:#dcefe7; }
   word-break:break-all;
 }
 
-.muted { color:var(--muted); }
+.muted {
+  color:var(--muted);
+}
 
 .error {
   padding:7px;
@@ -745,6 +788,7 @@ function renderActions() {
     q('#actions-head').innerHTML = `
       <tr><th>玩家</th><th>产业 VP</th><th>连接 VP</th><th>结算前 → 结算后</th></tr>
     `;
+
     q('#actions').innerHTML = (detail.score_breakdown || []).map(s => `
       <tr>
         <td>P${s.player}</td>
@@ -753,6 +797,7 @@ function renderActions() {
         <td>${s.previous_vp} → <b>${s.total_vp}</b></td>
       </tr>
     `).join('');
+
     return;
   }
 
@@ -776,14 +821,27 @@ function renderActions() {
     sorted.sort((a,b) => {
       const av = String(a.description || '');
       const bv = String(b.description || '');
-      return av.localeCompare(bv,undefined,{numeric:true,sensitivity:'base'}) * sortDirection;
+
+      return av.localeCompare(
+        bv,
+        undefined,
+        {
+          numeric:true,
+          sensitivity:'base'
+        }
+      ) * sortDirection;
     });
   }
 
   if (sortColumn === 'score') {
     sorted.sort((a,b) => {
-      const aValid = typeof a.score === 'number' && Number.isFinite(a.score);
-      const bValid = typeof b.score === 'number' && Number.isFinite(b.score);
+      const aValid =
+        typeof a.score === 'number' &&
+        Number.isFinite(a.score);
+
+      const bValid =
+        typeof b.score === 'number' &&
+        Number.isFinite(b.score);
 
       if (aValid !== bValid) return aValid ? -1 : 1;
       if (!aValid) return 0;
@@ -793,10 +851,14 @@ function renderActions() {
   }
 
   q('#sort-action').textContent =
-    sortColumn === 'action' ? (sortDirection > 0 ? '↑' : '↓') : '';
+    sortColumn === 'action'
+      ? (sortDirection > 0 ? '↑' : '↓')
+      : '';
 
   q('#sort-score').textContent =
-    sortColumn === 'score' ? (sortDirection > 0 ? '↑' : '↓') : '';
+    sortColumn === 'score'
+      ? (sortDirection > 0 ? '↑' : '↓')
+      : '';
 
   q('#actions').innerHTML = sorted.map(a => `
     <tr class="${a.selected ? 'sel' : ''}">
@@ -815,12 +877,25 @@ document.addEventListener('keydown', event => {
 
   event.preventDefault();
 
-  const delta = event.key === 'ArrowDown' ? 1 : -1;
-  const next = selected < 0
-    ? (delta > 0 ? 0 : data.steps.length - 1)
-    : Math.max(0,Math.min(data.steps.length - 1,selected + delta));
+  const delta =
+    event.key === 'ArrowDown'
+      ? 1
+      : -1;
 
-  if (next !== selected) choose(next,true);
+  const next =
+    selected < 0
+      ? (delta > 0 ? 0 : data.steps.length - 1)
+      : Math.max(
+          0,
+          Math.min(
+            data.steps.length - 1,
+            selected + delta
+          )
+        );
+
+  if (next !== selected) {
+    choose(next,true);
+  }
 });
 
 function getSlotLayout(count) {
@@ -833,6 +908,7 @@ function getSlotLayout(count) {
       width,
       height,
       columns:1,
+      rows:1,
       positions:[[0,0]]
     };
   }
@@ -842,7 +918,11 @@ function getSlotLayout(count) {
       width,
       height,
       columns:2,
-      positions:[[0,0],[width+gap,0]]
+      rows:1,
+      positions:[
+        [0,0],
+        [width+gap,0]
+      ]
     };
   }
 
@@ -851,7 +931,12 @@ function getSlotLayout(count) {
       width,
       height,
       columns:2,
-      positions:[[width/2+gap/2,0],[0,height+gap],[width+gap,height+gap]]
+      rows:2,
+      positions:[
+        [width/2+gap/2,0],
+        [0,height+gap],
+        [width+gap,height+gap]
+      ]
     };
   }
 
@@ -859,6 +944,7 @@ function getSlotLayout(count) {
     width,
     height,
     columns:2,
+    rows:2,
     positions:[
       [0,0],
       [width+gap,0],
@@ -870,61 +956,82 @@ function getSlotLayout(count) {
 
 function slotMarkup(slot,index,layout) {
   const [x,y] = layout.positions[index];
+
   const occupied = slot.occupied;
-  const owner = occupied && slot.owner != null ? `p${slot.owner}` : '';
 
-  const industry = occupied
-    ? String(slot.industry || '').replace(/_/g,' ')
-    : '空置';
+  const owner =
+    occupied && slot.owner != null
+      ? `p${slot.owner}`
+      : '';
 
-  const level = occupied
-    ? `L${slot.level ?? '-'}`
-    : '';
+  const industry =
+    occupied
+      ? String(slot.industry || '').replace(/_/g,' ')
+      : '空置';
 
-  const resource = occupied
-    ? `资源 ${slot.resources ?? 0}`
-    : '';
+  const level =
+    occupied
+      ? `L${slot.level ?? '-'}`
+      : '';
 
-  const allowed = (slot.allowed || []).join(' / ');
+  const resource =
+    occupied
+      ? `资源 ${slot.resources ?? 0}`
+      : '';
+
+  const allowed =
+    (slot.allowed || []).join(' / ');
 
   return `
-    <g data-city-slot="${index}" transform="translate(${x},${y})">
+    <g
+      data-city-slot="${index}"
+      transform="translate(${x},${y})"
+    >
       <rect
         class="city-slot ${occupied ? 'occupied' : ''} ${owner}"
         width="${layout.width}"
         height="${layout.height}"
       />
+
       <text
         class="city-slot-title"
         x="${layout.width / 2}"
         y="13"
       >${esc(industry)}</text>
+
       ${occupied ? `
         <text
           class="city-slot-level"
           x="${layout.width / 2}"
           y="28"
         >${esc(level)}</text>
+
         <text
           class="city-slot-info"
           x="${layout.width / 2}"
           y="41"
         >${esc(resource)}</text>
       ` : ''}
-      <title>槽位 ${index + 1}（${esc(allowed)}）
+
+      <title>
+槽位 ${index + 1}（${esc(allowed)}）
 ${occupied
   ? `P${slot.owner} · ${slot.industry} · L${slot.level} · ${slot.flipped ? '已翻面' : '未翻面'} · 资源 ${slot.resources ?? 0}`
-  : '空置'}</title>
+  : '空置'}
+      </title>
     </g>
   `;
 }
 
 function routeKey(a,b) {
-  return a < b ? `${a}:${b}` : `${b}:${a}`;
+  return a < b
+    ? `${a}:${b}`
+    : `${b}:${a}`;
 }
 
 function routeGeometry(routes,index) {
   const r = routes[index];
+
   const a = POS[r.a];
   const b = POS[r.b];
 
@@ -934,17 +1041,24 @@ function routeGeometry(routes,index) {
   const [x2,y2] = b;
 
   const key = routeKey(r.a,r.b);
+
   const group = routes
     .map((x,i) => ({x,i}))
-    .filter(v => routeKey(v.x.a,v.x.b) === key);
+    .filter(v =>
+      routeKey(v.x.a,v.x.b) === key
+    );
 
-  const groupIndex = group.findIndex(v => v.i === index);
+  const groupIndex =
+    group.findIndex(v => v.i === index);
+
   const groupOffset =
     (groupIndex - (group.length - 1) / 2) * 12;
 
   const dx = x2 - x1;
   const dy = y2 - y1;
-  const len = Math.hypot(dx,dy) || 1;
+
+  const len =
+    Math.hypot(dx,dy) || 1;
 
   const nx = -dy / len;
   const ny = dx / len;
@@ -952,13 +1066,20 @@ function routeGeometry(routes,index) {
   const mx = (x1+x2)/2;
   const my = (y1+y2)/2;
 
-  const bend = groupOffset + 8;
+  const bend =
+    groupOffset + 8;
 
-  const cx = mx + nx * bend;
-  const cy = my + ny * bend;
+  const cx =
+    mx + nx * bend;
 
-  const px = (x1 + 2*cx + x2) / 4;
-  const py = (y1 + 2*cy + y2) / 4;
+  const cy =
+    my + ny * bend;
+
+  const px =
+    (x1 + 2*cx + x2) / 4;
+
+  const py =
+    (y1 + 2*cy + y2) / 4;
 
   return {
     d:`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`,
@@ -969,33 +1090,53 @@ function routeGeometry(routes,index) {
 
 function drawBoard(state) {
   const signature =
-    state.routes.map(r => `${r.a},${r.b},${r.canal ? 1 : 0},${r.rail ? 1 : 0}`).join('|') +
+    state.routes
+      .map(r =>
+        `${r.a},${r.b},${r.canal ? 1 : 0},${r.rail ? 1 : 0}`
+      )
+      .join('|') +
     '||' +
-    state.cities.map(c =>
-      `${c.id}:${c.name}:${(c.slots || []).length}`
-    ).join('|');
+    state.cities
+      .map(c =>
+        `${c.id}:${c.name}:${(c.slots || []).length}`
+      )
+      .join('|');
 
   const svg = q('#map');
 
   if (signature !== boardSignature) {
     boardSignature = signature;
 
-    const byId = Object.fromEntries(state.cities.map(c => [c.id,c]));
-    const cityName = id => byId[id]?.name || SPECIAL_NAMES[id] || '';
+    const byId =
+      Object.fromEntries(
+        state.cities.map(c => [c.id,c])
+      );
 
-    let out = '<rect width="1000" height="1000" fill="#edf3ef"/>';
+    const cityName =
+      id =>
+        byId[id]?.name ||
+        SPECIAL_NAMES[id] ||
+        '';
+
+    let out =
+      '<rect width="1000" height="1000" fill="#edf3ef"/>';
 
     for (const [index,r] of state.routes.entries()) {
-      const geometry = routeGeometry(state.routes,index);
+      const geometry =
+        routeGeometry(state.routes,index);
+
       if (!geometry) continue;
 
       const routeClass = [
         'route',
         r.canal ? 'cap-canal' : '',
         r.rail ? 'cap-rail' : ''
-      ].filter(Boolean).join(' ');
+      ]
+        .filter(Boolean)
+        .join(' ');
 
-      const title = `${cityName(r.a)} - ${cityName(r.b)}`;
+      const title =
+        `${cityName(r.a)} - ${cityName(r.b)}`;
 
       if (r.owner != null) {
         out += `
@@ -1033,35 +1174,79 @@ function drawBoard(state) {
 
     for (const c of state.cities) {
       const p = POS[c.id];
+
       if (!p) continue;
 
       const slots = c.slots || [];
       const layout = getSlotLayout(slots.length);
 
-      const totalWidth = layout.columns === 1
-        ? layout.width
-        : layout.width * 2 + 5;
+      const totalWidth =
+        layout.columns === 1
+          ? layout.width
+          : layout.width * 2 + 5;
 
-      const rows = slots.length <= 2 ? 1 : 2;
-      const totalHeight = rows === 1
-        ? layout.height
-        : layout.height * 2 + 5;
+      const totalHeight =
+        layout.rows === 1
+          ? layout.height
+          : layout.height * 2 + 5;
 
-      const startX = -totalWidth / 2;
-      const startY = 8;
+      const borderPaddingX = 12;
+      const borderPaddingY = 12;
+
+      const borderX =
+        -totalWidth / 2 - borderPaddingX;
+
+      const borderY =
+        -totalHeight / 2 - borderPaddingY;
+
+      const borderWidth =
+        totalWidth + borderPaddingX * 2;
+
+      const borderHeight =
+        totalHeight + borderPaddingY * 2;
+
+      const startX =
+        -totalWidth / 2;
+
+      const startY =
+        -totalHeight / 2;
 
       out += `
-        <g class="city" data-city="${c.id}" transform="translate(${p[0]},${p[1]})">
+        <g
+          class="city"
+          data-city="${c.id}"
+          transform="translate(${p[0]},${p[1]})"
+        >
+          <rect
+            class="city-boundary"
+            x="${borderX}"
+            y="${borderY}"
+            width="${borderWidth}"
+            height="${borderHeight}"
+          />
+
+          <rect
+            class="city-boundary-inner"
+            x="${borderX + 3}"
+            y="${borderY + 3}"
+            width="${borderWidth - 6}"
+            height="${borderHeight - 6}"
+          />
+
           <text
             class="city-name"
-            y="-${Math.round(totalHeight / 2 + 7)}"
+            y="${borderY - 7}"
           >${esc(c.name)}</text>
 
           <g
             class="city-slots"
             transform="translate(${startX},${startY})"
           >
-            ${slots.map((slot,index) => slotMarkup(slot,index,layout)).join('')}
+            ${slots
+              .map((slot,index) =>
+                slotMarkup(slot,index,layout)
+              )
+              .join('')}
           </g>
         </g>
       `;
@@ -1069,12 +1254,19 @@ function drawBoard(state) {
 
     for (const [id,name] of Object.entries(SPECIAL_NAMES)) {
       const p = POS[id];
+
       if (!p) continue;
 
       out += `
-        <g class="city" transform="translate(${p[0]},${p[1]})">
+        <g
+          class="city"
+          transform="translate(${p[0]},${p[1]})"
+        >
           <circle class="farm" r="10"/>
-          <text class="farm-name" y="-15">${esc(name)}</text>
+          <text
+            class="farm-name"
+            y="-15"
+          >${esc(name)}</text>
         </g>
       `;
     }
@@ -1083,13 +1275,27 @@ function drawBoard(state) {
   }
 
   for (const [index,r] of state.routes.entries()) {
-    const line = svg.querySelector(`[data-route="${index}"]`);
-    const underlay = svg.querySelector(`[data-route-underlay="${index}"]`);
-    const owner = svg.querySelector(`[data-route-owner="${index}"]`);
+    const line =
+      svg.querySelector(
+        `[data-route="${index}"]`
+      );
+
+    const underlay =
+      svg.querySelector(
+        `[data-route-underlay="${index}"]`
+      );
+
+    const owner =
+      svg.querySelector(
+        `[data-route-owner="${index}"]`
+      );
 
     if (!line) continue;
 
-    const ownerClass = r.owner != null ? `p${r.owner}` : '';
+    const ownerClass =
+      r.owner != null
+        ? `p${r.owner}`
+        : '';
 
     line.setAttribute(
       'class',
@@ -1099,46 +1305,66 @@ function drawBoard(state) {
         ownerClass,
         r.canal ? 'cap-canal' : '',
         r.rail ? 'cap-rail' : ''
-      ].filter(Boolean).join(' ')
+      ]
+        .filter(Boolean)
+        .join(' ')
     );
 
     if (r.owner != null) {
       if (!underlay) {
-        const geometry = routeGeometry(state.routes,index);
+        const geometry =
+          routeGeometry(state.routes,index);
 
         if (geometry) {
-          const underlayNode = document.createElementNS(
-            'http://www.w3.org/2000/svg',
-            'path'
+          const underlayNode =
+            document.createElementNS(
+              'http://www.w3.org/2000/svg',
+              'path'
+            );
+
+          underlayNode.setAttribute(
+            'class',
+            'route-underlay'
           );
 
-          underlayNode.setAttribute('class','route-underlay');
-          underlayNode.dataset.routeUnderlay = index;
-          underlayNode.setAttribute('d',geometry.d);
+          underlayNode.dataset.routeUnderlay =
+            index;
 
-          svg.insertBefore(underlayNode,line);
+          underlayNode.setAttribute(
+            'd',
+            geometry.d
+          );
+
+          svg.insertBefore(
+            underlayNode,
+            line
+          );
         }
       }
 
-      let currentOwner = svg.querySelector(
-        `[data-route-owner="${index}"]`
-      );
+      let currentOwner =
+        svg.querySelector(
+          `[data-route-owner="${index}"]`
+        );
 
       if (!currentOwner) {
-        const geometry = routeGeometry(state.routes,index);
+        const geometry =
+          routeGeometry(state.routes,index);
 
         if (geometry) {
-          currentOwner = document.createElementNS(
-            'http://www.w3.org/2000/svg',
-            'g'
-          );
+          currentOwner =
+            document.createElementNS(
+              'http://www.w3.org/2000/svg',
+              'g'
+            );
 
           currentOwner.setAttribute(
             'class',
             `route-owner p${r.owner}`
           );
 
-          currentOwner.dataset.routeOwner = index;
+          currentOwner.dataset.routeOwner =
+            index;
 
           currentOwner.setAttribute(
             'transform',
@@ -1153,7 +1379,8 @@ function drawBoard(state) {
       }
 
       if (currentOwner) {
-        const geometry = routeGeometry(state.routes,index);
+        const geometry =
+          routeGeometry(state.routes,index);
 
         currentOwner.setAttribute(
           'class',
@@ -1167,7 +1394,9 @@ function drawBoard(state) {
           );
         }
 
-        currentOwner.querySelector('text').textContent =
+        currentOwner
+          .querySelector('text')
+          .textContent =
           `P${r.owner}`;
       }
     } else {
@@ -1177,26 +1406,33 @@ function drawBoard(state) {
   }
 
   for (const c of state.cities) {
-    const city = svg.querySelector(`[data-city="${c.id}"]`);
+    const city =
+      svg.querySelector(
+        `[data-city="${c.id}"]`
+      );
+
     if (!city) continue;
 
     const slots = c.slots || [];
 
     slots.forEach((slot,index) => {
-      const node = city.querySelector(
-        `[data-city-slot="${index}"]`
-      );
+      const node =
+        city.querySelector(
+          `[data-city-slot="${index}"]`
+        );
 
       if (!node) return;
 
-      const occupied = slot.occupied;
+      const occupied =
+        slot.occupied;
 
       const ownerClass =
         occupied && slot.owner != null
           ? `p${slot.owner}`
           : '';
 
-      const rect = node.querySelector('.city-slot');
+      const rect =
+        node.querySelector('.city-slot');
 
       if (!rect) return;
 
@@ -1206,32 +1442,54 @@ function drawBoard(state) {
           'city-slot',
           occupied ? 'occupied' : '',
           ownerClass
-        ].filter(Boolean).join(' ')
+        ]
+          .filter(Boolean)
+          .join(' ')
       );
 
-      const title = node.querySelector('.city-slot-title');
-      const level = node.querySelector('.city-slot-level');
-      const info = node.querySelector('.city-slot-info');
+      const title =
+        node.querySelector(
+          '.city-slot-title'
+        );
+
+      const level =
+        node.querySelector(
+          '.city-slot-level'
+        );
+
+      const info =
+        node.querySelector(
+          '.city-slot-info'
+        );
 
       if (title) {
-        title.textContent = occupied
-          ? String(slot.industry || '').replace(/_/g,' ')
-          : String(slot.allowed || []).replace(/,/g,' / ') || '空置';
+        title.textContent =
+          occupied
+            ? String(
+                slot.industry || ''
+              ).replace(/_/g,' ')
+            : String(
+                slot.allowed || []
+              ).replace(/,/g,' / ') ||
+              '空置';
       }
 
       if (level) {
-        level.textContent = occupied
-          ? `L${slot.level ?? '-'}`
-          : '';
+        level.textContent =
+          occupied
+            ? `L${slot.level ?? '-'}`
+            : '';
       }
 
       if (info) {
-        info.textContent = occupied
-          ? `资源 ${slot.resources ?? 0}`
-          : '';
+        info.textContent =
+          occupied
+            ? `资源 ${slot.resources ?? 0}`
+            : '';
       }
 
-      const allowed = (slot.allowed || []).join(' / ');
+      const allowed =
+        (slot.allowed || []).join(' / ');
 
       node.querySelector('title').textContent =
         `槽位 ${index + 1}（${allowed}）\n` +
@@ -1247,59 +1505,72 @@ function drawBoard(state) {
 function renderTimeline() {
   const steps = q('#steps');
 
-  const signature = data.steps
-    .map((x,i) =>
-      `${i}|${x.kind}|${x.player}|${x.round}|${x.strategy}|${x.chosen}|${x.era_event || ''}`
-    )
-    .join('||');
+  const signature =
+    data.steps
+      .map((x,i) =>
+        `${i}|${x.kind}|${x.player}|${x.round}|${x.strategy}|${x.chosen}|${x.era_event || ''}`
+      )
+      .join('||');
 
   if (signature !== timelineSignature) {
     timelineSignature = signature;
 
-    steps.innerHTML = data.steps.map((x,i) => {
-      const eraEnd = x.kind === 'era_end';
-      const previous = data.steps[i - 1];
+    steps.innerHTML =
+      data.steps.map((x,i) => {
+        const eraEnd =
+          x.kind === 'era_end';
 
-      const roundChanged =
-        i > 0 &&
-        x.kind === 'action' &&
-        previous?.kind === 'action' &&
-        x.round !== previous.round;
+        const previous =
+          data.steps[i - 1];
 
-      const separator = roundChanged
-        ? `<div class="round-separator"><span>Round ${x.round}</span></div>`
-        : '';
+        const roundChanged =
+          i > 0 &&
+          x.kind === 'action' &&
+          previous?.kind === 'action' &&
+          x.round !== previous.round;
 
-      const label = eraEnd
-        ? (x.era_event === 'final-scoring'
-          ? '铁路时代最终结算'
-          : '运河时代结束')
-        : `<span class="step-player p${x.player}">P${x.player}</span> · ${esc(x.strategy)}`;
+        const separator =
+          roundChanged
+            ? `<div class="round-separator"><span>Round ${x.round}</span></div>`
+            : '';
 
-      const detail = eraEnd
-        ? '结算、清理与 VP 更新'
-        : esc(x.chosen);
+        const label =
+          eraEnd
+            ? (
+                x.era_event === 'final-scoring'
+                  ? '铁路时代最终结算'
+                  : '运河时代结束'
+              )
+            : `<span class="step-player p${x.player}">P${x.player}</span> · ${esc(x.strategy)}`;
 
-      return `
-        ${separator}
-        <button
-          class="step"
-          data-step-index="${i}"
-          onclick="choose(${i})"
-        >
-          ${i+1}. ${label}
-          <small>${detail}</small>
-        </button>
-      `;
-    }).join('');
+        const detail =
+          eraEnd
+            ? '结算、清理与 VP 更新'
+            : esc(x.chosen);
+
+        return `
+          ${separator}
+
+          <button
+            class="step"
+            data-step-index="${i}"
+            onclick="choose(${i})"
+          >
+            ${i+1}. ${label}
+            <small>${detail}</small>
+          </button>
+        `;
+      }).join('');
   }
 
-  steps.querySelectorAll('.step').forEach(button => {
-    button.classList.toggle(
-      'active',
-      Number(button.dataset.stepIndex) === selected
-    );
-  });
+  steps
+    .querySelectorAll('.step')
+    .forEach(button => {
+      button.classList.toggle(
+        'active',
+        Number(button.dataset.stepIndex) === selected
+      );
+    });
 }
 
 function render() {
@@ -1347,24 +1618,51 @@ function render() {
 
   q('#global').innerHTML = `
     <div class="stats">
-      <div class="stat"><b>${boardState.era.toUpperCase()}</b>时代</div>
-      <div class="stat"><b>${displayRound}</b>轮次</div>
-      <div class="stat"><b>P${state.current_player}</b>当前玩家</div>
-      <div class="stat"><b>${state.deck}</b>牌堆剩余</div>
-      <div class="stat"><b>${state.coal_market}</b>煤炭市场</div>
-      <div class="stat"><b>${state.iron_market}</b>铁市场</div>
+      <div class="stat">
+        <b>${boardState.era.toUpperCase()}</b>
+        时代
+      </div>
+
+      <div class="stat">
+        <b>${displayRound}</b>
+        轮次
+      </div>
+
+      <div class="stat">
+        <b>P${state.current_player}</b>
+        当前玩家
+      </div>
+
+      <div class="stat">
+        <b>${state.deck}</b>
+        牌堆剩余
+      </div>
+
+      <div class="stat">
+        <b>${state.coal_market}</b>
+        煤炭市场
+      </div>
+
+      <div class="stat">
+        <b>${state.iron_market}</b>
+        铁市场
+      </div>
     </div>
   `;
 
-  q('#players').innerHTML = state.players.map(p => `
-    <div class="player p${p.id}">
-      <strong>P${p.id}</strong>
-      &nbsp;$${p.money}
-      &nbsp;收入 ${p.income}
-      &nbsp;VP ${p.vp}
-      <div class="hand">${p.hand.map(esc).join(' · ')}</div>
-    </div>
-  `).join('');
+  q('#players').innerHTML =
+    state.players.map(p => `
+      <div class="player p${p.id}">
+        <strong>P${p.id}</strong>
+        &nbsp;$${p.money}
+        &nbsp;收入 ${p.income}
+        &nbsp;VP ${p.vp}
+
+        <div class="hand">
+          ${p.hand.map(esc).join(' · ')}
+        </div>
+      </div>
+    `).join('');
 
   drawBoard(boardState);
 
@@ -1394,6 +1692,7 @@ function render() {
 
 refresh().catch(error => {
   q('#detail').className = 'error';
+
   q('#detail').textContent =
     `Cannot connect: ${error.message}`;
 });
