@@ -132,6 +132,15 @@ h2 {
   text-overflow:ellipsis;
 }
 
+.step-player {
+  font-weight:700;
+}
+
+.step-player.p0 { color:var(--p0); }
+.step-player.p1 { color:var(--p1); }
+.step-player.p2 { color:var(--p2); }
+.step-player.p3 { color:var(--p3); }
+
 .board-head {
   display:flex;
   align-items:center;
@@ -911,7 +920,7 @@ function renderTimeline() {
       const eraEnd = x.kind === 'era_end';
       const label = eraEnd
         ? (x.era_event === 'final-scoring' ? '铁路时代最终结算' : '运河时代结束')
-        : `P${x.player} · ${esc(x.strategy)}`;
+        : `<span class="step-player p${x.player}">P${x.player}</span> · ${esc(x.strategy)}`;
       const detail = eraEnd ? '结算、清理与 VP 更新' : esc(x.chosen);
       return `
         <button class="step" data-step-index="${i}" onclick="choose(${i})">
