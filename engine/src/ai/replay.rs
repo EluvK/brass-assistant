@@ -267,6 +267,13 @@ pub struct RouteDto {
     pub kind: Option<String>,
 }
 #[derive(Debug, Clone, Serialize)]
+pub struct MerchantDto {
+    pub loc: usize,
+    pub name: String,
+    pub buys: String,
+    pub has_beer: bool,
+}
+#[derive(Debug, Clone, Serialize)]
 pub struct StateDto {
     pub era: String,
     pub round: u32,
@@ -281,6 +288,7 @@ pub struct StateDto {
     pub links: Vec<LinkDto>,
     pub cities: Vec<CityDto>,
     pub routes: Vec<RouteDto>,
+    pub merchants: Vec<MerchantDto>,
 }
 
 pub fn state_dto(state: &GameState) -> StateDto {
@@ -391,6 +399,20 @@ pub fn state_dto(state: &GameState) -> StateDto {
             }
         })
         .collect();
+    let merchants = state
+        .merchants
+        .iter()
+        .map(|merchant| MerchantDto {
+            loc: merchant.loc as usize,
+            name: merchant.loc.zh_name().into(),
+            buys: match merchant.buys {
+                crate::state::BuyType::Blank => "空置".into(),
+                crate::state::BuyType::Any => "任意产业".into(),
+                crate::state::BuyType::Industry(ind) => ind.name().into(),
+            },
+            has_beer: merchant.has_beer,
+        })
+        .collect();
     StateDto {
         era: match state.era {
             Era::Canal => "canal",
@@ -409,6 +431,7 @@ pub fn state_dto(state: &GameState) -> StateDto {
         links,
         cities,
         routes,
+        merchants,
     }
 }
 

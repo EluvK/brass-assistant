@@ -463,6 +463,17 @@ h2 {
   stroke-width:4px;
 }
 
+.merchant-site {
+  fill:#fff8e8;
+  stroke:#a4772b;
+  stroke-width:2;
+  rx:7;
+}
+
+.merchant-site.used { fill:#f1eeee; stroke:#8b7777; }
+.merchant-site-title { font-size:9px; font-weight:800; text-anchor:middle; }
+.merchant-site-info { font-size:8px; text-anchor:middle; }
+
 .stats {
   display:grid;
   grid-template-columns:1fr 1fr;
@@ -968,16 +979,18 @@ function effectTargets(step) {
 }
 
 document.addEventListener('keydown', event => {
-  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'w' && event.key !== 's') return;
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
   if (!data?.steps?.length) return;
 
   event.preventDefault();
 
   const delta =
-    event.key === 'ArrowDown'
+    event.key === 'ArrowDown' || event.key === 's'
       ? 1
-      : -1;
+      : event.key === 'ArrowUp' || event.key === 'w'
+      ? -1
+      : 0;
 
   const next =
     selected < 0
@@ -1197,6 +1210,10 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
       .map(c =>
         `${c.id}:${c.name}:${(c.slots || []).length}`
       )
+      .join('|') +
+    '||' +
+    (state.merchants || [])
+      .map(m => `${m.loc}:${m.buys}:${m.has_beer ? 1 : 0}`)
       .join('|');
 
   const svg = q('#map');
@@ -1354,6 +1371,9 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
 
       if (!p) continue;
 
+      const merchantEntries = Number(id) < 25
+        ? (state.merchants || []).filter(m => m.loc === Number(id))
+        : [];
       const farmIndex = id === '25' ? 0 : id === '26' ? 1 : -1;
       const farmTile = farmIndex >= 0
         ? state.tiles.find(t => t.place === `Farm #${farmIndex + 1}`)
@@ -1362,7 +1382,12 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
       const farmLabel = farmTile
         ? `${farmTile.industry} L${farmTile.level} · 资源${farmTile.resources}`
         : '空置';
-      const marker = farmIndex >= 0
+      const merchantMarker = merchantEntries.length
+        ? `<rect class="merchant-site ${merchantEntries.every(m => m.buys === '空置' || !m.has_beer) ? 'used' : ''}" x="-58" y="-25" width="116" height="50"/>
+           <text class="merchant-site-title" y="-10">${esc(name)}</text>
+           <text class="merchant-site-info" y="3">${esc(merchantEntries.map(m => m.buys).join(' / '))}</text>
+           <text class="merchant-site-info" y="15">${esc(merchantEntries.map(m => m.buys === '空置' ? '无啤酒' : m.has_beer ? '啤酒在' : '啤酒已用').join(' / '))}</text>`
+        : farmIndex >= 0
         ? `<rect class="${farmClass}" x="-48" y="-24" width="96" height="48"/>
            <text class="farm-site-title" y="-7">${esc(name)}</text>
            <text class="farm-site-info" y="9">${esc(farmLabel)}</text>`
@@ -1375,7 +1400,8 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
           data-farm="${esc(name)}"
           transform="translate(${p[0]},${p[1]})"
         >
-          ${marker}
+          ${merchantMarker}
+          ${merchantEntries.length ? `<title>${esc(merchantEntries.map(m => `${m.buys} · ${m.buys === '空置' ? '无啤酒' : m.has_beer ? '啤酒在' : '啤酒已用'}`).join('；'))}</title>` : ''}
         </g>
       `;
     }
@@ -1709,9 +1735,6 @@ function render() {
       ? detail
       : null;
 
-  // A selected step represents the decision point: show the state from which
-  // its legal actions were generated. The result remains available as
-  // `step.after` for era summaries and before/after comparisons.
   const state = step ? step.before : data.current;
 
   const boardState =
