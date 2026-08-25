@@ -402,6 +402,9 @@ pub struct EraScoreDto {
 pub struct ReplayStep {
     pub index: usize,
     pub kind: ReplayStepKind,
+    /// Round in which this replay event occurred. Actions belong to the
+    /// round in which they were chosen, before `advance_turn` updates state.
+    pub round: u32,
     pub player: usize,
     pub before: StateDto,
     pub after: StateDto,
@@ -496,6 +499,7 @@ impl ReplaySession {
         self.steps.push(ReplayStep {
             index: self.steps.len(),
             kind: ReplayStepKind::Action,
+            round: before.round,
             player,
             before,
             after,
@@ -531,6 +535,7 @@ impl ReplaySession {
             self.steps.push(ReplayStep {
                 index: self.steps.len(),
                 kind: ReplayStepKind::EraEnd,
+                round: before.round,
                 player,
                 before,
                 after,

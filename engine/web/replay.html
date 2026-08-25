@@ -141,6 +141,37 @@ h2 {
 .step-player.p2 { color:var(--p2); }
 .step-player.p3 { color:var(--p3); }
 
+.round-separator {
+  height:24px;
+  display:flex;
+  align-items:center;
+  gap:7px;
+  color:#82908e;
+  font-size:10px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+
+.round-separator::before,
+.round-separator::after {
+  content:"";
+  height:1px;
+  background:#c8d2cf;
+}
+
+.round-separator::before {
+  width:10px;
+}
+
+.round-separator::after {
+  flex:1;
+}
+
+.round-separator span {
+  white-space:nowrap;
+}
+
 .board-head {
   display:flex;
   align-items:center;
@@ -622,7 +653,7 @@ async function choose(i, focus = false) {
     q('#detail').className = 'error';
     q('#detail').textContent = `Cannot load step: ${error.message}`;
   } finally {
-    if (focus) q(`#steps .step:nth-child(${i + 1})`)?.focus();
+    if (focus) q(`#steps .step[data-step-index="${i}"]`)?.focus();
   }
 }
 
@@ -910,7 +941,7 @@ function renderTimeline() {
   const steps = q('#steps');
 
   const signature = data.steps
-    .map((x,i) => `${i}|${x.kind}|${x.player}|${x.strategy}|${x.chosen}|${x.era_event || ''}`)
+    .map((x,i) => `${i}|${x.kind}|${x.player}|${x.round}|${x.strategy}|${x.chosen}|${x.era_event || ''}`)
     .join('||');
 
   if (signature !== timelineSignature) {
@@ -918,11 +949,27 @@ function renderTimeline() {
 
     steps.innerHTML = data.steps.map((x,i) => {
       const eraEnd = x.kind === 'era_end';
+      const previous = data.steps[i - 1];
+      const roundChanged =
+        i > 0 &&
+        x.kind === 'action' &&
+        previous?.kind === 'action' &&
+        x.round !== previous.round;
+
+      const separator = roundChanged
+        ? `<div class="round-separator"><span>Round ${x.round}</span></div>`
+        : '';
+
       const label = eraEnd
         ? (x.era_event === 'final-scoring' ? '铁路时代最终结算' : '运河时代结束')
         : `<span class="step-player p${x.player}">P${x.player}</span> · ${esc(x.strategy)}`;
-      const detail = eraEnd ? '结算、清理与 VP 更新' : esc(x.chosen);
+
+      const detail = eraEnd
+        ? '结算、清理与 VP 更新'
+        : esc(x.chosen);
+
       return `
+        ${separator}
         <button class="step" data-step-index="${i}" onclick="choose(${i})">
           ${i+1}. ${label}
           <small>${detail}</small>
@@ -931,8 +978,11 @@ function renderTimeline() {
     }).join('');
   }
 
-  steps.querySelectorAll('.step').forEach((button,i) => {
-    button.classList.toggle('active',i === selected);
+  steps.querySelectorAll('.step').forEach(button => {
+    button.classList.toggle(
+      'active',
+      Number(button.dataset.stepIndex) === selected
+    );
   });
 }
 

@@ -27,6 +27,7 @@ struct ReplayStatus {
 struct ReplayStepSummary {
     index: usize,
     kind: ReplayStepKind,
+    round: u32,
     player: usize,
     chosen: String,
     result: String,
@@ -46,6 +47,7 @@ impl ReplayStatus {
                 .map(|step| ReplayStepSummary {
                     index: step.index,
                     kind: step.kind,
+                    round: step.round,
                     player: step.player,
                     chosen: step.chosen.clone(),
                     result: step.result.clone(),
