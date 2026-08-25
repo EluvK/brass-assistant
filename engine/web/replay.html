@@ -330,6 +330,45 @@ h2 {
   pointer-events:none;
 }
 
+.city-effect .city-boundary {
+  stroke:#d97706;
+  stroke-width:5;
+  filter:drop-shadow(0 0 5px rgba(217,119,6,.75));
+}
+
+.city-slot.effect-target {
+  stroke:#d97706 !important;
+  stroke-width:5 !important;
+  filter:drop-shadow(0 0 5px rgba(217,119,6,.75));
+}
+
+.farm-effect {
+  stroke:#d97706 !important;
+  stroke-width:5 !important;
+  filter:drop-shadow(0 0 5px rgba(217,119,6,.75));
+}
+
+.farm-site {
+  fill:#f5fbf7;
+  stroke:#65777a;
+  stroke-width:2;
+  rx:8;
+}
+
+.farm-site.occupied.p0 { stroke:var(--p0); }
+.farm-site.occupied.p1 { stroke:var(--p1); }
+.farm-site.occupied.p2 { stroke:var(--p2); }
+.farm-site.occupied.p3 { stroke:var(--p3); }
+.farm-site-title { font-size:9px; font-weight:700; text-anchor:middle; }
+.farm-site-info { font-size:8px; text-anchor:middle; }
+
+.route.effect-target {
+  stroke:#d97706 !important;
+  stroke-width:10 !important;
+  opacity:1 !important;
+  filter:drop-shadow(0 0 4px rgba(217,119,6,.8));
+}
+
 .city-boundary-inner {
   fill:none;
   stroke:rgba(255,255,255,.9);
@@ -452,6 +491,14 @@ h2 {
   display:inline-block;
   padding-left:7px;
   border-left:4px solid var(--p0);
+}
+
+.effect-line {
+  margin: 4px 0;
+  padding: 5px 8px;
+  border-left: 3px solid var(--teal);
+  background: #e8f4ef;
+  color: #24584d;
 }
 
 .player.p1 strong { border-color:var(--p1); }
@@ -584,6 +631,7 @@ tr.sel {
   <section class="panel actions">
     <h2>Legal Actions and Decision Evidence</h2>
     <div id="detail" class="muted">Select a generated step.</div>
+    <div id="effect" class="muted"></div>
     <table>
       <thead id="actions-head">
         <tr>
@@ -604,26 +652,26 @@ tr.sel {
 
 <script>
 const CITY_POS = {
-  Belper:[700,125],
-  Derby:[735,275],
-  Leek:[480,95],
-  StokeOnTrent:[320,155],
-  Stone:[235,260],
-  Uttoxeter:[465,275],
-  Stafford:[300,390],
-  BurtonOnTrent:[545,420],
-  Cannock:[380,500],
+  Belper:[700,60],
+  Derby:[735,240],
+  Leek:[480,40],
+  StokeOnTrent:[240,80],
+  Stone:[200,220],
+  Uttoxeter:[465,240],
+  Stafford:[280,340],
+  BurtonOnTrent:[600,390],
+  Cannock:[380,460],
   Tamworth:[680,545],
-  Walsall:[480,620],
-  Wolverhampton:[280,610],
-  Coalbrookdale:[170,600],
+  Walsall:[500,580],
+  Wolverhampton:[300,590],
+  Coalbrookdale:[130,600],
   Dudley:[350,730],
-  Kidderminster:[320,825],
-  Worcester:[300,930],
-  Birmingham:[520,750],
-  Coventry:[800,785],
+  Kidderminster:[160,805],
+  Worcester:[300,960],
+  Birmingham:[560,780],
+  Coventry:[800,865],
   Nuneaton:[800,650],
-  Redditch:[545,900]
+  Redditch:[545,960]
 };
 
 const CITY_KEYS = [
@@ -635,13 +683,13 @@ const CITY_KEYS = [
 ];
 
 const SPECIAL_POS = {
-  20:[45,610],
-  21:[475,950],
-  22:[745,900],
-  23:[225,105],
+  20:[5,610],
+  21:[400,1000],
+  22:[745,1000],
+  23:[80,65],
   24:[900,220],
   25:[250,485],
-  26:[230,850]
+  26:[180,900]
 };
 
 const SPECIAL_NAMES = {
@@ -870,6 +918,55 @@ function renderActions() {
   `).join('');
 }
 
+function stepEffects(step) {
+  if (!step || step.kind !== 'action') return [];
+  const beforeTiles = Object.fromEntries(step.before.tiles.map(t => [t.place, t]));
+  const afterTiles = Object.fromEntries(step.after.tiles.map(t => [t.place, t]));
+  const effects = [];
+  for (const [place, tile] of Object.entries(afterTiles)) {
+    const old = beforeTiles[place];
+    if (!old) effects.push(`建造：${place} · ${tile.industry} Lv${tile.level}`);
+    else if (old.flipped !== tile.flipped || old.level !== tile.level) {
+      effects.push(`产业变化：${place} · ${old.industry} → ${tile.industry} Lv${tile.level}${tile.flipped ? '（已翻面）' : ''}`);
+    }
+  }
+  for (const old of step.before.tiles) {
+    if (!afterTiles[old.place]) effects.push(`移除：${old.place} · ${old.industry}`);
+  }
+  const cityName = id => step.before.cities.find(c => c.id === id)?.name || `地点${id}`;
+  step.after.routes.forEach((route, i) => {
+    const old = step.before.routes[i];
+    if (old && old.owner == null && route.owner != null) {
+      effects.push(`铺设${route.kind === 'rail' ? '铁路' : '水路'}：${cityName(route.a)} ↔ ${cityName(route.b)}`);
+    }
+  });
+  return effects;
+}
+
+function effectTargets(step) {
+  const result = { slots:new Map(), farms:false, routes:new Set() };
+  if (!step || step.kind !== 'action') return result;
+  const beforeTiles = Object.fromEntries(step.before.tiles.map(t => [t.place, t]));
+  for (const tile of step.after.tiles) {
+    const old = beforeTiles[tile.place];
+    if (!old || old.flipped !== tile.flipped || old.level !== tile.level) {
+      if (tile.place.startsWith('Farm #')) result.farms = true;
+      else {
+        const match = tile.place.match(/^(.*) #(\d+)$/);
+        if (match) {
+          if (!result.slots.has(match[1])) result.slots.set(match[1], new Set());
+          result.slots.get(match[1]).add(Number(match[2]) - 1);
+        }
+      }
+    }
+  }
+  step.after.routes.forEach((route, i) => {
+    const old = step.before.routes[i];
+    if (old && old.owner == null && route.owner != null) result.routes.add(i);
+  });
+  return result;
+}
+
 document.addEventListener('keydown', event => {
   if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
@@ -1088,7 +1185,7 @@ function routeGeometry(routes,index) {
   };
 }
 
-function drawBoard(state) {
+function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new Set() }) {
   const signature =
     state.routes
       .map(r =>
@@ -1257,16 +1354,28 @@ function drawBoard(state) {
 
       if (!p) continue;
 
+      const farmIndex = id === '25' ? 0 : id === '26' ? 1 : -1;
+      const farmTile = farmIndex >= 0
+        ? state.tiles.find(t => t.place === `Farm #${farmIndex + 1}`)
+        : null;
+      const farmClass = farmTile ? `farm-site occupied p${farmTile.owner}` : 'farm-site';
+      const farmLabel = farmTile
+        ? `${farmTile.industry} L${farmTile.level} · 资源${farmTile.resources}`
+        : '空置';
+      const marker = farmIndex >= 0
+        ? `<rect class="${farmClass}" x="-48" y="-24" width="96" height="48"/>
+           <text class="farm-site-title" y="-7">${esc(name)}</text>
+           <text class="farm-site-info" y="9">${esc(farmLabel)}</text>`
+        : `<circle class="farm" r="10"/>
+           <text class="farm-name" y="-15">${esc(name)}</text>`;
+
       out += `
         <g
           class="city"
+          data-farm="${esc(name)}"
           transform="translate(${p[0]},${p[1]})"
         >
-          <circle class="farm" r="10"/>
-          <text
-            class="farm-name"
-            y="-15"
-          >${esc(name)}</text>
+          ${marker}
         </g>
       `;
     }
@@ -1500,6 +1609,25 @@ function drawBoard(state) {
         );
     });
   }
+
+  svg.querySelectorAll('.city-effect, .effect-target, .farm-effect').forEach(node => {
+    node.classList.remove('city-effect', 'effect-target', 'farm-effect');
+  });
+  state.cities.forEach(city => {
+    const slots = [...targets.slots.entries()]
+      .find(([name]) => name === city.name || name.startsWith(city.name) || city.name.startsWith(name))?.[1];
+    if (!slots) return;
+    const node = svg.querySelector(`[data-city="${city.id}"]`);
+    slots.forEach(index => {
+      node
+        ?.querySelector(`[data-city-slot="${index}"] .city-slot`)
+        ?.classList.add('effect-target');
+    });
+  });
+  if (targets.farms) svg.querySelectorAll('[data-farm] .farm-site').forEach(node => node.classList.add('farm-effect'));
+  targets.routes.forEach(index => {
+    svg.querySelector(`[data-route="${index}"]`)?.classList.add('effect-target');
+  });
 }
 
 function renderTimeline() {
@@ -1581,10 +1709,10 @@ function render() {
       ? detail
       : null;
 
-  const state =
-    step
-      ? step.after
-      : data.current;
+  // A selected step represents the decision point: show the state from which
+  // its legal actions were generated. The result remains available as
+  // `step.after` for era summaries and before/after comparisons.
+  const state = step ? step.before : data.current;
 
   const boardState =
     step?.kind === 'era_end'
@@ -1664,7 +1792,7 @@ function render() {
       </div>
     `).join('');
 
-  drawBoard(boardState);
+  drawBoard(boardState, effectTargets(step));
 
   q('#detail').className =
     data.failure
@@ -1686,6 +1814,10 @@ function render() {
           ? 'Loading step…'
           : 'Select a generated step.'
     );
+
+  q('#effect').innerHTML = stepEffects(step)
+    .map(effect => `<div class="effect-line">${esc(effect)}</div>`)
+    .join('');
 
   renderActions();
 }
