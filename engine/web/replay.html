@@ -1,0 +1,832 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Brass Replay</title>
+
+<style>
+:root {
+  --ink:#17252b;
+  --muted:#68767a;
+  --line:#c8d2cf;
+  --paper:#fbfcfa;
+  --paper2:#f1f6f3;
+  --teal:#174751;
+  --teal2:#225c65;
+  --accent:#1b806b;
+  --rail:#5f6b70;
+  --canal:#4b9aa1;
+  --p0:#c23b3b;
+  --p1:#3278b8;
+  --p2:#bd7b24;
+  --p3:#7356a5;
+}
+
+* { box-sizing:border-box; }
+
+body {
+  margin:0;
+  background:#e8eeeb;
+  color:var(--ink);
+  font:13px system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+
+.top {
+  height:58px;
+  padding:10px 18px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  background:var(--teal);
+  color:#fff;
+  box-shadow:0 1px 4px rgba(0,0,0,.2);
+}
+
+.top h1 {
+  margin:0 14px 0 0;
+  font-size:17px;
+  letter-spacing:.2px;
+}
+
+.top button {
+  padding:6px 11px;
+  border:1px solid #abc0c2;
+  border-radius:4px;
+  background:#fff;
+  color:var(--teal);
+  font-weight:600;
+  cursor:pointer;
+  transition:.12s;
+}
+
+.top button:hover {
+  background:#e8f1ef;
+  box-shadow:0 1px 3px rgba(0,0,0,.12);
+}
+
+.top button:active { transform:translateY(1px); }
+.top button:disabled { opacity:.55; cursor:not-allowed; box-shadow:none; }
+
+.meta {
+  margin-left:auto;
+  color:#d5e3e0;
+  font-size:12px;
+}
+
+.layout {
+  display:grid;
+  grid-template-columns:220px 180px minmax(500px,1.35fr) minmax(380px,1fr);
+  grid-template-rows:minmax(0,1fr);
+  height:calc(100vh - 58px);
+  gap:1px;
+  background:#b8c4c0;
+}
+
+.panel {
+  padding:12px;
+  overflow:auto;
+  background:var(--paper);
+}
+
+.timeline { grid-column:1; }
+.right { grid-column:2; }
+.board { grid-column:3; padding:14px; overflow:hidden; }
+.actions { grid-column:4; }
+
+h2 {
+  margin:0 0 10px;
+  color:#40565a;
+  font-size:13px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+
+.step {
+  width:100%;
+  padding:9px 8px;
+  text-align:left;
+  border:0;
+  border-bottom:1px solid #dce4e1;
+  background:transparent;
+  color:var(--ink);
+  cursor:pointer;
+}
+
+.step:hover { background:#f0f6f3; }
+
+.step:focus-visible {
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+}
+
+.step.active {
+  padding-left:5px;
+  border-left:3px solid var(--accent);
+  background:#dcefe7;
+}
+
+.step small {
+  display:block;
+  margin-top:3px;
+  overflow:hidden;
+  color:var(--muted);
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+
+.board-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:7px;
+}
+
+.legend {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:10px;
+  color:var(--muted);
+  font-size:11px;
+}
+
+.legend i {
+  display:inline-block;
+  width:20px;
+  margin-right:3px;
+  border-top:3px solid var(--rail);
+  vertical-align:middle;
+}
+
+.legend i.canal {
+  border-color:var(--canal);
+  border-top-style:dashed;
+}
+
+.legend i.rail { border-color:var(--rail); }
+
+.player-key { font-weight:700; }
+.player-key.p0 { color:var(--p0); }
+.player-key.p1 { color:var(--p1); }
+.player-key.p2 { color:var(--p2); }
+.player-key.p3 { color:var(--p3); }
+
+.map-wrap {
+  height:calc(100% - 30px);
+  min-height:360px;
+  overflow:hidden;
+  border:1px solid var(--line);
+  background:#edf3ef;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.55),0 1px 3px rgba(30,50,50,.08);
+}
+
+.map {
+  display:block;
+  width:100%;
+  height:100%;
+  min-width:560px;
+}
+
+.route-underlay {
+  fill:none;
+  stroke:#26373b;
+  stroke-width:12;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  opacity:.78;
+  pointer-events:none;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.25));
+}
+
+.route {
+  fill:none;
+  stroke:#9aa8a5;
+  stroke-width:3;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  opacity:.48;
+  pointer-events:stroke;
+  transition:stroke-width .12s,opacity .12s;
+}
+
+.route.cap-canal { stroke-dasharray:10 7; }
+.route.cap-rail { stroke-dasharray:none; }
+
+.route.used {
+  stroke-width:8;
+  opacity:1;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.38));
+}
+
+.route.used.cap-canal { stroke-dasharray:11 7; }
+.route.used.cap-rail { stroke-dasharray:none; }
+
+.route.p0 { stroke:var(--p0); }
+.route.p1 { stroke:var(--p1); }
+.route.p2 { stroke:var(--p2); }
+.route.p3 { stroke:var(--p3); }
+
+.route-owner { pointer-events:none; }
+
+.route-owner circle {
+  stroke:#fff;
+  stroke-width:2;
+  filter:drop-shadow(0 1px 2px rgba(0,0,0,.5));
+}
+
+.route-owner text {
+  fill:#fff;
+  font-size:9px;
+  font-weight:800;
+  text-anchor:middle;
+  dominant-baseline:middle;
+  paint-order:stroke;
+  stroke:rgba(0,0,0,.35);
+  stroke-width:2px;
+}
+
+.route-owner.p0 circle { fill:var(--p0); }
+.route-owner.p1 circle { fill:var(--p1); }
+.route-owner.p2 circle { fill:var(--p2); }
+.route-owner.p3 circle { fill:var(--p3); }
+
+.city { cursor:default; }
+
+.city circle {
+  fill:#fff;
+  stroke:#52676a;
+  stroke-width:2;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.2));
+}
+
+.city text {
+  fill:var(--ink);
+  font-size:10px;
+  font-weight:600;
+  paint-order:stroke;
+  stroke:#edf3ef;
+  stroke-width:4px;
+  stroke-linejoin:round;
+}
+
+.city .badge {
+  fill:var(--muted);
+  font-size:9px;
+  font-weight:500;
+  stroke-width:3px;
+}
+
+.city.current circle {
+  stroke:var(--accent);
+  stroke-width:4;
+}
+
+.farm {
+  fill:#d9e7df;
+  stroke:#658478;
+  stroke-width:2;
+  stroke-dasharray:4 3;
+}
+
+.stats {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:6px;
+  margin-bottom:12px;
+}
+
+.stat {
+  padding:7px;
+  border:1px solid var(--line);
+  border-radius:3px;
+  background:#f4f8f5;
+}
+
+.stat b {
+  display:block;
+  font-size:16px;
+}
+
+.player {
+  padding:8px 0;
+  border-top:1px solid #dce4e1;
+}
+
+.player strong {
+  display:inline-block;
+  padding-left:7px;
+  border-left:4px solid var(--p0);
+}
+
+.player.p1 strong { border-color:var(--p1); }
+.player.p2 strong { border-color:var(--p2); }
+.player.p3 strong { border-color:var(--p3); }
+
+.hand {
+  margin-top:4px;
+  color:var(--muted);
+  font-size:11px;
+  line-height:1.5;
+}
+
+table {
+  width:100%;
+  border-collapse:collapse;
+  font-size:12px;
+}
+
+td,th {
+  padding:6px;
+  border-bottom:1px solid #d9e0dd;
+  text-align:left;
+  vertical-align:top;
+}
+
+th {
+  position:sticky;
+  top:0;
+  z-index:1;
+  background:#f1f6f3;
+  color:#486066;
+}
+
+th.sortable {
+  cursor:pointer;
+  user-select:none;
+  white-space:nowrap;
+}
+
+th.sortable:hover {
+  background:#e5efeb;
+  color:var(--teal);
+}
+
+th.sortable .sort-icon {
+  display:inline-block;
+  width:12px;
+  margin-left:3px;
+  color:var(--accent);
+  font-size:11px;
+}
+
+tr.sel { background:#dcefe7; }
+
+.canonical {
+  max-width:340px;
+  color:#617176;
+  font-family:ui-monospace,Consolas,monospace;
+  font-size:10px;
+  word-break:break-all;
+}
+
+.muted { color:var(--muted); }
+
+.error {
+  padding:7px;
+  margin-bottom:8px;
+  border:1px solid #f0c5c2;
+  border-radius:3px;
+  background:#fff0ef;
+  color:#a72828;
+}
+</style>
+
+<div class="top">
+  <h1>Brass Replay</h1>
+  <button id="step" onclick="one()">Step</button>
+  <button id="run" onclick="toggle()">Run</button>
+  <button onclick="pause();refresh()">Pause / Refresh</button>
+  <span id="meta" class="meta"></span>
+</div>
+
+<main class="layout">
+  <aside class="panel timeline">
+    <h2>Timeline</h2>
+    <div id="steps"></div>
+  </aside>
+
+  <aside class="panel right">
+    <h2>Global / Players</h2>
+    <div id="global"></div>
+    <div id="players"></div>
+  </aside>
+
+  <section class="panel board">
+    <div class="board-head">
+      <h2>Board</h2>
+      <div class="legend">
+        <span><i></i>route</span>
+        <span><i class="canal"></i>canal</span>
+        <span><i class="rail"></i>rail</span>
+        <span class="player-key p0">● P0</span>
+        <span class="player-key p1">● P1</span>
+        <span class="player-key p2">● P2</span>
+        <span class="player-key p3">● P3</span>
+      </div>
+    </div>
+
+    <div class="map-wrap">
+      <svg id="map" class="map" viewBox="0 0 900 1000" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+  </section>
+
+  <section class="panel actions">
+    <h2>Legal Actions and Decision Evidence</h2>
+    <div id="detail" class="muted">Select a generated step.</div>
+    <table>
+      <thead>
+        <tr>
+          <th class="sortable" onclick="sortActions('action')">
+            Action<span id="sort-action" class="sort-icon"></span>
+          </th>
+          <th>Canonical</th>
+          <th class="sortable" onclick="sortActions('score')">
+            Strategy score<span id="sort-score" class="sort-icon"></span>
+          </th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="actions"></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const CITY_POS = {
+  Belper:[646,95],
+  Derby:[650,250],
+  Leek:[380,85],
+  StokeOnTrent:[288,145],
+  Stone:[212,255],
+  Uttoxeter:[400,240],
+  Stafford:[270,350],
+  BurtonOnTrent:[475,390],
+  Cannock:[330,460],
+  Tamworth:[590,510],
+  Walsall:[465,580],
+  Wolverhampton:[250,570],
+  Coalbrookdale:[150,575],
+  Dudley:[295,675],
+  Kidderminster:[265,775],
+  Worcester:[250,910],
+  Birmingham:[450,700],
+  Coventry:[680,740],
+  Nuneaton:[680,630],
+  Redditch:[405,850]
+};
+
+const CITY_KEYS = [
+  'Belper','Derby','Leek','StokeOnTrent','Stone',
+  'Uttoxeter','Stafford','BurtonOnTrent','Cannock',
+  'Tamworth','Walsall','Wolverhampton','Coalbrookdale',
+  'Dudley','Kidderminster','Worcester','Birmingham',
+  'Coventry','Nuneaton','Redditch'
+];
+
+const SPECIAL_POS = {
+  20:[35,570],
+  21:[400,945],
+  22:[630,855],
+  23:[187,125],
+  24:[785,205],
+  25:[215,450],
+  26:[175,850]
+};
+
+const SPECIAL_NAMES = {
+  20:'Shrewsbury',
+  21:'Gloucester',
+  22:'Oxford',
+  23:'Warrington',
+  24:'Nottingham',
+  25:'北部农场',
+  26:'南部农场'
+};
+
+const POS = {
+  ...Object.fromEntries(CITY_KEYS.map(k => [CITY_KEYS.indexOf(k),CITY_POS[k]])),
+  ...SPECIAL_POS
+};
+
+let data;
+let selected = -1;
+let detail = null;
+let running = false;
+let stepInFlight = false;
+let runTimer = 0;
+let sortColumn = null;
+let sortDirection = 1;
+
+const q = s => document.querySelector(s);
+
+const esc = s => String(s).replace(/[&<>"']/g,m => ({
+  '&':'&amp;',
+  '<':'&lt;',
+  '>':'&gt;',
+  '"':'&quot;',
+  "'":'&#39;'
+}[m]));
+
+const wait = ms => new Promise(resolve => setTimeout(resolve,ms));
+
+async function refresh() {
+  const response = await fetch('/api/status');
+  if (!response.ok) throw new Error(`status ${response.status}`);
+  data = await response.json();
+  render();
+}
+
+async function one() {
+  if (stepInFlight || data?.failure || data?.complete) return;
+
+  stepInFlight = true;
+  render();
+
+  try {
+    const response = await fetch('/api/step',{method:'POST'});
+
+    if (response.status === 409) {
+      data = await response.json();
+      return;
+    }
+
+    if (response.status !== 202) {
+      throw new Error(`step ${response.status}`);
+    }
+
+    await wait(30);
+
+    do {
+      await refresh();
+      if (data.busy) await wait(80);
+    } while (data.busy);
+
+  } catch (error) {
+    q('#detail').className = 'error';
+    q('#detail').textContent = `Request failed: ${error.message}`;
+  } finally {
+    stepInFlight = false;
+    render();
+  }
+}
+
+function pause() {
+  running = false;
+  clearTimeout(runTimer);
+  q('#run').textContent = 'Run';
+}
+
+async function runNext() {
+  if (!running) return;
+
+  await one();
+
+  if (running && !data?.failure && !data?.complete) {
+    runTimer = setTimeout(runNext,350);
+  } else {
+    pause();
+  }
+}
+
+function toggle() {
+  if (running) {
+    pause();
+    return;
+  }
+
+  running = true;
+  q('#run').textContent = 'Pause';
+  runNext();
+}
+
+async function choose(i, focus = false) {
+  selected = i;
+  detail = null;
+  render();
+
+  try {
+    const response = await fetch(`/api/steps/${i}`);
+    if (!response.ok) throw new Error(`step ${response.status}`);
+    detail = await response.json();
+    render();
+  } catch (error) {
+    q('#detail').className = 'error';
+    q('#detail').textContent = `Cannot load step: ${error.message}`;
+  } finally {
+    if (focus) q(`#steps .step:nth-child(${i + 1})`)?.focus();
+  }
+}
+
+function sortActions(column) {
+  if (!detail?.legal_actions?.length) return;
+
+  if (sortColumn === column) {
+    sortDirection *= -1;
+  } else {
+    sortColumn = column;
+    sortDirection = column === 'score' ? -1 : 1;
+  }
+
+  renderActions();
+}
+
+function renderActions() {
+  const actions = detail?.legal_actions || [];
+  const sorted = [...actions];
+
+  if (sortColumn === 'action') {
+    sorted.sort((a,b) => {
+      const av = String(a.description || '');
+      const bv = String(b.description || '');
+      return av.localeCompare(bv,undefined,{numeric:true,sensitivity:'base'}) * sortDirection;
+    });
+  }
+
+  if (sortColumn === 'score') {
+    sorted.sort((a,b) => {
+      const aValid = typeof a.score === 'number' && Number.isFinite(a.score);
+      const bValid = typeof b.score === 'number' && Number.isFinite(b.score);
+
+      if (aValid !== bValid) return aValid ? -1 : 1;
+      if (!aValid) return 0;
+
+      return (a.score - b.score) * sortDirection;
+    });
+  }
+
+  q('#sort-action').textContent =
+    sortColumn === 'action' ? (sortDirection > 0 ? '↑' : '↓') : '';
+
+  q('#sort-score').textContent =
+    sortColumn === 'score' ? (sortDirection > 0 ? '↑' : '↓') : '';
+
+  q('#actions').innerHTML = sorted.map(a => `
+    <tr class="${a.selected ? 'sel' : ''}">
+      <td>${esc(a.description)}</td>
+      <td class="canonical">${esc(a.canonical)}</td>
+      <td>${a.score ?? 'not evaluated'}</td>
+      <td>${a.selected ? 'selected' : esc(a.note || '')}</td>
+    </tr>
+  `).join('');
+}
+
+document.addEventListener('keydown', event => {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+  if (!data?.steps?.length) return;
+
+  event.preventDefault();
+
+  const delta = event.key === 'ArrowDown' ? 1 : -1;
+  const next = selected < 0
+    ? (delta > 0 ? 0 : data.steps.length - 1)
+    : Math.max(0,Math.min(data.steps.length - 1,selected + delta));
+
+  if (next !== selected) choose(next,true);
+});
+
+function drawBoard(state) {
+  const svg = q('#map');
+  const byId = Object.fromEntries(state.cities.map(c => [c.id,c]));
+  const cityName = id => byId[id]?.name || SPECIAL_NAMES[id] || '';
+
+  let out = '<rect width="900" height="1000" fill="#edf3ef"/>';
+
+  for (const r of state.routes) {
+    const a = POS[r.a];
+    const b = POS[r.b];
+    if (!a || !b) continue;
+
+    const [x1,y1] = a;
+    const [x2,y2] = b;
+    const mx = (x1+x2)/2;
+    const my = (y1+y2)/2;
+    const dx = x2-x1;
+    const dy = y2-y1;
+    const len = Math.hypot(dx,dy) || 1;
+    const offset = 13;
+    const ox = -dy / len * offset;
+    const oy = dx / len * offset;
+
+    const ownerClass = r.owner != null ? `p${r.owner}` : '';
+    const routeClass = [
+      'route',
+      r.owner != null ? 'used' : '',
+      ownerClass,
+      r.canal ? 'cap-canal' : '',
+      r.rail ? 'cap-rail' : ''
+    ].filter(Boolean).join(' ');
+
+    const title = `${cityName(r.a)} - ${cityName(r.b)} | ${
+      r.owner == null ? '未铺设' : `P${r.owner} 建造 · ${r.kind}`
+    }`;
+
+    if (r.owner != null) {
+      out += `<line class="route-underlay" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+    }
+
+    out += `
+      <line class="${routeClass}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">
+        <title>${esc(title)}</title>
+      </line>
+    `;
+
+    if (r.owner != null) {
+      out += `
+        <g class="route-owner ${ownerClass}" transform="translate(${mx+ox},${my+oy})">
+          <circle r="10"/>
+          <text>P${r.owner}</text>
+        </g>
+      `;
+    }
+  }
+
+  for (const c of state.cities) {
+    const p = POS[c.id];
+    if (!p) continue;
+
+    const count = state.tiles.filter(t => t.place.startsWith(c.name+' #')).length;
+
+    out += `
+      <g class="city" transform="translate(${p[0]},${p[1]})">
+        <circle r="15"/>
+        <text text-anchor="middle" y="-21">${esc(c.name)}</text>
+        <text class="badge" text-anchor="middle" y="4">${count ? '◆ '+count : '○'}</text>
+      </g>
+    `;
+  }
+
+  for (const [id,name] of Object.entries(SPECIAL_NAMES)) {
+    const p = POS[id];
+    if (!p) continue;
+
+    out += `
+      <g class="city" transform="translate(${p[0]},${p[1]})">
+        <circle class="farm" r="11"/>
+        <text text-anchor="middle" y="-16">${esc(name)}</text>
+      </g>
+    `;
+  }
+
+  svg.innerHTML = out;
+}
+
+function render() {
+  if (!data) return;
+
+  const step = detail && detail.index === selected ? detail : null;
+  const state = step ? step.after : data.current;
+
+  q('#meta').textContent =
+    `seed ${data.seed} · ${data.strategies.join(', ')}` +
+    (data.busy ? ' · thinking…' : '') +
+    (data.failure ? ' · '+data.failure : data.complete ? ' · complete' : '');
+
+  q('#step').disabled =
+    stepInFlight || data.busy || data.complete || Boolean(data.failure);
+
+  q('#steps').innerHTML = data.steps.map((x,i) => `
+    <button class="step ${i === selected ? 'active' : ''}" onclick="choose(${i})">
+      ${i+1}. P${x.player} · ${esc(x.strategy)}
+      <small>${esc(x.chosen)}</small>
+    </button>
+  `).join('');
+
+  q('#global').innerHTML = `
+    <div class="stats">
+      <div class="stat"><b>${state.era.toUpperCase()}</b>时代</div>
+      <div class="stat"><b>${state.round}</b>轮次</div>
+      <div class="stat"><b>P${state.current_player}</b>当前玩家</div>
+      <div class="stat"><b>${state.deck}</b>牌堆剩余</div>
+      <div class="stat"><b>${state.coal_market}</b>煤炭市场</div>
+      <div class="stat"><b>${state.iron_market}</b>铁市场</div>
+    </div>
+  `;
+
+  q('#players').innerHTML = state.players.map(p => `
+    <div class="player p${p.id}">
+      <strong>P${p.id}</strong>
+      &nbsp;$${p.money}
+      &nbsp;收入 ${p.income}
+      &nbsp;VP ${p.vp}
+      <div class="hand">${p.hand.map(esc).join(' · ')}</div>
+    </div>
+  `).join('');
+
+  drawBoard(state);
+
+  q('#detail').className = data.failure ? 'error' : 'muted';
+  q('#detail').textContent =
+    data.failure ||
+    (step
+      ? `${step.trace.evidence_kind} · ${step.result}${step.era_event ? ' · '+step.era_event : ''}`
+      : selected >= 0
+        ? 'Loading step…'
+        : 'Select a generated step.');
+
+  renderActions();
+}
+
+refresh().catch(error => {
+  q('#detail').className = 'error';
+  q('#detail').textContent = `Cannot connect: ${error.message}`;
+});
+</script>
