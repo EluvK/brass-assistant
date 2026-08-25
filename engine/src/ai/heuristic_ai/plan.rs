@@ -49,14 +49,14 @@ pub fn era_profile(state: &GameState) -> EraProfile {
             phase,
             income_w: super::BASE_INCOME_WEIGHT * (1.2 + 0.5 * frac),
             money_w: super::BASE_MONEY_WEIGHT * 0.8,
-            network_w: 1.35,
+            network_w: 1.6,
             alpha: 0.6,
         },
         Phase::RailLate => EraProfile {
             phase,
             income_w: 0.0,
             money_w: 0.2,
-            network_w: 1.0,
+            network_w: 1.4,
             alpha: 0.35,
         },
     }

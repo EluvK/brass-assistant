@@ -169,7 +169,7 @@ fn score_network_candidate(
     let vp_potential = link_vp_potential(state, pid, cities);
     let potential_link_vp = potential_link_vps(state, pid, conn_id, cities);
     let hub_bonus = if state.era == Era::Rail {
-        vp_potential * 0.08 + potential_link_vp * 0.2
+        vp_potential * 0.12 + potential_link_vp * 0.6
     } else {
         vp_potential * 0.04 + potential_link_vp * 0.1
     };
@@ -194,7 +194,7 @@ fn score_network_candidate(
     let over_networking_penalty = if productive <= 0.0 {
         (links_built as f64 - 1.0).max(0.0) * 1.2
     } else {
-        (links_built as f64 - 2.0 * productive - 1.0).max(0.0) * 0.6
+        (links_built as f64 - 2.0 * productive - 1.0).max(0.0) * 0.2
     };
     let exploration_bonus = (1.6 - links_built as f64 * 0.3).max(0.0);
 
