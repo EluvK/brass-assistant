@@ -8,7 +8,7 @@ use crate::bridge::move_codec;
 use crate::data::Era;
 use crate::engine::{TurnResult, advance_turn, handle_turn_result};
 use crate::heuristic_ai;
-use crate::map::{ALL_LOCATIONS, CITY_COUNT, connections};
+use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots, connections};
 use crate::mcts_ai::{self, MctsConfig};
 use crate::random_ai;
 use crate::rules::{Move, apply_move, legal_moves};
@@ -239,9 +239,21 @@ pub struct LinkDto {
     pub kind: String,
 }
 #[derive(Debug, Clone, Serialize)]
+pub struct CitySlotDto {
+    pub index: usize,
+    pub allowed: Vec<String>,
+    pub occupied: bool,
+    pub owner: Option<usize>,
+    pub industry: Option<String>,
+    pub level: Option<u8>,
+    pub flipped: Option<bool>,
+    pub resources: Option<u8>,
+}
+#[derive(Debug, Clone, Serialize)]
 pub struct CityDto {
     pub id: usize,
     pub name: String,
+    pub slots: Vec<CitySlotDto>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct RouteDto {
@@ -337,6 +349,24 @@ pub fn state_dto(state: &GameState) -> StateDto {
         .map(|(id, loc)| CityDto {
             id,
             name: loc.name().into(),
+            slots: city_slots(*loc)
+                .iter()
+                .enumerate()
+                .map(|(slot, allowed)| {
+                    let key = crate::game_state::state::city_slot_offsets()[id] + slot;
+                    let tile = state.city_tiles[key].as_ref();
+                    CitySlotDto {
+                        index: slot,
+                        allowed: allowed.iter().map(|ind| ind.name().into()).collect(),
+                        occupied: tile.is_some(),
+                        owner: tile.map(|t| t.player),
+                        industry: tile.map(|t| t.ind.name().into()),
+                        level: tile.map(|t| t.def.level),
+                        flipped: tile.map(|t| t.flipped),
+                        resources: tile.map(|t| t.resource_cubes),
+                    }
+                })
+                .collect(),
         })
         .collect();
     let routes = connections()
@@ -638,6 +668,24 @@ mod tests {
                 assert_eq!(step.before.round + 1, step.after.round);
                 break;
             }
+        }
+    }
+
+    #[test]
+    fn city_dto_exposes_every_slot_and_occupancy() {
+        let state = GameState::new(ChaCha12Rng::seed_from_u64(7), 2);
+        let dto = state_dto(&state);
+        assert_eq!(dto.cities.len(), CITY_COUNT);
+        for city in &dto.cities {
+            assert_eq!(city.slots.len(), city_slots(ALL_LOCATIONS[city.id]).len());
+            assert!(city.slots.iter().all(|slot| {
+                !slot.occupied
+                    && slot.owner.is_none()
+                    && slot.industry.is_none()
+                    && slot.level.is_none()
+                    && slot.flipped.is_none()
+                    && slot.resources.is_none()
+            }));
         }
     }
 }

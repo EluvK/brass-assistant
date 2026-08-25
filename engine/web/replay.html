@@ -73,7 +73,7 @@ body {
 
 .layout {
   display:grid;
-  grid-template-columns:220px 180px minmax(500px,1.35fr) minmax(380px,1fr);
+  grid-template-columns:200px 165px minmax(560px,1.7fr) minmax(340px,.95fr);
   grid-template-rows:minmax(0,1fr);
   height:calc(100vh - 58px);
   gap:1px;
@@ -88,7 +88,13 @@ body {
 
 .timeline { grid-column:1; }
 .right { grid-column:2; }
-.board { grid-column:3; padding:14px; overflow:hidden; }
+.board {
+  grid-column:3;
+  padding:12px;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
 .actions { grid-column:4; }
 
 h2 {
@@ -160,37 +166,33 @@ h2 {
   background:#c8d2cf;
 }
 
-.round-separator::before {
-  width:10px;
-}
+.round-separator::before { width:10px; }
+.round-separator::after { flex:1; }
 
-.round-separator::after {
-  flex:1;
-}
-
-.round-separator span {
-  white-space:nowrap;
-}
+.round-separator span { white-space:nowrap; }
 
 .board-head {
   display:flex;
   align-items:center;
   justify-content:space-between;
+  gap:12px;
   margin-bottom:7px;
+  flex-shrink:0;
 }
 
 .legend {
   display:flex;
   align-items:center;
+  justify-content:flex-end;
   flex-wrap:wrap;
-  gap:10px;
+  gap:8px;
   color:var(--muted);
-  font-size:11px;
+  font-size:10px;
 }
 
 .legend i {
   display:inline-block;
-  width:20px;
+  width:18px;
   margin-right:3px;
   border-top:3px solid var(--rail);
   vertical-align:middle;
@@ -210,36 +212,41 @@ h2 {
 .player-key.p3 { color:var(--p3); }
 
 .map-wrap {
-  height:calc(100% - 30px);
-  min-height:360px;
+  position:relative;
+  flex:1;
+  min-height:0;
   overflow:hidden;
   border:1px solid var(--line);
   background:#edf3ef;
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.55),0 1px 3px rgba(30,50,50,.08);
+  display:flex;
+  align-items:center;
+  justify-content:center;
 }
 
 .map {
   display:block;
   width:100%;
   height:100%;
-  min-width:560px;
+  min-width:0;
+  min-height:0;
 }
 
 .route-underlay {
   fill:none;
   stroke:#26373b;
-  stroke-width:12;
+  stroke-width:10;
   stroke-linecap:round;
   stroke-linejoin:round;
-  opacity:.78;
+  opacity:.72;
   pointer-events:none;
   filter:drop-shadow(0 1px 1px rgba(0,0,0,.25));
 }
 
 .route {
   fill:none;
-  stroke:#9aa8a5;
-  stroke-width:3;
+  stroke:#8e9d9a;
+  stroke-width:2.6;
   stroke-linecap:round;
   stroke-linejoin:round;
   opacity:.48;
@@ -247,16 +254,16 @@ h2 {
   transition:stroke-width .12s,opacity .12s;
 }
 
-.route.cap-canal { stroke-dasharray:10 7; }
+.route.cap-canal { stroke-dasharray:9 6; }
 .route.cap-rail { stroke-dasharray:none; }
 
 .route.used {
-  stroke-width:8;
+  stroke-width:6;
   opacity:1;
   filter:drop-shadow(0 1px 1px rgba(0,0,0,.38));
 }
 
-.route.used.cap-canal { stroke-dasharray:11 7; }
+.route.used.cap-canal { stroke-dasharray:10 6; }
 .route.used.cap-rail { stroke-dasharray:none; }
 
 .route.p0 { stroke:var(--p0); }
@@ -274,7 +281,7 @@ h2 {
 
 .route-owner text {
   fill:#fff;
-  font-size:9px;
+  font-size:8px;
   font-weight:800;
   text-anchor:middle;
   dominant-baseline:middle;
@@ -288,35 +295,77 @@ h2 {
 .route-owner.p2 circle { fill:var(--p2); }
 .route-owner.p3 circle { fill:var(--p3); }
 
-.city { cursor:default; }
-
-.city circle {
-  fill:#fff;
-  stroke:#52676a;
-  stroke-width:2;
-  filter:drop-shadow(0 1px 1px rgba(0,0,0,.2));
+.city {
+  cursor:default;
 }
 
-.city text {
+.city-name {
   fill:var(--ink);
-  font-size:10px;
-  font-weight:600;
+  font-size:14px;
+  font-weight:800;
+  text-anchor:middle;
   paint-order:stroke;
   stroke:#edf3ef;
-  stroke-width:4px;
+  stroke-width:5px;
   stroke-linejoin:round;
 }
 
-.city .badge {
-  fill:var(--muted);
-  font-size:9px;
-  font-weight:500;
-  stroke-width:3px;
+.city-slots {
+  transform:translate(0,8px);
 }
 
-.city.current circle {
-  stroke:var(--accent);
-  stroke-width:4;
+.city-slot {
+  fill:#d7dfdc;
+  stroke:#52676a;
+  stroke-width:1.7;
+  rx:4;
+}
+
+.city-slot.occupied {
+  stroke:#fff;
+  stroke-width:2;
+  filter:drop-shadow(0 1px 2px rgba(0,0,0,.2));
+}
+
+.city-slot.p0 { fill:var(--p0); }
+.city-slot.p1 { fill:var(--p1); }
+.city-slot.p2 { fill:var(--p2); }
+.city-slot.p3 { fill:var(--p3); }
+
+.city-slot-title {
+  fill:#fff;
+  font-size:8px;
+  font-weight:800;
+  text-anchor:middle;
+  dominant-baseline:middle;
+  pointer-events:none;
+  paint-order:stroke;
+  stroke:rgba(0,0,0,.35);
+  stroke-width:1.5px;
+}
+
+.city-slot-level {
+  fill:#fff;
+  font-size:13px;
+  font-weight:900;
+  text-anchor:middle;
+  dominant-baseline:middle;
+  pointer-events:none;
+  paint-order:stroke;
+  stroke:rgba(0,0,0,.35);
+  stroke-width:2px;
+}
+
+.city-slot-info {
+  fill:#fff;
+  font-size:7px;
+  font-weight:700;
+  text-anchor:middle;
+  dominant-baseline:middle;
+  pointer-events:none;
+  paint-order:stroke;
+  stroke:rgba(0,0,0,.4);
+  stroke-width:1.2px;
 }
 
 .farm {
@@ -324,6 +373,16 @@ h2 {
   stroke:#658478;
   stroke-width:2;
   stroke-dasharray:4 3;
+}
+
+.farm-name {
+  fill:var(--ink);
+  font-size:11px;
+  font-weight:700;
+  text-anchor:middle;
+  paint-order:stroke;
+  stroke:#edf3ef;
+  stroke-width:4px;
 }
 
 .stats {
@@ -427,6 +486,17 @@ tr.sel { background:#dcefe7; }
   background:#fff0ef;
   color:#a72828;
 }
+
+@media (max-width:1200px) {
+  .layout {
+    grid-template-columns:185px 145px minmax(480px,1.5fr) minmax(300px,.9fr);
+  }
+
+  .legend {
+    gap:5px;
+    font-size:9px;
+  }
+}
 </style>
 
 <div class="top">
@@ -464,7 +534,7 @@ tr.sel { background:#dcefe7; }
     </div>
 
     <div class="map-wrap">
-      <svg id="map" class="map" viewBox="0 0 900 1000" preserveAspectRatio="xMidYMid meet"></svg>
+      <svg id="map" class="map" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
   </section>
 
@@ -491,26 +561,26 @@ tr.sel { background:#dcefe7; }
 
 <script>
 const CITY_POS = {
-  Belper:[625,125],
-  Derby:[650,250],
-  Leek:[420,105],
-  StokeOnTrent:[288,145],
-  Stone:[215,235],
-  Uttoxeter:[400,250],
-  Stafford:[260,350],
-  BurtonOnTrent:[475,390],
-  Cannock:[330,460],
-  Tamworth:[590,510],
-  Walsall:[405,580],
-  Wolverhampton:[250,570],
-  Coalbrookdale:[150,575],
-  Dudley:[295,675],
-  Kidderminster:[265,775],
-  Worcester:[250,910],
-  Birmingham:[450,700],
-  Coventry:[680,740],
-  Nuneaton:[680,630],
-  Redditch:[465,860]
+  Belper:[700,125],
+  Derby:[735,275],
+  Leek:[480,95],
+  StokeOnTrent:[320,155],
+  Stone:[235,260],
+  Uttoxeter:[465,275],
+  Stafford:[300,390],
+  BurtonOnTrent:[545,420],
+  Cannock:[380,500],
+  Tamworth:[680,545],
+  Walsall:[480,620],
+  Wolverhampton:[280,610],
+  Coalbrookdale:[170,600],
+  Dudley:[350,730],
+  Kidderminster:[320,825],
+  Worcester:[300,930],
+  Birmingham:[520,750],
+  Coventry:[800,785],
+  Nuneaton:[800,650],
+  Redditch:[545,900]
 };
 
 const CITY_KEYS = [
@@ -522,13 +592,13 @@ const CITY_KEYS = [
 ];
 
 const SPECIAL_POS = {
-  20:[35,570],
-  21:[400,945],
-  22:[630,855],
-  23:[187,125],
-  24:[785,205],
-  25:[215,450],
-  26:[200,840]
+  20:[45,610],
+  21:[475,950],
+  22:[745,900],
+  23:[225,105],
+  24:[900,220],
+  25:[250,485],
+  26:[230,850]
 };
 
 const SPECIAL_NAMES = {
@@ -685,6 +755,7 @@ function renderActions() {
     `).join('');
     return;
   }
+
   q('#actions-head').innerHTML = `
     <tr>
       <th class="sortable" onclick="sortActions('action')">
@@ -697,6 +768,7 @@ function renderActions() {
       <th>Status</th>
     </tr>
   `;
+
   const actions = detail?.legal_actions || [];
   const sorted = [...actions];
 
@@ -751,11 +823,157 @@ document.addEventListener('keydown', event => {
   if (next !== selected) choose(next,true);
 });
 
+function getSlotLayout(count) {
+  const width = 48;
+  const height = 48;
+  const gap = 5;
+
+  if (count <= 1) {
+    return {
+      width,
+      height,
+      columns:1,
+      positions:[[0,0]]
+    };
+  }
+
+  if (count === 2) {
+    return {
+      width,
+      height,
+      columns:2,
+      positions:[[0,0],[width+gap,0]]
+    };
+  }
+
+  if (count === 3) {
+    return {
+      width,
+      height,
+      columns:2,
+      positions:[[width/2+gap/2,0],[0,height+gap],[width+gap,height+gap]]
+    };
+  }
+
+  return {
+    width,
+    height,
+    columns:2,
+    positions:[
+      [0,0],
+      [width+gap,0],
+      [0,height+gap],
+      [width+gap,height+gap]
+    ]
+  };
+}
+
+function slotMarkup(slot,index,layout) {
+  const [x,y] = layout.positions[index];
+  const occupied = slot.occupied;
+  const owner = occupied && slot.owner != null ? `p${slot.owner}` : '';
+
+  const industry = occupied
+    ? String(slot.industry || '').replace(/_/g,' ')
+    : '空置';
+
+  const level = occupied
+    ? `L${slot.level ?? '-'}`
+    : '';
+
+  const resource = occupied
+    ? `资源 ${slot.resources ?? 0}`
+    : '';
+
+  const allowed = (slot.allowed || []).join(' / ');
+
+  return `
+    <g data-city-slot="${index}" transform="translate(${x},${y})">
+      <rect
+        class="city-slot ${occupied ? 'occupied' : ''} ${owner}"
+        width="${layout.width}"
+        height="${layout.height}"
+      />
+      <text
+        class="city-slot-title"
+        x="${layout.width / 2}"
+        y="13"
+      >${esc(industry)}</text>
+      ${occupied ? `
+        <text
+          class="city-slot-level"
+          x="${layout.width / 2}"
+          y="28"
+        >${esc(level)}</text>
+        <text
+          class="city-slot-info"
+          x="${layout.width / 2}"
+          y="41"
+        >${esc(resource)}</text>
+      ` : ''}
+      <title>槽位 ${index + 1}（${esc(allowed)}）
+${occupied
+  ? `P${slot.owner} · ${slot.industry} · L${slot.level} · ${slot.flipped ? '已翻面' : '未翻面'} · 资源 ${slot.resources ?? 0}`
+  : '空置'}</title>
+    </g>
+  `;
+}
+
+function routeKey(a,b) {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function routeGeometry(routes,index) {
+  const r = routes[index];
+  const a = POS[r.a];
+  const b = POS[r.b];
+
+  if (!a || !b) return null;
+
+  const [x1,y1] = a;
+  const [x2,y2] = b;
+
+  const key = routeKey(r.a,r.b);
+  const group = routes
+    .map((x,i) => ({x,i}))
+    .filter(v => routeKey(v.x.a,v.x.b) === key);
+
+  const groupIndex = group.findIndex(v => v.i === index);
+  const groupOffset =
+    (groupIndex - (group.length - 1) / 2) * 12;
+
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx,dy) || 1;
+
+  const nx = -dy / len;
+  const ny = dx / len;
+
+  const mx = (x1+x2)/2;
+  const my = (y1+y2)/2;
+
+  const bend = groupOffset + 8;
+
+  const cx = mx + nx * bend;
+  const cy = my + ny * bend;
+
+  const px = (x1 + 2*cx + x2) / 4;
+  const py = (y1 + 2*cy + y2) / 4;
+
+  return {
+    d:`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`,
+    ownerX:px,
+    ownerY:py
+  };
+}
+
 function drawBoard(state) {
   const signature =
     state.routes.map(r => `${r.a},${r.b},${r.canal ? 1 : 0},${r.rail ? 1 : 0}`).join('|') +
     '||' +
-    state.cities.map(c => `${c.id}:${c.name}`).join('|');
+    state.cities.map(c =>
+      `${c.id}:${c.name}:${(c.slots || []).length}`
+    ).join('|');
 
   const svg = q('#map');
 
@@ -765,23 +983,11 @@ function drawBoard(state) {
     const byId = Object.fromEntries(state.cities.map(c => [c.id,c]));
     const cityName = id => byId[id]?.name || SPECIAL_NAMES[id] || '';
 
-    let out = '<rect width="900" height="1000" fill="#edf3ef"/>';
+    let out = '<rect width="1000" height="1000" fill="#edf3ef"/>';
 
     for (const [index,r] of state.routes.entries()) {
-      const a = POS[r.a];
-      const b = POS[r.b];
-      if (!a || !b) continue;
-
-      const [x1,y1] = a;
-      const [x2,y2] = b;
-      const mx = (x1+x2)/2;
-      const my = (y1+y2)/2;
-      const dx = x2-x1;
-      const dy = y2-y1;
-      const len = Math.hypot(dx,dy) || 1;
-      const offset = 13;
-      const ox = -dy / len * offset;
-      const oy = dx / len * offset;
+      const geometry = routeGeometry(state.routes,index);
+      if (!geometry) continue;
 
       const routeClass = [
         'route',
@@ -792,19 +998,33 @@ function drawBoard(state) {
       const title = `${cityName(r.a)} - ${cityName(r.b)}`;
 
       if (r.owner != null) {
-        out += `<line class="route-underlay" data-route-underlay="${index}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+        out += `
+          <path
+            class="route-underlay"
+            data-route-underlay="${index}"
+            d="${geometry.d}"
+          />
+        `;
       }
 
       out += `
-        <line class="${routeClass}" data-route="${index}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">
+        <path
+          class="${routeClass}"
+          data-route="${index}"
+          d="${geometry.d}"
+        >
           <title>${esc(title)}</title>
-        </line>
+        </path>
       `;
 
       if (r.owner != null) {
         out += `
-          <g class="route-owner p${r.owner}" data-route-owner="${index}" transform="translate(${mx+ox},${my+oy})">
-            <circle r="10"/>
+          <g
+            class="route-owner p${r.owner}"
+            data-route-owner="${index}"
+            transform="translate(${geometry.ownerX},${geometry.ownerY})"
+          >
+            <circle r="9"/>
             <text>P${r.owner}</text>
           </g>
         `;
@@ -815,11 +1035,34 @@ function drawBoard(state) {
       const p = POS[c.id];
       if (!p) continue;
 
+      const slots = c.slots || [];
+      const layout = getSlotLayout(slots.length);
+
+      const totalWidth = layout.columns === 1
+        ? layout.width
+        : layout.width * 2 + 5;
+
+      const rows = slots.length <= 2 ? 1 : 2;
+      const totalHeight = rows === 1
+        ? layout.height
+        : layout.height * 2 + 5;
+
+      const startX = -totalWidth / 2;
+      const startY = 8;
+
       out += `
         <g class="city" data-city="${c.id}" transform="translate(${p[0]},${p[1]})">
-          <circle r="15"/>
-          <text text-anchor="middle" y="-21">${esc(c.name)}</text>
-          <text class="badge" text-anchor="middle" y="4"></text>
+          <text
+            class="city-name"
+            y="-${Math.round(totalHeight / 2 + 7)}"
+          >${esc(c.name)}</text>
+
+          <g
+            class="city-slots"
+            transform="translate(${startX},${startY})"
+          >
+            ${slots.map((slot,index) => slotMarkup(slot,index,layout)).join('')}
+          </g>
         </g>
       `;
     }
@@ -830,8 +1073,8 @@ function drawBoard(state) {
 
       out += `
         <g class="city" transform="translate(${p[0]},${p[1]})">
-          <circle class="farm" r="11"/>
-          <text text-anchor="middle" y="-16">${esc(name)}</text>
+          <circle class="farm" r="10"/>
+          <text class="farm-name" y="-15">${esc(name)}</text>
         </g>
       `;
     }
@@ -861,62 +1104,71 @@ function drawBoard(state) {
 
     if (r.owner != null) {
       if (!underlay) {
-        const a = POS[r.a];
-        const b = POS[r.b];
+        const geometry = routeGeometry(state.routes,index);
 
-        if (a && b) {
+        if (geometry) {
           const underlayNode = document.createElementNS(
             'http://www.w3.org/2000/svg',
-            'line'
+            'path'
           );
 
           underlayNode.setAttribute('class','route-underlay');
           underlayNode.dataset.routeUnderlay = index;
-          underlayNode.setAttribute('x1',a[0]);
-          underlayNode.setAttribute('y1',a[1]);
-          underlayNode.setAttribute('x2',b[0]);
-          underlayNode.setAttribute('y2',b[1]);
+          underlayNode.setAttribute('d',geometry.d);
 
           svg.insertBefore(underlayNode,line);
         }
       }
 
-      let currentOwner = svg.querySelector(`[data-route-owner="${index}"]`);
+      let currentOwner = svg.querySelector(
+        `[data-route-owner="${index}"]`
+      );
 
       if (!currentOwner) {
-        const a = POS[r.a];
-        const b = POS[r.b];
+        const geometry = routeGeometry(state.routes,index);
 
-        if (a && b) {
-          const mx = (a[0]+b[0])/2;
-          const my = (a[1]+b[1])/2;
-          const dx = b[0]-a[0];
-          const dy = b[1]-a[1];
-          const len = Math.hypot(dx,dy) || 1;
-          const offset = 13;
-          const ox = -dy / len * offset;
-          const oy = dx / len * offset;
-
+        if (geometry) {
           currentOwner = document.createElementNS(
             'http://www.w3.org/2000/svg',
             'g'
           );
 
-          currentOwner.setAttribute('class',`route-owner p${r.owner}`);
+          currentOwner.setAttribute(
+            'class',
+            `route-owner p${r.owner}`
+          );
+
           currentOwner.dataset.routeOwner = index;
+
           currentOwner.setAttribute(
             'transform',
-            `translate(${mx+ox},${my+oy})`
+            `translate(${geometry.ownerX},${geometry.ownerY})`
           );
-          currentOwner.innerHTML = '<circle r="10"/><text></text>';
+
+          currentOwner.innerHTML =
+            '<circle r="9"/><text></text>';
 
           line.after(currentOwner);
         }
       }
 
       if (currentOwner) {
-        currentOwner.setAttribute('class',`route-owner p${r.owner}`);
-        currentOwner.querySelector('text').textContent = `P${r.owner}`;
+        const geometry = routeGeometry(state.routes,index);
+
+        currentOwner.setAttribute(
+          'class',
+          `route-owner p${r.owner}`
+        );
+
+        if (geometry) {
+          currentOwner.setAttribute(
+            'transform',
+            `translate(${geometry.ownerX},${geometry.ownerY})`
+          );
+        }
+
+        currentOwner.querySelector('text').textContent =
+          `P${r.owner}`;
       }
     } else {
       if (underlay) underlay.remove();
@@ -928,12 +1180,67 @@ function drawBoard(state) {
     const city = svg.querySelector(`[data-city="${c.id}"]`);
     if (!city) continue;
 
-    const count = state.tiles.filter(
-      t => t.place.startsWith(c.name+' #')
-    ).length;
+    const slots = c.slots || [];
 
-    city.querySelector('.badge').textContent =
-      count ? `◆ ${count}` : '○';
+    slots.forEach((slot,index) => {
+      const node = city.querySelector(
+        `[data-city-slot="${index}"]`
+      );
+
+      if (!node) return;
+
+      const occupied = slot.occupied;
+
+      const ownerClass =
+        occupied && slot.owner != null
+          ? `p${slot.owner}`
+          : '';
+
+      const rect = node.querySelector('.city-slot');
+
+      if (!rect) return;
+
+      rect.setAttribute(
+        'class',
+        [
+          'city-slot',
+          occupied ? 'occupied' : '',
+          ownerClass
+        ].filter(Boolean).join(' ')
+      );
+
+      const title = node.querySelector('.city-slot-title');
+      const level = node.querySelector('.city-slot-level');
+      const info = node.querySelector('.city-slot-info');
+
+      if (title) {
+        title.textContent = occupied
+          ? String(slot.industry || '').replace(/_/g,' ')
+          : String(slot.allowed || []).replace(/,/g,' / ') || '空置';
+      }
+
+      if (level) {
+        level.textContent = occupied
+          ? `L${slot.level ?? '-'}`
+          : '';
+      }
+
+      if (info) {
+        info.textContent = occupied
+          ? `资源 ${slot.resources ?? 0}`
+          : '';
+      }
+
+      const allowed = (slot.allowed || []).join(' / ');
+
+      node.querySelector('title').textContent =
+        `槽位 ${index + 1}（${allowed}）\n` +
+        (
+          occupied
+            ? `P${slot.owner} · ${slot.industry} · L${slot.level} · ${slot.flipped ? '已翻面' : '未翻面'} · 资源 ${slot.resources ?? 0}`
+            : '空置'
+        );
+    });
   }
 }
 
@@ -941,7 +1248,9 @@ function renderTimeline() {
   const steps = q('#steps');
 
   const signature = data.steps
-    .map((x,i) => `${i}|${x.kind}|${x.player}|${x.round}|${x.strategy}|${x.chosen}|${x.era_event || ''}`)
+    .map((x,i) =>
+      `${i}|${x.kind}|${x.player}|${x.round}|${x.strategy}|${x.chosen}|${x.era_event || ''}`
+    )
     .join('||');
 
   if (signature !== timelineSignature) {
@@ -950,6 +1259,7 @@ function renderTimeline() {
     steps.innerHTML = data.steps.map((x,i) => {
       const eraEnd = x.kind === 'era_end';
       const previous = data.steps[i - 1];
+
       const roundChanged =
         i > 0 &&
         x.kind === 'action' &&
@@ -961,7 +1271,9 @@ function renderTimeline() {
         : '';
 
       const label = eraEnd
-        ? (x.era_event === 'final-scoring' ? '铁路时代最终结算' : '运河时代结束')
+        ? (x.era_event === 'final-scoring'
+          ? '铁路时代最终结算'
+          : '运河时代结束')
         : `<span class="step-player p${x.player}">P${x.player}</span> · ${esc(x.strategy)}`;
 
       const detail = eraEnd
@@ -970,7 +1282,11 @@ function renderTimeline() {
 
       return `
         ${separator}
-        <button class="step" data-step-index="${i}" onclick="choose(${i})">
+        <button
+          class="step"
+          data-step-index="${i}"
+          onclick="choose(${i})"
+        >
           ${i+1}. ${label}
           <small>${detail}</small>
         </button>
@@ -989,23 +1305,43 @@ function renderTimeline() {
 function render() {
   if (!data) return;
 
-  const step = detail && detail.index === selected ? detail : null;
-  const state = step ? step.after : data.current;
-  // Era-end scoring happens before canal links are removed. Keep the scored
-  // board visible while showing players' post-scoring totals on the right.
-  const boardState = step?.kind === 'era_end' ? step.before : state;
-  // The engine advances the clock immediately after the final action in a
-  // round. Keep the action attached to the round in which it was chosen;
-  // era-end steps intentionally show the post-transition state instead.
-  const displayRound = step?.kind === 'action' ? step.before.round : state.round;
+  const step =
+    detail && detail.index === selected
+      ? detail
+      : null;
+
+  const state =
+    step
+      ? step.after
+      : data.current;
+
+  const boardState =
+    step?.kind === 'era_end'
+      ? step.before
+      : state;
+
+  const displayRound =
+    step?.kind === 'action'
+      ? step.before.round
+      : state.round;
 
   q('#meta').textContent =
     `seed ${data.seed} · ${data.strategies.join(', ')}` +
-    (data.busy ? ' · thinking…' : '') +
-    (data.failure ? ' · '+data.failure : data.complete ? ' · complete' : '');
+    (
+      data.busy
+        ? ' · thinking…'
+        : data.failure
+          ? ' · '+data.failure
+          : data.complete
+            ? ' · complete'
+            : ''
+    );
 
   q('#step').disabled =
-    stepInFlight || data.busy || data.complete || Boolean(data.failure);
+    stepInFlight ||
+    data.busy ||
+    data.complete ||
+    Boolean(data.failure);
 
   renderTimeline();
 
@@ -1032,7 +1368,10 @@ function render() {
 
   drawBoard(boardState);
 
-  q('#detail').className = data.failure ? 'error' : 'muted';
+  q('#detail').className =
+    data.failure
+      ? 'error'
+      : 'muted';
 
   q('#detail').textContent =
     data.failure ||
@@ -1040,7 +1379,9 @@ function render() {
       step
         ? step.kind === 'era_end'
           ? `时代结束 · ${step.era_event} · VP: ${step.before.players
-              .map((p,i) => `P${i} ${p.vp}→${step.after.players[i]?.vp ?? p.vp}`)
+              .map((p,i) =>
+                `P${i} ${p.vp}→${step.after.players[i]?.vp ?? p.vp}`
+              )
               .join('，')}。`
           : `${step.trace.evidence_kind} · ${step.result}`
         : selected >= 0
@@ -1053,6 +1394,7 @@ function render() {
 
 refresh().catch(error => {
   q('#detail').className = 'error';
-  q('#detail').textContent = `Cannot connect: ${error.message}`;
+  q('#detail').textContent =
+    `Cannot connect: ${error.message}`;
 });
 </script>
