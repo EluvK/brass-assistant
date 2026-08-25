@@ -382,9 +382,26 @@ pub fn state_dto(state: &GameState) -> StateDto {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayStepKind {
+    Action,
+    EraEnd,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EraScoreDto {
+    pub player: usize,
+    pub previous_vp: u16,
+    pub industry_vp: u16,
+    pub link_vp: u16,
+    pub total_vp: u16,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReplayStep {
     pub index: usize,
+    pub kind: ReplayStepKind,
     pub player: usize,
     pub before: StateDto,
     pub after: StateDto,
@@ -392,6 +409,7 @@ pub struct ReplayStep {
     pub chosen: String,
     pub result: String,
     pub era_event: Option<String>,
+    pub score_breakdown: Option<Vec<EraScoreDto>>,
     pub trace: DecisionTrace,
 }
 
@@ -474,30 +492,63 @@ impl ReplaySession {
             e
         })?;
         let tr = advance_turn(&mut self.state);
-        let era_event = match tr {
-            TurnResult::Continue => None,
-            TurnResult::EndCanalEra => {
-                handle_turn_result(&mut self.state, tr);
-                Some("canal-settlement-and-cleanup".into())
-            }
-            TurnResult::EndGame => {
-                handle_turn_result(&mut self.state, tr);
-                Some("final-scoring".into())
-            }
-        };
         let after = state_dto(&self.state);
         self.steps.push(ReplayStep {
             index: self.steps.len(),
+            kind: ReplayStepKind::Action,
             player,
             before,
             after,
             legal_actions,
             chosen: selected,
             result,
-            era_event,
+            era_event: None,
+            score_breakdown: None,
             trace,
         });
         self.snapshots.push(self.state.snapshot_bytes()?);
+
+        let era_event = match tr {
+            TurnResult::Continue => None,
+            TurnResult::EndCanalEra => Some("canal-settlement-and-cleanup"),
+            TurnResult::EndGame => Some("final-scoring"),
+        };
+        if let Some(era_event) = era_event {
+            let before = state_dto(&self.state);
+            let mut scored = self.state.clone();
+            let score_breakdown = crate::scoring::score_era(&mut scored)
+                .into_iter()
+                .map(|score| EraScoreDto {
+                    player: score.player_id,
+                    previous_vp: score.total_vp - score.link_vp - score.industry_vp,
+                    industry_vp: score.industry_vp,
+                    link_vp: score.link_vp,
+                    total_vp: score.total_vp,
+                })
+                .collect();
+            handle_turn_result(&mut self.state, tr);
+            let after = state_dto(&self.state);
+            self.steps.push(ReplayStep {
+                index: self.steps.len(),
+                kind: ReplayStepKind::EraEnd,
+                player,
+                before,
+                after,
+                legal_actions: Vec::new(),
+                chosen: String::new(),
+                result: "era transition completed".into(),
+                era_event: Some(era_event.into()),
+                score_breakdown: Some(score_breakdown),
+                trace: DecisionTrace {
+                    strategy: "system".into(),
+                    selected: String::new(),
+                    evidence_kind: "era-end".into(),
+                    candidates: Vec::new(),
+                    card_keep_scores: Vec::new(),
+                },
+            });
+            self.snapshots.push(self.state.snapshot_bytes()?);
+        }
         Ok(true)
     }
     pub fn state_at(&self, index: usize) -> Result<StateDto, String> {
@@ -533,6 +584,55 @@ mod tests {
                     .iter()
                     .any(|x| x.canonical == step.chosen)
             );
+        }
+    }
+
+    #[test]
+    fn canal_transition_has_a_distinct_era_end_step() {
+        let mut s =
+            ReplaySession::new(7, 2, vec![StrategySpec::Heuristic, StrategySpec::Random]).unwrap();
+        while !s
+            .steps
+            .iter()
+            .any(|step| step.kind == ReplayStepKind::EraEnd)
+        {
+            s.step().unwrap();
+        }
+
+        let era_end = s.steps.last().unwrap();
+        let final_canal_action = &s.steps[s.steps.len() - 2];
+        assert_eq!(final_canal_action.kind, ReplayStepKind::Action);
+        assert_eq!(final_canal_action.after.era, "canal");
+        assert_eq!(era_end.kind, ReplayStepKind::EraEnd);
+        assert_eq!(era_end.before.era, "canal");
+        assert_eq!(era_end.after.era, "rail");
+        assert_eq!(
+            era_end.era_event.as_deref(),
+            Some("canal-settlement-and-cleanup")
+        );
+        assert!(era_end.legal_actions.is_empty());
+        let scores = era_end.score_breakdown.as_ref().unwrap();
+        assert_eq!(scores.len(), 2);
+        for score in scores {
+            assert_eq!(
+                score.previous_vp + score.industry_vp + score.link_vp,
+                score.total_vp
+            );
+        }
+    }
+
+    #[test]
+    fn action_keeps_its_before_round_at_round_boundary() {
+        let mut s =
+            ReplaySession::new(7, 2, vec![StrategySpec::Heuristic, StrategySpec::Random]).unwrap();
+        loop {
+            s.step().unwrap();
+            if let Some(step) = s.steps.iter().find(|step| {
+                step.kind == ReplayStepKind::Action && step.before.round != step.after.round
+            }) {
+                assert_eq!(step.before.round + 1, step.after.round);
+                break;
+            }
         }
     }
 }

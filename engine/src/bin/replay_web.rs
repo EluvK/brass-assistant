@@ -2,7 +2,7 @@
 //!
 //! The HTTP accept loop never owns `ReplaySession`: a single worker thread
 //! serializes game advancement and publishes immutable status snapshots.
-use _engine::replay::{ReplaySession, ReplayStep, StateDto, StrategySpec};
+use _engine::replay::{ReplaySession, ReplayStep, ReplayStepKind, StateDto, StrategySpec};
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -26,6 +26,7 @@ struct ReplayStatus {
 #[derive(Clone, Serialize)]
 struct ReplayStepSummary {
     index: usize,
+    kind: ReplayStepKind,
     player: usize,
     chosen: String,
     result: String,
@@ -44,6 +45,7 @@ impl ReplayStatus {
                 .iter()
                 .map(|step| ReplayStepSummary {
                     index: step.index,
+                    kind: step.kind,
                     player: step.player,
                     chosen: step.chosen.clone(),
                     result: step.result.clone(),

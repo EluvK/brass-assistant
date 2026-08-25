@@ -432,7 +432,7 @@ tr.sel { background:#dcefe7; }
     <h2>Legal Actions and Decision Evidence</h2>
     <div id="detail" class="muted">Select a generated step.</div>
     <table>
-      <thead>
+      <thead id="actions-head">
         <tr>
           <th class="sortable" onclick="sortActions('action')">
             Action<span id="sort-action" class="sort-icon"></span>
@@ -631,6 +631,32 @@ function sortActions(column) {
 }
 
 function renderActions() {
+  if (detail?.kind === 'era_end') {
+    q('#actions-head').innerHTML = `
+      <tr><th>玩家</th><th>产业 VP</th><th>连接 VP</th><th>结算前 → 结算后</th></tr>
+    `;
+    q('#actions').innerHTML = (detail.score_breakdown || []).map(s => `
+      <tr>
+        <td>P${s.player}</td>
+        <td>+${s.industry_vp}</td>
+        <td>+${s.link_vp}</td>
+        <td>${s.previous_vp} → <b>${s.total_vp}</b></td>
+      </tr>
+    `).join('');
+    return;
+  }
+  q('#actions-head').innerHTML = `
+    <tr>
+      <th class="sortable" onclick="sortActions('action')">
+        Action<span id="sort-action" class="sort-icon"></span>
+      </th>
+      <th>Canonical</th>
+      <th class="sortable" onclick="sortActions('score')">
+        Strategy score<span id="sort-score" class="sort-icon"></span>
+      </th>
+      <th>Status</th>
+    </tr>
+  `;
   const actions = detail?.legal_actions || [];
   const sorted = [...actions];
 
@@ -875,18 +901,25 @@ function renderTimeline() {
   const steps = q('#steps');
 
   const signature = data.steps
-    .map((x,i) => `${i}|${x.player}|${x.strategy}|${x.chosen}`)
+    .map((x,i) => `${i}|${x.kind}|${x.player}|${x.strategy}|${x.chosen}|${x.era_event || ''}`)
     .join('||');
 
   if (signature !== timelineSignature) {
     timelineSignature = signature;
 
-    steps.innerHTML = data.steps.map((x,i) => `
-      <button class="step" data-step-index="${i}" onclick="choose(${i})">
-        ${i+1}. P${x.player} · ${esc(x.strategy)}
-        <small>${esc(x.chosen)}</small>
-      </button>
-    `).join('');
+    steps.innerHTML = data.steps.map((x,i) => {
+      const eraEnd = x.kind === 'era_end';
+      const label = eraEnd
+        ? (x.era_event === 'final-scoring' ? '铁路时代最终结算' : '运河时代结束')
+        : `P${x.player} · ${esc(x.strategy)}`;
+      const detail = eraEnd ? '结算、清理与 VP 更新' : esc(x.chosen);
+      return `
+        <button class="step" data-step-index="${i}" onclick="choose(${i})">
+          ${i+1}. ${label}
+          <small>${detail}</small>
+        </button>
+      `;
+    }).join('');
   }
 
   steps.querySelectorAll('.step').forEach((button,i) => {
@@ -899,6 +932,13 @@ function render() {
 
   const step = detail && detail.index === selected ? detail : null;
   const state = step ? step.after : data.current;
+  // Era-end scoring happens before canal links are removed. Keep the scored
+  // board visible while showing players' post-scoring totals on the right.
+  const boardState = step?.kind === 'era_end' ? step.before : state;
+  // The engine advances the clock immediately after the final action in a
+  // round. Keep the action attached to the round in which it was chosen;
+  // era-end steps intentionally show the post-transition state instead.
+  const displayRound = step?.kind === 'action' ? step.before.round : state.round;
 
   q('#meta').textContent =
     `seed ${data.seed} · ${data.strategies.join(', ')}` +
@@ -912,8 +952,8 @@ function render() {
 
   q('#global').innerHTML = `
     <div class="stats">
-      <div class="stat"><b>${state.era.toUpperCase()}</b>时代</div>
-      <div class="stat"><b>${state.round}</b>轮次</div>
+      <div class="stat"><b>${boardState.era.toUpperCase()}</b>时代</div>
+      <div class="stat"><b>${displayRound}</b>轮次</div>
       <div class="stat"><b>P${state.current_player}</b>当前玩家</div>
       <div class="stat"><b>${state.deck}</b>牌堆剩余</div>
       <div class="stat"><b>${state.coal_market}</b>煤炭市场</div>
@@ -931,7 +971,7 @@ function render() {
     </div>
   `).join('');
 
-  drawBoard(state);
+  drawBoard(boardState);
 
   q('#detail').className = data.failure ? 'error' : 'muted';
 
@@ -939,7 +979,11 @@ function render() {
     data.failure ||
     (
       step
-        ? `${step.trace.evidence_kind} · ${step.result}${step.era_event ? ' · '+step.era_event : ''}`
+        ? step.kind === 'era_end'
+          ? `时代结束 · ${step.era_event} · VP: ${step.before.players
+              .map((p,i) => `P${i} ${p.vp}→${step.after.players[i]?.vp ?? p.vp}`)
+              .join('，')}。`
+          : `${step.trace.evidence_kind} · ${step.result}`
         : selected >= 0
           ? 'Loading step…'
           : 'Select a generated step.'
