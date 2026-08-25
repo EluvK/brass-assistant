@@ -514,6 +514,8 @@ let stepInFlight = false;
 let runTimer = 0;
 let sortColumn = null;
 let sortDirection = 1;
+let boardSignature = '';
+let timelineSignature = '';
 
 const q = s => document.querySelector(s);
 
@@ -684,89 +686,212 @@ document.addEventListener('keydown', event => {
 });
 
 function drawBoard(state) {
+  const signature =
+    state.routes.map(r => `${r.a},${r.b},${r.canal ? 1 : 0},${r.rail ? 1 : 0}`).join('|') +
+    '||' +
+    state.cities.map(c => `${c.id}:${c.name}`).join('|');
+
   const svg = q('#map');
-  const byId = Object.fromEntries(state.cities.map(c => [c.id,c]));
-  const cityName = id => byId[id]?.name || SPECIAL_NAMES[id] || '';
 
-  let out = '<rect width="900" height="1000" fill="#edf3ef"/>';
+  if (signature !== boardSignature) {
+    boardSignature = signature;
 
-  for (const r of state.routes) {
-    const a = POS[r.a];
-    const b = POS[r.b];
-    if (!a || !b) continue;
+    const byId = Object.fromEntries(state.cities.map(c => [c.id,c]));
+    const cityName = id => byId[id]?.name || SPECIAL_NAMES[id] || '';
 
-    const [x1,y1] = a;
-    const [x2,y2] = b;
-    const mx = (x1+x2)/2;
-    const my = (y1+y2)/2;
-    const dx = x2-x1;
-    const dy = y2-y1;
-    const len = Math.hypot(dx,dy) || 1;
-    const offset = 13;
-    const ox = -dy / len * offset;
-    const oy = dx / len * offset;
+    let out = '<rect width="900" height="1000" fill="#edf3ef"/>';
 
-    const ownerClass = r.owner != null ? `p${r.owner}` : '';
-    const routeClass = [
-      'route',
-      r.owner != null ? 'used' : '',
-      ownerClass,
-      r.canal ? 'cap-canal' : '',
-      r.rail ? 'cap-rail' : ''
-    ].filter(Boolean).join(' ');
+    for (const [index,r] of state.routes.entries()) {
+      const a = POS[r.a];
+      const b = POS[r.b];
+      if (!a || !b) continue;
 
-    const title = `${cityName(r.a)} - ${cityName(r.b)} | ${
-      r.owner == null ? '未铺设' : `P${r.owner} 建造 · ${r.kind}`
-    }`;
+      const [x1,y1] = a;
+      const [x2,y2] = b;
+      const mx = (x1+x2)/2;
+      const my = (y1+y2)/2;
+      const dx = x2-x1;
+      const dy = y2-y1;
+      const len = Math.hypot(dx,dy) || 1;
+      const offset = 13;
+      const ox = -dy / len * offset;
+      const oy = dx / len * offset;
 
-    if (r.owner != null) {
-      out += `<line class="route-underlay" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+      const routeClass = [
+        'route',
+        r.canal ? 'cap-canal' : '',
+        r.rail ? 'cap-rail' : ''
+      ].filter(Boolean).join(' ');
+
+      const title = `${cityName(r.a)} - ${cityName(r.b)}`;
+
+      if (r.owner != null) {
+        out += `<line class="route-underlay" data-route-underlay="${index}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+      }
+
+      out += `
+        <line class="${routeClass}" data-route="${index}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">
+          <title>${esc(title)}</title>
+        </line>
+      `;
+
+      if (r.owner != null) {
+        out += `
+          <g class="route-owner p${r.owner}" data-route-owner="${index}" transform="translate(${mx+ox},${my+oy})">
+            <circle r="10"/>
+            <text>P${r.owner}</text>
+          </g>
+        `;
+      }
     }
 
-    out += `
-      <line class="${routeClass}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">
-        <title>${esc(title)}</title>
-      </line>
-    `;
+    for (const c of state.cities) {
+      const p = POS[c.id];
+      if (!p) continue;
 
-    if (r.owner != null) {
       out += `
-        <g class="route-owner ${ownerClass}" transform="translate(${mx+ox},${my+oy})">
-          <circle r="10"/>
-          <text>P${r.owner}</text>
+        <g class="city" data-city="${c.id}" transform="translate(${p[0]},${p[1]})">
+          <circle r="15"/>
+          <text text-anchor="middle" y="-21">${esc(c.name)}</text>
+          <text class="badge" text-anchor="middle" y="4"></text>
         </g>
       `;
+    }
+
+    for (const [id,name] of Object.entries(SPECIAL_NAMES)) {
+      const p = POS[id];
+      if (!p) continue;
+
+      out += `
+        <g class="city" transform="translate(${p[0]},${p[1]})">
+          <circle class="farm" r="11"/>
+          <text text-anchor="middle" y="-16">${esc(name)}</text>
+        </g>
+      `;
+    }
+
+    svg.innerHTML = out;
+  }
+
+  for (const [index,r] of state.routes.entries()) {
+    const line = svg.querySelector(`[data-route="${index}"]`);
+    const underlay = svg.querySelector(`[data-route-underlay="${index}"]`);
+    const owner = svg.querySelector(`[data-route-owner="${index}"]`);
+
+    if (!line) continue;
+
+    const ownerClass = r.owner != null ? `p${r.owner}` : '';
+
+    line.setAttribute(
+      'class',
+      [
+        'route',
+        r.owner != null ? 'used' : '',
+        ownerClass,
+        r.canal ? 'cap-canal' : '',
+        r.rail ? 'cap-rail' : ''
+      ].filter(Boolean).join(' ')
+    );
+
+    if (r.owner != null) {
+      if (!underlay) {
+        const a = POS[r.a];
+        const b = POS[r.b];
+
+        if (a && b) {
+          const underlayNode = document.createElementNS(
+            'http://www.w3.org/2000/svg',
+            'line'
+          );
+
+          underlayNode.setAttribute('class','route-underlay');
+          underlayNode.dataset.routeUnderlay = index;
+          underlayNode.setAttribute('x1',a[0]);
+          underlayNode.setAttribute('y1',a[1]);
+          underlayNode.setAttribute('x2',b[0]);
+          underlayNode.setAttribute('y2',b[1]);
+
+          svg.insertBefore(underlayNode,line);
+        }
+      }
+
+      let currentOwner = svg.querySelector(`[data-route-owner="${index}"]`);
+
+      if (!currentOwner) {
+        const a = POS[r.a];
+        const b = POS[r.b];
+
+        if (a && b) {
+          const mx = (a[0]+b[0])/2;
+          const my = (a[1]+b[1])/2;
+          const dx = b[0]-a[0];
+          const dy = b[1]-a[1];
+          const len = Math.hypot(dx,dy) || 1;
+          const offset = 13;
+          const ox = -dy / len * offset;
+          const oy = dx / len * offset;
+
+          currentOwner = document.createElementNS(
+            'http://www.w3.org/2000/svg',
+            'g'
+          );
+
+          currentOwner.setAttribute('class',`route-owner p${r.owner}`);
+          currentOwner.dataset.routeOwner = index;
+          currentOwner.setAttribute(
+            'transform',
+            `translate(${mx+ox},${my+oy})`
+          );
+          currentOwner.innerHTML = '<circle r="10"/><text></text>';
+
+          line.after(currentOwner);
+        }
+      }
+
+      if (currentOwner) {
+        currentOwner.setAttribute('class',`route-owner p${r.owner}`);
+        currentOwner.querySelector('text').textContent = `P${r.owner}`;
+      }
+    } else {
+      if (underlay) underlay.remove();
+      if (owner) owner.remove();
     }
   }
 
   for (const c of state.cities) {
-    const p = POS[c.id];
-    if (!p) continue;
+    const city = svg.querySelector(`[data-city="${c.id}"]`);
+    if (!city) continue;
 
-    const count = state.tiles.filter(t => t.place.startsWith(c.name+' #')).length;
+    const count = state.tiles.filter(
+      t => t.place.startsWith(c.name+' #')
+    ).length;
 
-    out += `
-      <g class="city" transform="translate(${p[0]},${p[1]})">
-        <circle r="15"/>
-        <text text-anchor="middle" y="-21">${esc(c.name)}</text>
-        <text class="badge" text-anchor="middle" y="4">${count ? '◆ '+count : '○'}</text>
-      </g>
-    `;
+    city.querySelector('.badge').textContent =
+      count ? `◆ ${count}` : '○';
+  }
+}
+
+function renderTimeline() {
+  const steps = q('#steps');
+
+  const signature = data.steps
+    .map((x,i) => `${i}|${x.player}|${x.strategy}|${x.chosen}`)
+    .join('||');
+
+  if (signature !== timelineSignature) {
+    timelineSignature = signature;
+
+    steps.innerHTML = data.steps.map((x,i) => `
+      <button class="step" data-step-index="${i}" onclick="choose(${i})">
+        ${i+1}. P${x.player} · ${esc(x.strategy)}
+        <small>${esc(x.chosen)}</small>
+      </button>
+    `).join('');
   }
 
-  for (const [id,name] of Object.entries(SPECIAL_NAMES)) {
-    const p = POS[id];
-    if (!p) continue;
-
-    out += `
-      <g class="city" transform="translate(${p[0]},${p[1]})">
-        <circle class="farm" r="11"/>
-        <text text-anchor="middle" y="-16">${esc(name)}</text>
-      </g>
-    `;
-  }
-
-  svg.innerHTML = out;
+  steps.querySelectorAll('.step').forEach((button,i) => {
+    button.classList.toggle('active',i === selected);
+  });
 }
 
 function render() {
@@ -783,12 +908,7 @@ function render() {
   q('#step').disabled =
     stepInFlight || data.busy || data.complete || Boolean(data.failure);
 
-  q('#steps').innerHTML = data.steps.map((x,i) => `
-    <button class="step ${i === selected ? 'active' : ''}" onclick="choose(${i})">
-      ${i+1}. P${x.player} · ${esc(x.strategy)}
-      <small>${esc(x.chosen)}</small>
-    </button>
-  `).join('');
+  renderTimeline();
 
   q('#global').innerHTML = `
     <div class="stats">
@@ -814,13 +934,16 @@ function render() {
   drawBoard(state);
 
   q('#detail').className = data.failure ? 'error' : 'muted';
+
   q('#detail').textContent =
     data.failure ||
-    (step
-      ? `${step.trace.evidence_kind} · ${step.result}${step.era_event ? ' · '+step.era_event : ''}`
-      : selected >= 0
-        ? 'Loading step…'
-        : 'Select a generated step.');
+    (
+      step
+        ? `${step.trace.evidence_kind} · ${step.result}${step.era_event ? ' · '+step.era_event : ''}`
+        : selected >= 0
+          ? 'Loading step…'
+          : 'Select a generated step.'
+    );
 
   renderActions();
 }
