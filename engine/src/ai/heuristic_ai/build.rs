@@ -36,36 +36,6 @@ fn simulate_market_sale(state: &GameState, is_coal: bool, cubes: u8) -> MarketSa
     }
 }
 
-/// How much sell beer remains for the tile being evaluated in `loc`'s beer
-/// pool. The new tile only flips if there is beer LEFT OVER after the player's
-/// already-unflipped sellable tiles in that pool take their share — the new
-/// tile is at the back of the queue. 1.0 = beer to spare; ~0 = every existing
-/// tile already claims the beer, so the marginal tile can't sell this era.
-fn sell_saturation(state: &GameState, pid: usize, loc: Loc) -> f64 {
-    let connected = connected_locations(state, loc);
-    let supply = count_beer_sources(state, loc, pid, &[]) as f64
-        + state
-            .merchants
-            .iter()
-            .filter(|mt| mt.has_beer && connected.contains(&mt.loc))
-            .count() as f64;
-    let mut existing_demand = 0.0;
-    for (i, l) in ALL_LOCATIONS[..CITY_COUNT].iter().enumerate() {
-        for slot in 0..city_slots(*l).len() {
-            let key = city_slot_offsets()[i] + slot;
-            if let Some(t) = state.city_tiles[key].as_ref() {
-                if t.player == pid && !t.flipped && t.ind.is_sellable() {
-                    if *l == loc || connected.contains(l) {
-                        existing_demand += t.def.beers_to_sell.unwrap_or(1) as f64;
-                    }
-                }
-            }
-        }
-    }
-    let remaining = (supply - existing_demand).max(0.0);
-    remaining.clamp(0.0, 1.0)
-}
-
 fn estimate_flip_probability(
     state: &GameState,
     pid: usize,
@@ -182,13 +152,12 @@ fn estimate_flip_probability(
         if open_links > 0 {
             b += 0.1;
         }
-        if state.rounds_remaining() < 2.0 {
-            b -= 0.2;
+        match state.players[pid].hand.len() {
+            0 => b -= 10.0,
+            1 => b -= 5.0,
+            2..=3 => b -= 2.0, 
+            _ => {}
         }
-        // Beer-capacity gate: if the player already has more unflipped
-        // sellable tiles in this beer pool than beer can fuel, this marginal
-        // tile likely never sells. Scale the flip odds down accordingly.
-        b *= sell_saturation(state, pid, city_id);
         b
     };
     base.clamp(0.05, 1.0)
