@@ -44,7 +44,94 @@ fn develop_guardrail_penalty(ind: IndustryType, level: u8) -> f64 {
 
 pub struct Decision {
     pub mv: Move,
+    /// Score of the operation itself (independent of the card used).
     pub score: f64,
+    /// Keep-value score of the card(s) consumed by this decision.
+    pub card_score: f64,
+}
+
+/// Return the keep-value score for the card references carried by a move.
+/// Lower values mean the card is a better discard. Scout consumes three cards,
+/// so its score is the sum of the three individual scores.
+pub(crate) fn move_card_score(state: &GameState, mv: &Move) -> f64 {
+    let pid = state.current_player_id();
+    let choices = ranked_card_choices(state, pid);
+    let score = |index: usize| {
+        choices
+            .iter()
+            .find(|(i, _)| *i == index)
+            .map(|(_, s)| *s)
+            .unwrap_or(f64::INFINITY)
+    };
+    match mv {
+        Move::Scout { card_indices } => card_indices.iter().map(|i| score(*i)).sum(),
+        Move::Build { card_index, .. }
+        | Move::Network { card_index, .. }
+        | Move::NetworkDouble { card_index, .. }
+        | Move::Develop { card_index, .. }
+        | Move::Sell { card_index, .. }
+        | Move::Loan { card_index }
+        | Move::Pass { card_index } => score(*card_index),
+    }
+}
+
+/// Stable identity for the operation layer. Card references are intentionally
+/// excluded; card selection is a separate policy dimension.
+pub(crate) fn operation_key(mv: &Move) -> String {
+    match mv {
+        Move::Build {
+            loc,
+            slot_index,
+            ind,
+            coal,
+            iron,
+            ..
+        } => format!("build:{loc:?}:{slot_index}:{ind:?}:{coal:?}:{iron:?}"),
+        Move::Network { conn_id, coal, .. } => format!("network:{conn_id}:{coal:?}"),
+        Move::NetworkDouble {
+            conn1,
+            conn2,
+            coal1,
+            coal2,
+            beer,
+            ..
+        } => format!("network2:{conn1}:{conn2}:{coal1:?}:{coal2:?}:{beer:?}"),
+        Move::Develop {
+            ind1, ind2, iron, ..
+        } => format!("develop:{ind1:?}:{ind2:?}:{iron:?}"),
+        Move::Sell {
+            keys,
+            merchant_indices,
+            use_merchant_beer,
+            beer_sources,
+            free_develop,
+            ..
+        } => format!(
+            "sell:{keys:?}:{merchant_indices:?}:{use_merchant_beer:?}:{beer_sources:?}:{free_develop:?}"
+        ),
+        Move::Loan { .. } => "loan".into(),
+        // Scout is one operation; the three discarded cards belong to the
+        // separate card-selection head and must not multiply operation nodes.
+        Move::Scout { .. } => "scout".into(),
+        Move::Pass { .. } => "pass".into(),
+    }
+}
+
+/// Card choices available to the card-selection head for a structural move.
+/// Build is restricted by its target; all other ordinary operations may use
+/// every card in hand.
+pub fn card_choices_for_move(state: &GameState, mv: &Move) -> Vec<(usize, f64)> {
+    let pid = state.current_player_id();
+    match mv {
+        Move::Build { loc, ind, .. } => {
+            valid_build_cards(state, &state.players[pid], pid, *loc, *ind)
+                .into_iter()
+                .map(|i| (i, card_keep_score(state, pid, i)))
+                .collect()
+        }
+        Move::Scout { .. } => ranked_card_choices(state, pid),
+        _ => ranked_card_choices(state, pid),
+    }
 }
 
 /// Estimate how valuable a card is to keep in hand. Lower values are preferred
@@ -225,6 +312,13 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
             .into_iter()
             .take(k),
     );
+
+    // Enforce the operation/card separation at the candidate boundary. The
+    // first candidate wins ties; its Move retains one executable card index,
+    // while `card_choices_for_move` exposes the independent card dimension.
+    let mut unique = std::collections::HashSet::new();
+    out.retain(|d| unique.insert(operation_key(&d.mv)));
+
     out.extend(
         score_sell_plan(state, pid, &card_choices)
             .into_iter()
@@ -251,9 +345,11 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // so MCTS always has a path to explore.
     if out.is_empty() {
         if let Some(mv) = legal_moves(state).into_iter().next() {
+            let card_score = move_card_score(state, &mv);
             out.push(Decision {
                 mv,
                 score: f64::NEG_INFINITY,
+                card_score,
             });
         }
     }
@@ -270,6 +366,7 @@ pub fn pass_decision(state: &GameState) -> Decision {
     Decision {
         mv: Move::Pass { card_index },
         score: -0.5,
+        card_score: card_keep_score(state, state.current_player_id(), card_index),
     }
 }
 

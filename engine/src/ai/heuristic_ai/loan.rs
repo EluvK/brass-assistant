@@ -111,6 +111,7 @@ fn score_loan_result(
     Some(Decision {
         mv: Move::Loan { card_index },
         score,
+        card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
     })
 }
 

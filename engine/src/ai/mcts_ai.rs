@@ -510,6 +510,7 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
             return Decision {
                 mv: ch.mv.clone(),
                 score: child_score,
+                card_score: heuristic_ai::move_card_score(state, &ch.mv),
             };
         }
     }
@@ -536,5 +537,6 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
     Decision {
         mv: best.mv.clone(),
         score,
+        card_score: heuristic_ai::move_card_score(state, &best.mv),
     }
 }

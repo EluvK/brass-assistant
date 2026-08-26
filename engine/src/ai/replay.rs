@@ -59,6 +59,8 @@ pub struct ActionDto {
     pub selected: bool,
     pub evaluated: bool,
     pub score: Option<f64>,
+    pub card_score: Option<f64>,
+    pub card: Option<String>,
     pub note: Option<String>,
 }
 
@@ -123,24 +125,37 @@ fn trace_for(
     selected: Move,
     strategy: String,
     kind: &str,
-    scored: Vec<(Move, f64)>,
+    scored: Vec<heuristic_ai::Decision>,
 ) -> DecisionTrace {
     let selected_key = move_codec::encode(&selected);
-    let scores: HashMap<String, f64> = scored
+    let scores: HashMap<String, (f64, f64)> = scored
         .into_iter()
-        .map(|(mv, score)| (move_codec::encode(&mv), score))
+        .map(|d| (heuristic_ai::operation_key(&d.mv), (d.score, d.card_score)))
         .collect();
-    let candidates = legal
-        .iter()
-        .map(|mv| {
+    let mut grouped: HashMap<String, &Move> = HashMap::new();
+    for mv in legal {
+        let key = heuristic_ai::operation_key(mv);
+        grouped.entry(key).or_insert(mv);
+    }
+    // Prefer the actually selected card as the representative row while
+    // retaining one row per structural operation.
+    grouped.insert(heuristic_ai::operation_key(&selected), &selected);
+    let candidates = grouped
+        .into_iter()
+        .map(|(op_key, mv)| {
             let canonical = move_codec::encode(mv);
-            let score = scores.get(&canonical).copied();
+            let evaluated = scores.get(&op_key).copied();
+            let (score, card_score) = evaluated
+                .map(|(s, c)| (Some(s), Some(c)))
+                .unwrap_or((None, None));
             ActionDto {
                 description: mv.describe(state),
                 action: mv.action().to_string(),
-                selected: canonical == selected_key,
-                evaluated: score.is_some(),
-                note: if score.is_none() {
+                selected: heuristic_ai::operation_key(mv) == heuristic_ai::operation_key(&selected),
+                evaluated: evaluated.is_some(),
+                card_score,
+                card: move_card_name(state, mv),
+                note: if evaluated.is_none() {
                     Some("未被此策略评分".into())
                 } else {
                     None
@@ -157,6 +172,23 @@ fn trace_for(
         candidates,
         card_keep_scores: card_scores(state),
     }
+}
+
+fn move_card_name(state: &GameState, mv: &Move) -> Option<String> {
+    let index = match mv {
+        Move::Scout { .. } => return None,
+        Move::Build { card_index, .. }
+        | Move::Network { card_index, .. }
+        | Move::NetworkDouble { card_index, .. }
+        | Move::Develop { card_index, .. }
+        | Move::Sell { card_index, .. }
+        | Move::Loan { card_index }
+        | Move::Pass { card_index } => *card_index,
+    };
+    state.players[state.current_player_id()]
+        .hand
+        .get(index)
+        .map(Card::name)
 }
 
 impl StrategyAdapter for NativeStrategy {
@@ -181,7 +213,7 @@ impl StrategyAdapter for NativeStrategy {
                     decision.mv.clone(),
                     self.name(),
                     "heuristic",
-                    scored.into_iter().map(|d| (d.mv, d.score)).collect(),
+                    scored,
                 );
                 Ok((decision.mv, trace))
             }
@@ -204,7 +236,7 @@ impl StrategyAdapter for NativeStrategy {
                     decision.mv.clone(),
                     self.name(),
                     "mcts-root-prior",
-                    scored.into_iter().map(|d| (d.mv, d.score)).collect(),
+                    scored,
                 );
                 Ok((decision.mv, trace))
             }

@@ -144,7 +144,9 @@ impl PyGame {
     /// Training does not retain every legal concrete action: that would make a
     /// large replay buffer grow with the full combinatorial action space. The
     /// MCTS inference path still evaluates every legal candidate.
-    fn heuristic_candidates(&self) -> (Vec<f32>, Vec<f32>, String, usize, f64, usize) {
+    fn heuristic_candidates(
+        &self,
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>, String, usize, f64, f64, usize) {
         let mut heuristic_state = self.state.clone();
         let decision = heuristic_ai::choose_action(&mut heuristic_state);
         let teacher_canonical = move_codec::encode(&decision.mv);
@@ -152,6 +154,7 @@ impl PyGame {
         let scored = heuristic_ai::candidate_actions_k(&mut scoring_state, 4);
         let mut features = Vec::new();
         let mut scores = Vec::new();
+        let mut card_scores = Vec::new();
         let mut canonical_candidates = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for scored_move in scored {
@@ -162,6 +165,7 @@ impl PyGame {
                     &scored_move.mv,
                 ));
                 scores.push(scored_move.score as f32);
+                card_scores.push(scored_move.card_score as f32);
                 canonical_candidates.push(canonical);
             }
         }
@@ -174,15 +178,18 @@ impl PyGame {
                     &decision.mv,
                 ));
                 scores.push(decision.score as f32);
+                card_scores.push(decision.card_score as f32);
                 canonical_candidates.push(teacher_canonical.clone());
                 canonical_candidates.len() - 1
             });
         (
             features,
             scores,
+            card_scores,
             teacher_canonical,
             teacher_index,
             decision.score,
+            decision.card_score,
             canonical_candidates.len(),
         )
     }

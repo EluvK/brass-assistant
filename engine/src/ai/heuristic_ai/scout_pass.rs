@@ -67,6 +67,7 @@ fn score_scout_plan(
     Some(Decision {
         mv: Move::Scout { card_indices },
         score,
+        card_score: discard.iter().map(|(_, s)| *s).sum(),
     })
 }
 
@@ -116,5 +117,6 @@ fn score_pass_result(
     Some(Decision {
         mv: Move::Pass { card_index },
         score: -5.0,
+        card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
     })
 }

@@ -507,20 +507,16 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
     score
 }
 
-fn pick_build_card(state: &GameState, pid: usize, cand: &BuildTarget) -> Option<usize> {
+fn pick_build_card(state: &GameState, pid: usize, cand: &BuildTarget) -> Option<(usize, f64)> {
     let player = &state.players[pid];
     let indices = valid_build_cards(state, player, pid, cand.loc, cand.ind);
     // Prefer a non-wild matching card over a wild one.
-    indices
-        .iter()
-        .copied()
-        .find(|&i| {
-            !matches!(
-                player.hand[i].ctype(),
-                crate::data::CardType::WildLocation | crate::data::CardType::WildIndustry
-            )
-        })
-        .or_else(|| indices.into_iter().next())
+    let index = indices.into_iter().min_by(|a, b| {
+        card_keep_score(state, pid, *a)
+            .total_cmp(&card_keep_score(state, pid, *b))
+            .then(a.cmp(b))
+    })?;
+    Some((index, card_keep_score(state, pid, index)))
 }
 
 /// Top-K build candidates by 1-ply score. Used by MCTS to get a wider prior.
@@ -543,7 +539,7 @@ pub(crate) fn score_top_builds(
     scored.truncate(k);
     let mut out = Vec::new();
     for (cand, score) in scored {
-        if let Some(card_index) = pick_build_card(state, pid, &cand) {
+        if let Some((card_index, card_score)) = pick_build_card(state, pid, &cand) {
             let coal_needed = cand.cost_coal as usize;
             let iron_needed = cand.cost_iron as usize;
             let coal = crate::rules::coal_source_options(state, cand.loc, coal_needed)
@@ -564,6 +560,7 @@ pub(crate) fn score_top_builds(
                     card_index,
                 },
                 score,
+                card_score,
             });
         }
     }

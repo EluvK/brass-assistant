@@ -25,7 +25,7 @@ def test_engine_candidate_features_match_declared_schema():
 
 def test_teacher_candidates_are_engine_aligned_and_schema_versioned():
     state = be.GameState(seed=31, players=4)
-    features, scores, canonical, selected, score = encode_teacher_candidates(state)
+    features, scores, _card_scores, canonical, selected, score, _card_score = encode_teacher_candidates(state)
     assert be.ACTION_FEATURE_SCHEMA_VERSION == ACTION_FEATURE_SCHEMA_VERSION
     assert canonical
     assert 0 <= selected < len(features)

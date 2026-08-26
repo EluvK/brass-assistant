@@ -358,6 +358,7 @@ pub(crate) fn score_top_networks(
                     card_index,
                 },
                 score,
+                card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
             }
         })
         .collect()
@@ -451,6 +452,7 @@ pub(crate) fn score_top_network_doubles(
             card_index,
         },
         score,
+        card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
     });
     }
     out

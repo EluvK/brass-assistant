@@ -53,8 +53,15 @@ pub fn choose_action(state: &mut GameState) -> Decision {
         }
     }
 
-    best.map(|(mv, score)| Decision { mv, score })
-        .unwrap_or_else(|| pass_decision(state))
+    best.map(|(mv, score)| {
+        let card_score = super::move_card_score(state, &mv);
+        Decision {
+            mv,
+            score,
+            card_score,
+        }
+    })
+    .unwrap_or_else(|| pass_decision(state))
 }
 
 fn end_of_turn_penalty(state: &GameState, pid: usize, income_before: i8) -> f64 {

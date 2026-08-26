@@ -276,5 +276,6 @@ fn score_sell_plan(
             card_index,
         },
         score,
+        card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
     })
 }

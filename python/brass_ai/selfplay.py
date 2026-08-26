@@ -243,7 +243,7 @@ def _generate_imitation_game(args):
             canonical_candidates, candidate_tensor = encode_legal_candidates(state)
             # Reuse the same Rust teacher bridge as the shortlist path. The
             # teacher canonical must be present in the complete legal set.
-            _short_features, _short_scores, canon, _short_index, _short_score = (
+            _short_features, _short_scores, _short_card_scores, canon, _short_index, _short_score, _short_card_score = (
                 encode_teacher_candidates(state)
             )
             try:
@@ -253,7 +253,7 @@ def _generate_imitation_game(args):
             policy = np.zeros(len(canonical_candidates), dtype=np.float32)
             policy[teacher_index] = 1.0
         else:
-            candidate_tensor, teacher_scores, canon, _chosen_index, _score = encode_teacher_candidates(state)
+            candidate_tensor, teacher_scores, _card_scores, canon, _chosen_index, _score, _card_score = encode_teacher_candidates(state)
             score_values = teacher_scores.numpy().astype(np.float64)
             weights = np.exp((score_values - score_values.max()) / 1.0)
             policy = (weights / weights.sum()).astype(np.float32)

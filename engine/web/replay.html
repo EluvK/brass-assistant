@@ -653,6 +653,8 @@ tr.sel {
           <th class="sortable" onclick="sortActions('score')">
             Strategy score<span id="sort-score" class="sort-icon"></span>
           </th>
+          <th>Card</th>
+          <th>Card score</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -869,6 +871,8 @@ function renderActions() {
       <th class="sortable" onclick="sortActions('score')">
         Strategy score<span id="sort-score" class="sort-icon"></span>
       </th>
+      <th>Card</th>
+      <th>Card score</th>
       <th>Status</th>
     </tr>
   `;
@@ -924,6 +928,8 @@ function renderActions() {
       <td>${esc(a.description)}</td>
       <td class="canonical">${esc(a.canonical)}</td>
       <td>${a.score ?? 'not evaluated'}</td>
+      <td>${esc(a.card || 'scout/discard set')}</td>
+      <td>${a.card_score ?? 'not evaluated'}</td>
       <td>${a.selected ? 'selected' : esc(a.note || '')}</td>
     </tr>
   `).join('');

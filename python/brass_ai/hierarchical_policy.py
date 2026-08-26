@@ -35,21 +35,25 @@ def encode_legal_candidates(state) -> tuple[list[str], torch.Tensor]:
     return list(canonical), torch.from_numpy(array)
 
 
-def encode_teacher_candidates(state) -> tuple[torch.Tensor, torch.Tensor, str, int, float]:
+def encode_teacher_candidates(state) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, int, float, float]:
     """Return compact Rust-aligned teacher features and ranking scores."""
-    flat_features, scores, canonical, teacher_index, score, count = state.heuristic_candidates()
+    flat_features, scores, card_scores, canonical, teacher_index, score, card_score, count = state.heuristic_candidates()
     width = _feature_width()
     array = np.asarray(flat_features, dtype=np.float32)
     if count <= 0 or array.size != count * width:
         raise ValueError("engine returned an invalid teacher action schema")
+    if len(card_scores) != count:
+        raise ValueError("engine returned invalid teacher card scores")
     if not 0 <= teacher_index < count:
         raise ValueError("engine returned an invalid teacher candidate index")
     return (
         torch.from_numpy(array.reshape(count, width)),
         torch.from_numpy(np.asarray(scores, dtype=np.float32)),
+        torch.from_numpy(np.asarray(card_scores, dtype=np.float32)),
         str(canonical),
         int(teacher_index),
         float(score),
+        float(card_score),
     )
 
 
