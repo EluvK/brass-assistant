@@ -5,7 +5,7 @@ use crate::engine::{advance_turn, handle_turn_result};
 use crate::rules::apply_move;
 use crate::state::GameState;
 
-use super::{Decision, candidate_actions_k, era_profile, estimate_rounds_remaining, pass_decision};
+use super::{Decision, candidate_actions_k, era_profile, pass_decision};
 
 const FIRST_ACTION_K: usize = 3;
 const SECOND_ACTION_K: usize = 2;
@@ -69,7 +69,7 @@ fn end_of_turn_penalty(state: &GameState, pid: usize, income_before: i8) -> f64 
     let scarcity =
         ((LOW_MONEY_THRESHOLD - p.money) as f64 / LOW_MONEY_THRESHOLD as f64).clamp(0.0, 1.0);
     let income_term = if p.income_level() < 0 { 1.4 } else { 0.9 };
-    let rounds = estimate_rounds_remaining(state);
+    let rounds = state.rounds_remaining();
     let runway = (rounds / 8.0).clamp(0.0, 1.0);
     let era_term = if state.era == Era::Rail { 1.0 } else { 0.8 };
     let runway_term = 0.6 + 0.4 * (1.0 - runway);

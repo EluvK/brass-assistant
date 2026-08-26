@@ -307,18 +307,6 @@ pub(crate) fn evaluate_position(state: &GameState, pid: usize) -> f64 {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn estimate_rounds_remaining(state: &GameState) -> f64 {
-    // Unplayed cards = deck + all hands. Each action spends one card, and a
-    // round is actions_per_turn actions per player. The era ends only when the
-    // deck AND every hand are exhausted, so using deck length alone badly
-    // underestimates late-era rounds (deck empties before hands do).
-    let deck_cards = state.deck.len() as f64;
-    let hand_cards: f64 = state.players.iter().map(|p| p.hand.len() as f64).sum();
-    let total = deck_cards + hand_cards;
-    let actions_per_round = state.player_count() as f64 * state.actions_per_turn as f64;
-    (total / actions_per_round).clamp(1.0, 8.0)
-}
-
 fn money_weight(state: &GameState) -> f64 {
     era_profile(state).money_w
 }

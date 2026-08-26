@@ -169,7 +169,7 @@ fn score_sell_plan(
     // or the VP + income is permanently lost. Boost the sell action sharply.
     // In Rail-Late the finish is selling your built goods for VP — selling is
     // the whole point of the late game, so weight it across the entire phase.
-    let rounds_left = estimate_rounds_remaining(state);
+    let rounds_left = state.rounds_remaining();
     let canal_end = state.era == Era::Canal && rounds_left <= 2.0;
     let rail_end = state.era == Era::Rail && rounds_left <= 1.0;
     let urgent = canal_end || rail_end;

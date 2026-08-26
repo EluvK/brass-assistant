@@ -4,7 +4,7 @@ use crate::data::{Era, IndustryType};
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots};
 use crate::state::{Card, GameState};
 
-use super::{estimate_rounds_remaining, owned_beer_barrels};
+use super::owned_beer_barrels;
 
 /// Four strategy phases: each era is split into an early and late half.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,7 +35,7 @@ pub fn era_phase(state: &GameState) -> Phase {
 
 pub fn era_profile(state: &GameState) -> EraProfile {
     let phase = era_phase(state);
-    let rounds = estimate_rounds_remaining(state);
+    let rounds = state.rounds_remaining();
     let frac = (rounds / 8.0).clamp(0.0, 1.0);
     match phase {
         Phase::CanalEarly | Phase::CanalLate => EraProfile {

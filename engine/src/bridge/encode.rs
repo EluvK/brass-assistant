@@ -21,7 +21,6 @@
 //!   opp_hands (3*35,) same bag-of-cards for the other players (determinized).
 
 use crate::data::Era;
-use crate::heuristic_ai::estimate_rounds_remaining;
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, connections};
 use crate::state::{Card, GameState};
 
@@ -118,7 +117,7 @@ fn global_vec(state: &GameState, _pid: usize) -> Vec<f32> {
 
     g[0] = if state.era == Era::Rail { 1.0 } else { 0.0 };
     g[1] = (state.round as f32 / 8.0).min(1.0);
-    g[2] = (estimate_rounds_remaining(state) as f32 / 8.0).min(1.0);
+    g[2] = (state.rounds_remaining() as f32 / 10.0).min(1.0);
     g[3] = if state.actions_per_turn > 0 {
         state.actions_this_turn as f32 / state.actions_per_turn as f32
     } else {

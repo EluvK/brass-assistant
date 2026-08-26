@@ -17,7 +17,7 @@ fn score_loan_result(
     // build that keeps the turn engine running. It is worth taking when cash is
     // so low that without it we'd idle-pass, provided income isn't already in
     // a death spiral.
-    let rounds_left = estimate_rounds_remaining(state);
+    let rounds_left = state.rounds_remaining();
     let income_cost = crate::map::LOAN_INCOME_PENALTY as f64 * income_weight(state);
     let _ = rounds_left;
 

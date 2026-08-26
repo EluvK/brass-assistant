@@ -182,7 +182,7 @@ fn estimate_flip_probability(
         if open_links > 0 {
             b += 0.1;
         }
-        if estimate_rounds_remaining(state) < 2.0 {
+        if state.rounds_remaining() < 2.0 {
             b -= 0.2;
         }
         // Beer-capacity gate: if the player already has more unflipped
@@ -490,7 +490,7 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
         // at era end and does not support rail links. Bias toward develop-first
         // (brewery 2+) unless there is clear immediate sell demand.
         if state.era == Era::Canal && tile.level == 1 {
-            let rounds_left = estimate_rounds_remaining(state);
+            let rounds_left = state.rounds_remaining();
             let demand_now = sellable_beer_demand(state, pid) as f64;
             let no_real_demand = if demand_now < 1.0 { 1.0 } else { 0.0 };
             let long_horizon = if rounds_left > 3.0 { 1.0 } else { 0.0 };

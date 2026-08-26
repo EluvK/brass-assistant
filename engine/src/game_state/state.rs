@@ -658,6 +658,35 @@ impl GameState {
         self.players.len()
     }
 
+    /// Estimated number of rounds (including the current one) until the era
+    /// runs out of playable cards. Cards in hands and the deck are the exact
+    /// remaining action budget; the first round is special because each
+    /// player gets one action instead of two.
+    pub fn rounds_remaining(&self) -> f64 {
+        let cards_remaining =
+            self.deck.len() + self.players.iter().map(|p| p.hand.len()).sum::<usize>();
+        if cards_remaining == 0 {
+            return 0.0;
+        }
+
+        let players = self.player_count().max(1);
+        let actions_per_round = players * ACTIONS_PER_TURN;
+        let rounds = if self.is_first_round {
+            // `current_index` points at the player whose action is next and
+            // `actions_this_turn` is that player's actions already completed.
+            let first_round_actions_left = players
+                .saturating_sub(self.current_index)
+                .saturating_mul(FIRST_ROUND_ACTIONS)
+                .saturating_sub(self.actions_this_turn);
+            let after_first = cards_remaining.saturating_sub(first_round_actions_left);
+            1.0 + after_first as f64 / actions_per_round as f64
+        } else {
+            cards_remaining as f64 / actions_per_round as f64
+        };
+
+        rounds.max(0.0)
+    }
+
     pub fn current_player_id(&self) -> usize {
         self.turn_order[self.current_index]
     }
@@ -1455,5 +1484,31 @@ fn farm_index(loc: Loc) -> Option<usize> {
         Loc::BreweryNorth => Some(0),
         Loc::BrewerySouth => Some(1),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod rounds_remaining_tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    #[test]
+    fn accounts_for_first_round_and_player_count() {
+        let state = GameState::new(ChaCha12Rng::seed_from_u64(1), 2);
+        // 2p Canal: 38 playable cards, with two one-action first-round turns.
+        assert!((state.rounds_remaining() - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn decreases_with_actions_and_reaches_zero_without_cards() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(1), 4);
+        let initial = state.rounds_remaining();
+        state.players[0].hand.pop();
+        assert!(state.rounds_remaining() < initial);
+        state.deck.clear();
+        for player in &mut state.players {
+            player.hand.clear();
+        }
+        assert_eq!(state.rounds_remaining(), 0.0);
     }
 }
