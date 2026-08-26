@@ -15,7 +15,7 @@ use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use _engine::heuristic_ai;
 use _engine::random_ai;
 use _engine::replay_fmt;
-use _engine::rules::Move;
+use _engine::rules::ResolvedMove;
 use _engine::scoring;
 use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
@@ -46,7 +46,7 @@ fn choose_heuristic_action(
     trace_enabled: bool,
     candidate_k: usize,
     move_no: usize,
-) -> Move {
+) -> ResolvedMove {
     if trace_enabled {
         let pid = state.current_player_id();
         println!(
@@ -79,14 +79,14 @@ fn choose_heuristic_action(
         );
         let pid = state.current_player_id();
         let selected: Vec<usize> = match &decision.mv {
-            _engine::r#move::Move::Build { card_index, .. }
-            | _engine::r#move::Move::Network { card_index, .. }
-            | _engine::r#move::Move::NetworkDouble { card_index, .. }
-            | _engine::r#move::Move::Develop { card_index, .. }
-            | _engine::r#move::Move::Sell { card_index, .. }
-            | _engine::r#move::Move::Loan { card_index }
-            | _engine::r#move::Move::Pass { card_index } => vec![*card_index],
-            _engine::r#move::Move::Scout { card_indices } => card_indices.to_vec(),
+            _engine::r#move::ResolvedMove::Build { card_index, .. }
+            | _engine::r#move::ResolvedMove::Network { card_index, .. }
+            | _engine::r#move::ResolvedMove::NetworkDouble { card_index, .. }
+            | _engine::r#move::ResolvedMove::Develop { card_index, .. }
+            | _engine::r#move::ResolvedMove::Sell { card_index, .. }
+            | _engine::r#move::ResolvedMove::Loan { card_index }
+            | _engine::r#move::ResolvedMove::Pass { card_index } => vec![*card_index],
+            _engine::r#move::ResolvedMove::Scout { card_indices } => card_indices.to_vec(),
         };
         let ranked = heuristic_ai::ranked_card_choices(state, pid);
         println!("卡片保留价值(越低越适合消耗):");
@@ -162,7 +162,7 @@ fn main() {
     }
 
     let move_no = Cell::new(0usize);
-    let mut on_before = |state: &mut GameState, mv: &Move| {
+    let mut on_before = |state: &mut GameState, mv: &ResolvedMove| {
         move_no.set(move_no.get() + 1);
         let pid = state.current_player_id();
         let stat_target = if state.era == Era::Canal {
@@ -180,7 +180,7 @@ fn main() {
             println!("    手牌前: {hand_before}");
         }
     };
-    let mut on_after = |state: &mut GameState, _mv: &Move, res: &Result<String, String>| {
+    let mut on_after = |state: &mut GameState, _mv: &ResolvedMove, res: &Result<String, String>| {
         let pid = state.current_player_id();
         if verbose {
             let after = replay_fmt::player_state(state, pid);

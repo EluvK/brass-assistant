@@ -109,7 +109,7 @@ fn score_loan_result(
             - late_era_penalty;
     let card_index = card_choices.first().map(|(index, _)| *index)?;
     Some(Decision {
-        mv: Move::Loan { card_index },
+        mv: ResolvedMove::Loan { card_index },
         score,
         card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
     })
@@ -122,7 +122,7 @@ fn best_same_turn_after_loan(
 ) -> Option<f64> {
     let card_index = card_choices.first().map(|(index, _)| *index)?;
     let mut sim = state.clone();
-    crate::rules::apply_move(&mut sim, &Move::Loan { card_index }).ok()?;
+    crate::rules::apply_move(&mut sim, &ResolvedMove::Loan { card_index }).ok()?;
     let tr = advance_turn(&mut sim);
     match tr {
         TurnResult::Continue => {}
@@ -134,7 +134,7 @@ fn best_same_turn_after_loan(
     let cands = candidate_actions_k(&mut sim, 3);
     cands
         .into_iter()
-        .filter(|d| !matches!(d.mv, Move::Loan { .. }))
+        .filter(|d| !matches!(d.mv, ResolvedMove::Loan { .. }))
         .map(|d| d.score)
         .max_by(|a, b| a.partial_cmp(b).unwrap())
 }

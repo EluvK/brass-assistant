@@ -2,7 +2,7 @@ use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use _engine::heuristic_ai;
 use _engine::mcts_ai::{self, MctsConfig};
 use _engine::random_ai::choose_random_move;
-use _engine::rules::Move;
+use _engine::rules::ResolvedMove;
 use _engine::scoring;
 use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
@@ -62,30 +62,31 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
         usize::MAX
     };
 
-    let mut on_move = |_state: &mut GameState, mv: &Move| match mv {
-        Move::Build { .. } => builds += 1,
-        Move::Network { .. } | Move::NetworkDouble { .. } => networks += 1,
-        Move::Develop { .. } => develops += 1,
-        Move::Sell { .. } => sells += 1,
-        Move::Loan { .. } => loans += 1,
-        Move::Pass { .. } => passes += 1,
-        Move::Scout { .. } => {}
+    let mut on_move = |_state: &mut GameState, mv: &ResolvedMove| match mv {
+        ResolvedMove::Build { .. } => builds += 1,
+        ResolvedMove::Network { .. } | ResolvedMove::NetworkDouble { .. } => networks += 1,
+        ResolvedMove::Develop { .. } => develops += 1,
+        ResolvedMove::Sell { .. } => sells += 1,
+        ResolvedMove::Loan { .. } => loans += 1,
+        ResolvedMove::Pass { .. } => passes += 1,
+        ResolvedMove::Scout { .. } => {}
     };
-    let mut on_after = |state: &mut GameState, mv: &Move, result: &Result<String, String>| {
-        if let Err(err) = result {
-            eprintln!(
-                "[illegal] seed={} policy={} pid={} era={:?} round={} hand={} move={} err={}",
-                seed,
-                policy,
-                state.current_player_id(),
-                state.era,
-                state.round,
-                state.players[state.current_player_id()].hand.len(),
-                mv.describe(state),
-                err
-            );
-        }
-    };
+    let mut on_after =
+        |state: &mut GameState, mv: &ResolvedMove, result: &Result<String, String>| {
+            if let Err(err) = result {
+                eprintln!(
+                    "[illegal] seed={} policy={} pid={} era={:?} round={} hand={} move={} err={}",
+                    seed,
+                    policy,
+                    state.current_player_id(),
+                    state.era,
+                    state.round,
+                    state.players[state.current_player_id()].hand.len(),
+                    mv.describe(state),
+                    err
+                );
+            }
+        };
     let mut on_era = |_state: &mut GameState, era: _engine::data::Era| -> AfterEra {
         if era == _engine::data::Era::Canal {
             canal_events += 1;

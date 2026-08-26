@@ -551,7 +551,7 @@ pub(crate) fn score_top_builds(
                 .next()
                 .unwrap_or_default();
             out.push(Decision {
-                mv: Move::Build {
+                mv: ResolvedMove::Build {
                     loc: cand.loc,
                     slot_index: cand.slot_index,
                     ind: cand.ind,

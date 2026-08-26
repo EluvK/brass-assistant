@@ -1,4 +1,4 @@
-//! Canonical string codec for `Move`, shared by the PyO3 bridge and (later)
+//! Canonical string codec for executable [`ResolvedMove`], shared by the PyO3 bridge and (later)
 //! self-play data serialization.
 //!
 //! The encoding is lossless: every field needed to re-execute the move is
@@ -13,7 +13,7 @@
 
 use crate::data::IndustryType;
 use crate::graph::{BeerSource, BeerSourceKind, CoalSource, CoalSourceKind, IronSource};
-use crate::rules::Move;
+use crate::rules::ResolvedMove;
 
 const MAX_STR: &str = "max";
 const NONE_STR: &str = "-";
@@ -220,9 +220,13 @@ fn card_enc(c: usize) -> String {
 
 // --- encode -----------------------------------------------------------------
 
-pub fn encode(mv: &Move) -> String {
+pub fn encode(mv: &ResolvedMove) -> String {
+    format!("ResolvedMove{{operation:{}}}", encode_legacy(mv))
+}
+
+fn encode_legacy(mv: &ResolvedMove) -> String {
     match mv {
-        Move::Build {
+        ResolvedMove::Build {
             loc,
             slot_index,
             ind,
@@ -238,7 +242,7 @@ pub fn encode(mv: &Move) -> String {
             iron_list(iron),
             card_enc(*card_index)
         ),
-        Move::Network {
+        ResolvedMove::Network {
             conn_id,
             coal: coal_src,
             card_index,
@@ -251,7 +255,7 @@ pub fn encode(mv: &Move) -> String {
                 .unwrap_or_else(|| NONE_STR.to_string()),
             card_enc(*card_index)
         ),
-        Move::NetworkDouble {
+        ResolvedMove::NetworkDouble {
             conn1,
             conn2,
             coal1,
@@ -267,7 +271,7 @@ pub fn encode(mv: &Move) -> String {
             beer(beer_src),
             card_enc(*card_index)
         ),
-        Move::Develop {
+        ResolvedMove::Develop {
             ind1,
             ind2,
             iron,
@@ -281,7 +285,7 @@ pub fn encode(mv: &Move) -> String {
             iron_list(iron),
             card_enc(*card_index)
         ),
-        Move::Sell {
+        ResolvedMove::Sell {
             keys,
             merchant_indices,
             use_merchant_beer,
@@ -300,8 +304,8 @@ pub fn encode(mv: &Move) -> String {
                 .unwrap_or_else(|| NONE_STR.to_string()),
             card_enc(*card_index)
         ),
-        Move::Loan { card_index } => format!("Loan{{card:{}}}", card_enc(*card_index)),
-        Move::Scout { card_indices } => format!(
+        ResolvedMove::Loan { card_index } => format!("Loan{{card:{}}}", card_enc(*card_index)),
+        ResolvedMove::Scout { card_indices } => format!(
             "Scout{{cards:{}}}",
             card_indices
                 .iter()
@@ -309,7 +313,7 @@ pub fn encode(mv: &Move) -> String {
                 .collect::<Vec<_>>()
                 .join(";")
         ),
-        Move::Pass { card_index } => format!("Pass{{card:{}}}", card_enc(*card_index)),
+        ResolvedMove::Pass { card_index } => format!("Pass{{card:{}}}", card_enc(*card_index)),
     }
 }
 
@@ -341,8 +345,12 @@ fn field_opt_ind(body: &str, name: &str) -> Result<Option<IndustryType>, String>
     }
 }
 
-pub fn decode(s: &str) -> Result<Move, String> {
+pub fn decode(s: &str) -> Result<ResolvedMove, String> {
     let s = s.trim();
+    let s = s
+        .strip_prefix("ResolvedMove{operation:")
+        .and_then(|body| body.strip_suffix('}'))
+        .ok_or_else(|| format!("expected ResolvedMove canonical, got {s:?}"))?;
     let (head, rest) = s.split_once('{').ok_or_else(|| format!("bad move {s:?}"))?;
     let body = rest
         .strip_suffix('}')
@@ -353,7 +361,7 @@ pub fn decode(s: &str) -> Result<Move, String> {
             let coal = coal_list_dec(field(body, "coal")?)?;
             let iron = iron_list_dec(field(body, "iron")?)?;
             let card_index = field_u(body, "card")?;
-            Ok(Move::Build {
+            Ok(ResolvedMove::Build {
                 loc: crate::map::ALL_LOCATIONS
                     .get(field_u(body, "loc")?)
                     .copied()
@@ -372,13 +380,13 @@ pub fn decode(s: &str) -> Result<Move, String> {
             } else {
                 Some(dec_coal(coal_str)?)
             };
-            Ok(Move::Network {
+            Ok(ResolvedMove::Network {
                 conn_id: field_u(body, "conn")?,
                 coal,
                 card_index: field_u(body, "card")?,
             })
         }
-        "NetDouble" => Ok(Move::NetworkDouble {
+        "NetDouble" => Ok(ResolvedMove::NetworkDouble {
             conn1: field_u(body, "c1")?,
             conn2: field_u(body, "c2")?,
             coal1: dec_coal(field(body, "coal1")?)?,
@@ -386,7 +394,7 @@ pub fn decode(s: &str) -> Result<Move, String> {
             beer: dec_beer(field(body, "beer")?)?,
             card_index: field_u(body, "card")?,
         }),
-        "Develop" => Ok(Move::Develop {
+        "Develop" => Ok(ResolvedMove::Develop {
             ind1: field_ind(body, "ind1")?,
             ind2: field_opt_ind(body, "ind2")?,
             iron: iron_list_dec(field(body, "iron")?)?,
@@ -397,7 +405,7 @@ pub fn decode(s: &str) -> Result<Move, String> {
             let merchant_indices = u_list_dec(field(body, "merchants")?)?;
             let use_merchant_beer = b_list_dec(field(body, "beer")?)?;
             let beer_sources = beer_plan_dec(field(body, "sources")?)?;
-            Ok(Move::Sell {
+            Ok(ResolvedMove::Sell {
                 keys,
                 merchant_indices,
                 use_merchant_beer,
@@ -406,7 +414,7 @@ pub fn decode(s: &str) -> Result<Move, String> {
                 card_index: field_u(body, "card")?,
             })
         }
-        "Loan" => Ok(Move::Loan {
+        "Loan" => Ok(ResolvedMove::Loan {
             card_index: field_u(body, "card")?,
         }),
         "Scout" => {
@@ -414,9 +422,9 @@ pub fn decode(s: &str) -> Result<Move, String> {
             let card_indices: [usize; 3] = cards
                 .try_into()
                 .map_err(|_| format!("scout needs 3 cards in {s:?}"))?;
-            Ok(Move::Scout { card_indices })
+            Ok(ResolvedMove::Scout { card_indices })
         }
-        "Pass" => Ok(Move::Pass {
+        "Pass" => Ok(ResolvedMove::Pass {
             card_index: field_u(body, "card")?,
         }),
         other => Err(format!("unknown move type {other:?}")),
@@ -426,7 +434,7 @@ pub fn decode(s: &str) -> Result<Move, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::{apply_move, legal_moves};
+    use crate::rules::{apply_move, legal_resolved_moves};
     use crate::state::GameState;
     use rand_chacha::ChaCha12Rng;
     use rand_chacha::rand_core::SeedableRng;
@@ -439,7 +447,7 @@ mod tests {
     fn encode_decode_roundtrip_over_legal_moves() {
         for seed in [1u64, 7, 42, 1337] {
             let mut state = fresh_state(seed, 4);
-            let moves = legal_moves(&mut state);
+            let moves = legal_resolved_moves(&mut state);
             assert!(!moves.is_empty(), "seed {seed} produced no legal moves");
             for mv in moves {
                 let s1 = encode(&mv);

@@ -5,7 +5,8 @@
 //!     .current_player_id / .player_count    # int properties
 //!     .era                                   # 0 = canal, 1 = rail
 //!     .round / .game_over / .current_player_money
-//!     .legal_moves() -> list[(action_id:int, canonical:str, describe:str)]
+//!     .legal_moves() -> legacy fully resolved executable moves
+//!     .legal_operations() -> structural operations with card candidates
 //!     .legal_candidates() -> list[(canonical:str, features: float32[235])]
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
 //!     .determinize() -> GameState            # opponent-hand sampling
@@ -26,7 +27,7 @@ use crate::encode;
 use crate::heuristic_ai;
 use crate::mcts_ai;
 use crate::move_codec;
-use crate::rules::{apply_move, legal_moves};
+use crate::rules::{apply_move, legal_moves, legal_resolved_moves};
 use crate::state::GameState;
 
 #[pyclass(name = "GameState")]
@@ -116,7 +117,7 @@ impl PyGame {
     /// describe) triples.
     fn legal_moves(&self) -> Vec<(usize, String, String)> {
         let mut state = self.state.clone();
-        legal_moves(&mut state)
+        legal_resolved_moves(&mut state)
             .into_iter()
             .enumerate()
             .map(|(action_id, mv)| {
@@ -126,11 +127,53 @@ impl PyGame {
             .collect()
     }
 
+    /// Structural legal operations.  Each row contains its per-state id,
+    /// description, required card count (1 or 3 for Scout), and candidates as
+    /// `(hand_index, keep_score)`.  Resolve the selected cards through
+    /// `resolve_legal_operation` before applying the result.
+    fn legal_operations(&self) -> Vec<(usize, String, usize, Vec<(usize, f64)>)> {
+        let mut state = self.state.clone();
+        legal_moves(&mut state)
+            .into_iter()
+            .enumerate()
+            .map(|(id, mv)| {
+                (
+                    id,
+                    mv.describe(&state),
+                    match mv.card_requirement() {
+                        crate::r#move::CardRequirement::One => 1,
+                        crate::r#move::CardRequirement::ScoutThree => 3,
+                    },
+                    mv.card_candidates()
+                        .iter()
+                        .map(|c| (c.hand_index, c.keep_score))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Resolve a structural operation from the current state into the nested
+    /// executable representation consumed by `apply_move`.
+    fn resolve_legal_operation(
+        &self,
+        operation_id: usize,
+        selected_cards: Vec<usize>,
+    ) -> PyResult<String> {
+        let mut state = self.state.clone();
+        let mv = legal_moves(&mut state)
+            .into_iter()
+            .nth(operation_id)
+            .ok_or_else(|| PyValueError::new_err("unknown structural operation id"))?;
+        let resolved = mv.resolve(&selected_cards).map_err(PyValueError::new_err)?;
+        Ok(move_codec::encode(&resolved))
+    }
+
     /// Concrete executable legal moves with structured v2 action features.
     /// Every returned row is a complete action the engine can apply.
     fn legal_candidates(&self) -> Vec<(String, Vec<f32>)> {
         let mut state = self.state.clone();
-        legal_moves(&mut state)
+        legal_resolved_moves(&mut state)
             .into_iter()
             .map(|mv| {
                 let canonical = move_codec::encode(&mv);
@@ -318,14 +361,14 @@ impl PyGame {
         let mv = move_codec::decode(canonical)
             .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
         Ok(match &mv {
-            crate::rules::Move::Build { ind, .. } => ("build".to_string(), *ind as usize),
-            crate::rules::Move::Network { .. } => ("network".to_string(), 0),
-            crate::rules::Move::NetworkDouble { .. } => ("network_double".to_string(), 0),
-            crate::rules::Move::Develop { .. } => ("develop".to_string(), 0),
-            crate::rules::Move::Sell { .. } => ("sell".to_string(), 0),
-            crate::rules::Move::Loan { .. } => ("loan".to_string(), 0),
-            crate::rules::Move::Pass { .. } => ("pass".to_string(), 0),
-            crate::rules::Move::Scout { .. } => ("scout".to_string(), 0),
+            crate::rules::ResolvedMove::Build { ind, .. } => ("build".to_string(), *ind as usize),
+            crate::rules::ResolvedMove::Network { .. } => ("network".to_string(), 0),
+            crate::rules::ResolvedMove::NetworkDouble { .. } => ("network_double".to_string(), 0),
+            crate::rules::ResolvedMove::Develop { .. } => ("develop".to_string(), 0),
+            crate::rules::ResolvedMove::Sell { .. } => ("sell".to_string(), 0),
+            crate::rules::ResolvedMove::Loan { .. } => ("loan".to_string(), 0),
+            crate::rules::ResolvedMove::Pass { .. } => ("pass".to_string(), 0),
+            crate::rules::ResolvedMove::Scout { .. } => ("scout".to_string(), 0),
         })
     }
 

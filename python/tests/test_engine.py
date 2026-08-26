@@ -46,8 +46,7 @@ def test_legal_moves_structure():
     assert moves
     for action_id, canonical, describe in moves:
         assert action_id >= 0
-        assert canonical.startswith(("Build", "Network", "NetDouble", "Develop",
-                                     "Sell", "FreeDevelop", "Loan", "Scout", "Pass"))
+        assert canonical.startswith("ResolvedMove{operation:")
         assert describe
 
 
@@ -181,7 +180,7 @@ def test_network_double_moves_are_executable():
         if g.era != 1:
             continue
         for _, canonical, _ in g.legal_moves():
-            if not canonical.startswith("NetDouble"):
+            if not canonical.startswith("ResolvedMove{operation:NetDouble"):
                 continue
             seen += 1
             # Replay the same line from the seed and execute the move.

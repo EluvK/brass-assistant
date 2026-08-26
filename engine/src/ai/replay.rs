@@ -11,7 +11,7 @@ use crate::heuristic_ai;
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots, connections};
 use crate::mcts_ai::{self, MctsConfig};
 use crate::random_ai;
-use crate::rules::{Move, apply_move, legal_moves};
+use crate::rules::{ResolvedMove, apply_move, legal_resolved_moves};
 use crate::state::{Card, GameState, loc_from_key};
 use rand_chacha::ChaCha12Rng;
 use rand_chacha::rand_core::SeedableRng;
@@ -86,8 +86,8 @@ pub trait StrategyAdapter: Send {
     fn choose(
         &mut self,
         state: &mut GameState,
-        legal: &[Move],
-    ) -> Result<(Move, DecisionTrace), String>;
+        legal: &[ResolvedMove],
+    ) -> Result<(ResolvedMove, DecisionTrace), String>;
 }
 
 pub struct NativeStrategy {
@@ -121,8 +121,8 @@ fn card_scores(state: &GameState) -> Vec<CardKeepDto> {
 
 fn trace_for(
     state: &GameState,
-    legal: &[Move],
-    selected: Move,
+    legal: &[ResolvedMove],
+    selected: ResolvedMove,
     strategy: String,
     kind: &str,
     scored: Vec<heuristic_ai::Decision>,
@@ -132,7 +132,7 @@ fn trace_for(
         .into_iter()
         .map(|d| (heuristic_ai::operation_key(&d.mv), (d.score, d.card_score)))
         .collect();
-    let mut grouped: HashMap<String, &Move> = HashMap::new();
+    let mut grouped: HashMap<String, &ResolvedMove> = HashMap::new();
     for mv in legal {
         let key = heuristic_ai::operation_key(mv);
         grouped.entry(key).or_insert(mv);
@@ -174,16 +174,16 @@ fn trace_for(
     }
 }
 
-fn move_card_name(state: &GameState, mv: &Move) -> Option<String> {
+fn move_card_name(state: &GameState, mv: &ResolvedMove) -> Option<String> {
     let index = match mv {
-        Move::Scout { .. } => return None,
-        Move::Build { card_index, .. }
-        | Move::Network { card_index, .. }
-        | Move::NetworkDouble { card_index, .. }
-        | Move::Develop { card_index, .. }
-        | Move::Sell { card_index, .. }
-        | Move::Loan { card_index }
-        | Move::Pass { card_index } => *card_index,
+        ResolvedMove::Scout { .. } => return None,
+        ResolvedMove::Build { card_index, .. }
+        | ResolvedMove::Network { card_index, .. }
+        | ResolvedMove::NetworkDouble { card_index, .. }
+        | ResolvedMove::Develop { card_index, .. }
+        | ResolvedMove::Sell { card_index, .. }
+        | ResolvedMove::Loan { card_index }
+        | ResolvedMove::Pass { card_index } => *card_index,
     };
     state.players[state.current_player_id()]
         .hand
@@ -198,8 +198,8 @@ impl StrategyAdapter for NativeStrategy {
     fn choose(
         &mut self,
         state: &mut GameState,
-        legal: &[Move],
-    ) -> Result<(Move, DecisionTrace), String> {
+        legal: &[ResolvedMove],
+    ) -> Result<(ResolvedMove, DecisionTrace), String> {
         if legal.is_empty() {
             return Err("current player has no legal move".into());
         }
@@ -554,7 +554,7 @@ impl ReplaySession {
         }
         let before = state_dto(&self.state);
         let player = self.state.current_player_id();
-        let legal = legal_moves(&mut self.state);
+        let legal = legal_resolved_moves(&mut self.state);
         let (mv, trace) = match self.adapters[player].choose(&mut self.state, &legal) {
             Ok(v) => v,
             Err(e) => {
@@ -663,9 +663,9 @@ mod tests {
         for step in &s.steps {
             for action in &step.legal_actions {
                 let mut state = GameState::from_snapshot_bytes(&s.snapshots[step.index]).unwrap();
-                // `legal_moves` is the engine's cache-rebuild boundary and is
+                // `legal_resolved_moves` is the engine's cache-rebuild boundary and is
                 // also the exact source of the recorded action collection.
-                legal_moves(&mut state);
+                legal_resolved_moves(&mut state);
                 let mv = move_codec::decode(&action.canonical).unwrap();
                 assert!(apply_move(&mut state, &mv).is_ok(), "{}", action.canonical);
             }

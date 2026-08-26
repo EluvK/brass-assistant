@@ -157,7 +157,7 @@ fn score_develop_plan(
         .next()?;
     let card_index = card_choices.first().map(|(index, _)| *index)?;
     Some(Decision {
-        mv: Move::Develop {
+        mv: ResolvedMove::Develop {
             ind1: first.0,
             ind2: second.map(|(ind, _)| ind),
             iron: iron_choice,

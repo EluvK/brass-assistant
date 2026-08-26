@@ -5,7 +5,7 @@
 //! engine, including card and resource choices.
 
 use crate::graph::{BeerSourceKind, CoalSourceKind};
-use crate::r#move::Move;
+use crate::r#move::ResolvedMove;
 use crate::state::{Card, GameState};
 
 pub const ACTION_FEATURE_DIM: usize = 235;
@@ -58,12 +58,12 @@ fn industry(out: &mut [f32], offset: usize, ind: crate::data::IndustryType) {
 ///
 /// `card_index` is an execution reference only. Card semantics are read from
 /// the pre-move current player's hand so the network never learns hand order.
-pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
+pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
     let mut out = vec![0.0; ACTION_FEATURE_DIM];
     one_hot(&mut out, ACTION, 7, mv.action().index());
 
     match mv {
-        Move::Build {
+        ResolvedMove::Build {
             loc,
             slot_index,
             ind,
@@ -89,7 +89,7 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
                 }
             }
         }
-        Move::Network {
+        ResolvedMove::Network {
             conn_id,
             coal,
             card_index,
@@ -105,7 +105,7 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
                 }
             }
         }
-        Move::NetworkDouble {
+        ResolvedMove::NetworkDouble {
             conn1,
             conn2,
             coal1,
@@ -131,7 +131,7 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
                 BeerSourceKind::Merchant => out[SUMMARY + 8] = 1.0,
             }
         }
-        Move::Develop {
+        ResolvedMove::Develop {
             ind1,
             ind2,
             iron,
@@ -149,7 +149,7 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
                 }
             }
         }
-        Move::Sell {
+        ResolvedMove::Sell {
             keys,
             merchant_indices,
             use_merchant_beer,
@@ -178,8 +178,10 @@ pub fn encode_move(state: &GameState, mv: &Move) -> Vec<f32> {
                 out[SUMMARY + 11] = 1.0;
             }
         }
-        Move::Loan { card_index } | Move::Pass { card_index } => card(&mut out, state, *card_index),
-        Move::Scout { card_indices } => {
+        ResolvedMove::Loan { card_index } | ResolvedMove::Pass { card_index } => {
+            card(&mut out, state, *card_index)
+        }
+        ResolvedMove::Scout { card_indices } => {
             for &index in card_indices {
                 card(&mut out, state, index);
             }

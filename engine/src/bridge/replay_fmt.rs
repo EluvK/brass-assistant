@@ -10,7 +10,7 @@
 
 use crate::data::{CardType, Era, IndustryType};
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, city_slots, connections};
-use crate::rules::{Move, calculate_build_cost};
+use crate::rules::{ResolvedMove, calculate_build_cost};
 use crate::state::{Card, GameState, city_slot_offsets};
 
 // ---------------------------------------------------------------------------
@@ -141,28 +141,28 @@ pub fn merchant_state(state: &GameState) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Move detail
+// ResolvedMove detail
 // ---------------------------------------------------------------------------
 
-pub fn mv_card_index(mv: &Move) -> usize {
+pub fn mv_card_index(mv: &ResolvedMove) -> usize {
     match mv {
-        Move::Build { card_index, .. } => *card_index,
-        Move::Network { card_index, .. } => *card_index,
-        Move::NetworkDouble { card_index, .. } => *card_index,
-        Move::Develop { card_index, .. } => *card_index,
-        Move::Sell { card_index, .. } => *card_index,
-        Move::Loan { card_index } => *card_index,
-        Move::Pass { card_index } => *card_index,
-        Move::Scout { .. } => 0,
+        ResolvedMove::Build { card_index, .. } => *card_index,
+        ResolvedMove::Network { card_index, .. } => *card_index,
+        ResolvedMove::NetworkDouble { card_index, .. } => *card_index,
+        ResolvedMove::Develop { card_index, .. } => *card_index,
+        ResolvedMove::Sell { card_index, .. } => *card_index,
+        ResolvedMove::Loan { card_index } => *card_index,
+        ResolvedMove::Pass { card_index } => *card_index,
+        ResolvedMove::Scout { .. } => 0,
     }
 }
 
-pub fn move_detail(state: &GameState, mv: &Move) -> String {
+pub fn move_detail(state: &GameState, mv: &ResolvedMove) -> String {
     let pid = state.current_player_id();
     let card = state.players[pid].hand.get(mv_card_index(mv));
     let card_name = card.map(card_label).unwrap_or_else(|| "?".to_string());
     match mv {
-        Move::Build {
+        ResolvedMove::Build {
             loc,
             slot_index,
             ind,
@@ -182,7 +182,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
                 cost
             )
         }
-        Move::Network { conn_id, .. } => {
+        ResolvedMove::Network { conn_id, .. } => {
             let c = &connections()[*conn_id];
             format!(
                 "建网 {}↔{}({}时代)，用牌[{}]",
@@ -192,7 +192,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
                 card_name
             )
         }
-        Move::NetworkDouble { conn1, conn2, .. } => {
+        ResolvedMove::NetworkDouble { conn1, conn2, .. } => {
             let c1 = &connections()[*conn1];
             let c2 = &connections()[*conn2];
             format!(
@@ -204,7 +204,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
                 card_name
             )
         }
-        Move::Develop { ind1, ind2, .. } => {
+        ResolvedMove::Develop { ind1, ind2, .. } => {
             let lv1 = state.players[pid]
                 .next_tile(*ind1)
                 .map(|t| t.level)
@@ -224,7 +224,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
             };
             format!("{s}，用牌[{}]", card_name)
         }
-        Move::Sell {
+        ResolvedMove::Sell {
             keys,
             merchant_indices,
             use_merchant_beer,
@@ -258,8 +258,8 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
             }
             format!("卖货 [{}]，用牌[{}]", parts.join(" + "), card_name)
         }
-        Move::Loan { .. } => format!("贷款 £30(收入-3级),用牌[{}]", card_name),
-        Move::Scout { card_indices } => {
+        ResolvedMove::Loan { .. } => format!("贷款 £30(收入-3级),用牌[{}]", card_name),
+        ResolvedMove::Scout { card_indices } => {
             let names: Vec<String> = card_indices
                 .iter()
                 .map(|&i| {
@@ -272,7 +272,7 @@ pub fn move_detail(state: &GameState, mv: &Move) -> String {
                 .collect();
             format!("斥候：弃[{}]换2张万用牌", names.join(", "))
         }
-        Move::Pass { .. } => format!("过牌(弃[{}])", card_name),
+        ResolvedMove::Pass { .. } => format!("过牌(弃[{}])", card_name),
     }
 }
 
@@ -476,43 +476,43 @@ pub struct PStats {
 }
 
 impl PStats {
-    pub fn record(&mut self, mv: &Move, era: Era) {
+    pub fn record(&mut self, mv: &ResolvedMove, era: Era) {
         self.actions.push(action_abbrev(mv, era));
         match mv {
-            Move::Build { ind, .. } => self.build[*ind as usize] += 1,
-            Move::Network { .. } => self.network += 1,
-            Move::NetworkDouble { .. } => self.dbl_rail += 1,
-            Move::Develop { .. } => self.develop += 1,
-            Move::Sell { .. } => self.sell += 1,
-            Move::Loan { .. } => self.loan += 1,
-            Move::Pass { .. } => self.pass += 1,
-            Move::Scout { .. } => self.scout += 1,
+            ResolvedMove::Build { ind, .. } => self.build[*ind as usize] += 1,
+            ResolvedMove::Network { .. } => self.network += 1,
+            ResolvedMove::NetworkDouble { .. } => self.dbl_rail += 1,
+            ResolvedMove::Develop { .. } => self.develop += 1,
+            ResolvedMove::Sell { .. } => self.sell += 1,
+            ResolvedMove::Loan { .. } => self.loan += 1,
+            ResolvedMove::Pass { .. } => self.pass += 1,
+            ResolvedMove::Scout { .. } => self.scout += 1,
         }
     }
 }
 
-fn action_abbrev(mv: &Move, era: Era) -> String {
+fn action_abbrev(mv: &ResolvedMove, era: Era) -> String {
     const IND_ABBREVS: [&str; 6] = ["棉", "煤", "铁", "箱", "陶", "酒"];
     let ind = |ind: IndustryType| IND_ABBREVS[ind as usize];
 
     match mv {
-        Move::Build { ind: industry, .. } => ind(*industry).to_string(),
-        Move::Network { .. } => match era {
+        ResolvedMove::Build { ind: industry, .. } => ind(*industry).to_string(),
+        ResolvedMove::Network { .. } => match era {
             Era::Canal => "路".to_string(),
             Era::Rail => "路".to_string(),
         },
-        Move::NetworkDouble { .. } => "双修".to_string(),
-        Move::Develop { ind1, ind2, .. } => {
+        ResolvedMove::NetworkDouble { .. } => "双修".to_string(),
+        ResolvedMove::Develop { ind1, ind2, .. } => {
             let mut label = format!("研{}", ind(*ind1));
             if let Some(ind2) = ind2 {
                 label.push_str(ind(*ind2));
             }
             label
         }
-        Move::Sell { .. } => "卖".to_string(),
-        Move::Loan { .. } => "贷".to_string(),
-        Move::Pass { .. } => "过".to_string(),
-        Move::Scout { .. } => "斥".to_string(),
+        ResolvedMove::Sell { .. } => "卖".to_string(),
+        ResolvedMove::Loan { .. } => "贷".to_string(),
+        ResolvedMove::Pass { .. } => "过".to_string(),
+        ResolvedMove::Scout { .. } => "斥".to_string(),
     }
 }
 
@@ -587,7 +587,7 @@ pub fn player_tiles_detail(state: &GameState, pid: usize, flipped_only: bool) ->
 mod tests {
     use super::move_detail;
     use crate::data::IndustryType;
-    use crate::rules::Move;
+    use crate::rules::ResolvedMove;
     use crate::state::GameState;
     use rand_chacha::ChaCha12Rng;
     use rand_chacha::rand_core::SeedableRng;
@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn same_industry_double_develop_reports_consecutive_tile_levels() {
         let state = GameState::new(ChaCha12Rng::seed_from_u64(1), 2);
-        let develop = Move::Develop {
+        let develop = ResolvedMove::Develop {
             ind1: IndustryType::CoalMine,
             ind2: Some(IndustryType::CoalMine),
             iron: Vec::new(),

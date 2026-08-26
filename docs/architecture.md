@@ -42,7 +42,7 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 ├─ model/ 静态数据层（世界模型，无规则执行）
 │   ├─ data.rs   产业/时代/动作/卡牌类型 枚举 + 板块定义 TileDef/industry_tiles()
 │   └─ map.rs    地图：27 地点、城市槽位、商家与奖励、39 连接+邻接表、牌堆构成、市场/收入/货币常量
-│   └─ move.rs   跨层规范动作 `Move`（供 gameplay、AI、bridge 共用）
+│   └─ move.rs   分层动作：结构 `Move`（操作 + 候选卡牌/保留价值）与可执行 `ResolvedMove`
 │
 ├─ game_state/ 动态状态层
 │   ├─ state.rs   GameState + Player + Card/BoardTile/Link/MerchantTile
@@ -55,7 +55,7 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │
 ├─ gameplay/ 规则执行层
 │   ├─ rules.rs    兼容门面：重导出既有规则 API；`apply_move` 原子分发与完整状态回滚
-│   ├─ legal_moves.rs 单一合法动作生成器（原始动作 / 每类一个代表动作）；不依赖策略槽编码
+│   ├─ legal_moves.rs 结构合法动作生成器；`legal_resolved_moves` 仅供执行适配层生成完整动作
 │   ├─ actions/    按行动领域组织的规则校验与状态转换
 │   │   ├─ common.rs 资源选择/校验（免费优先）与卡牌辅助
 │   │   ├─ build.rs   BUILD 合法目标、成本与执行
@@ -83,8 +83,8 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   └─ random_ai.rs     随机基线
 │
 └─ bridge/ 桥接 / 序列化层（Python/NN 相关；依赖全部上层）
-    ├─ action_features.rs 具体合法动作 → 候选动作特征
-    ├─ move_codec.rs Move ⇄ canonical 字符串（无损，含资源源/卡牌选择）
+    ├─ action_features.rs ResolvedMove → 执行候选动作特征
+    ├─ move_codec.rs ResolvedMove ⇄ canonical 字符串（无损，含资源源/已选卡牌）
     ├─ encode.rs     状态 → 张量特征编码（board/links/global/hands）
     ├─ replay_fmt.rs 中文回放格式化（纯只读，供 replay 二进制与 Python 驱动共用）
     └─ pymod.rs      PyO3 绑定 brass_ai._engine（GameState 类 + search_net + stepwise replay）

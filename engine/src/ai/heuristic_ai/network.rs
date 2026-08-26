@@ -352,7 +352,7 @@ pub(crate) fn score_top_networks(
                 None
             };
             Decision {
-                mv: Move::Network {
+                mv: ResolvedMove::Network {
                     conn_id,
                     coal,
                     card_index,
@@ -443,7 +443,7 @@ pub(crate) fn score_top_network_doubles(
         .or_else(|| opt.beers.first().copied()) else { continue };
     let Some(coal2) = opt.coal2_opts.first().and_then(|o| o.first()).copied() else { continue };
     out.push(Decision {
-        mv: Move::NetworkDouble {
+        mv: ResolvedMove::NetworkDouble {
             conn1,
             conn2,
             coal1,

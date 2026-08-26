@@ -18,7 +18,7 @@ pub fn choose_action(state: &mut GameState) -> Decision {
     let first_candidates = candidate_actions_k(state, FIRST_ACTION_K);
     let income_before = state.players[pid].income_level();
 
-    let mut best: Option<(crate::rules::Move, f64)> = None;
+    let mut best: Option<(crate::rules::ResolvedMove, f64)> = None;
     for c1 in first_candidates {
         let mut s1 = state.clone();
         if apply_move(&mut s1, &c1.mv).is_err() {

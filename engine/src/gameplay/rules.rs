@@ -1,7 +1,7 @@
 //! Stable public facade for action rules.
 //!
 //! Action-specific legality and execution live in [`crate::gameplay::actions`];
-//! concrete legal-move enumeration lives in [`crate::gameplay::legal_moves`].
+//! concrete legal-move enumeration lives in [`crate::gameplay::legal_resolved_moves`].
 
 use crate::state::GameState;
 
@@ -14,15 +14,15 @@ pub use crate::gameplay::actions::{
     get_valid_network_targets, get_valid_second_rail_links, get_valid_sell_targets,
     iron_source_options, plan_sell_beer_sources, valid_build_cards,
 };
-pub use crate::gameplay::legal_moves::legal_moves;
-pub use crate::r#move::Move;
-pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
+pub use crate::gameplay::legal_moves::{legal_moves, legal_resolved_moves};
+pub use crate::r#move::{Move, ResolvedMove};
+pub fn apply_move(state: &mut GameState, mv: &ResolvedMove) -> Result<String, String> {
     // The public canonical-move boundary accepts decoded, potentially stale
     // input. Keep it atomic even if a future executor adds a late validation.
     let snapshot = state.clone();
     let pid = state.current_player_id();
     let res = match mv {
-        Move::Build {
+        ResolvedMove::Build {
             loc,
             slot_index,
             ind,
@@ -30,12 +30,12 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
             iron,
             card_index,
         } => execute_build(state, pid, *loc, *slot_index, *ind, coal, iron, *card_index),
-        Move::Network {
+        ResolvedMove::Network {
             conn_id,
             coal,
             card_index,
         } => execute_network(state, pid, *conn_id, *coal, *card_index),
-        Move::NetworkDouble {
+        ResolvedMove::NetworkDouble {
             conn1,
             conn2,
             coal1,
@@ -52,13 +52,13 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
             *beer,
             *card_index,
         ),
-        Move::Develop {
+        ResolvedMove::Develop {
             ind1,
             ind2,
             iron,
             card_index,
         } => execute_develop(state, pid, *ind1, *ind2, iron, *card_index),
-        Move::Sell {
+        ResolvedMove::Sell {
             keys,
             merchant_indices,
             use_merchant_beer,
@@ -75,9 +75,9 @@ pub fn apply_move(state: &mut GameState, mv: &Move) -> Result<String, String> {
             *free_develop,
             *card_index,
         ),
-        Move::Loan { card_index } => execute_loan(state, pid, *card_index),
-        Move::Scout { card_indices } => execute_scout(state, pid, *card_indices),
-        Move::Pass { card_index } => execute_pass(state, pid, *card_index),
+        ResolvedMove::Loan { card_index } => execute_loan(state, pid, *card_index),
+        ResolvedMove::Scout { card_indices } => execute_scout(state, pid, *card_indices),
+        ResolvedMove::Pass { card_index } => execute_pass(state, pid, *card_index),
     };
     match res {
         Ok(summary) => {

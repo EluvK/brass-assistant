@@ -59,13 +59,13 @@ fn score_scout_plan(
     let hand_refresh_score = scout_hand_refresh_score(card_choices);
     let score = discard_score + hand_refresh_score;
 
-    // legal_moves emits Scout combinations in ascending index order. Keep
+    // legal_resolved_moves emits Scout combinations in ascending index order. Keep
     // the teacher canonical representation identical regardless of the
     // utility ranking order used to choose discarded cards.
     let mut card_indices: [usize; 3] = [discard[0].0, discard[1].0, discard[2].0];
     card_indices.sort_unstable();
     Some(Decision {
-        mv: Move::Scout { card_indices },
+        mv: ResolvedMove::Scout { card_indices },
         score,
         card_score: discard.iter().map(|(_, s)| *s).sum(),
     })
@@ -115,7 +115,7 @@ fn score_pass_result(
 ) -> Option<Decision> {
     let card_index = card_choices.first().map(|(index, _)| *index).unwrap_or(0);
     Some(Decision {
-        mv: Move::Pass { card_index },
+        mv: ResolvedMove::Pass { card_index },
         score: -5.0,
         card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
     })

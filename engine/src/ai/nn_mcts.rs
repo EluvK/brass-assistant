@@ -18,7 +18,7 @@ use crate::bridge::action_features;
 use crate::engine::{advance_turn, handle_turn_result};
 use crate::heuristic_ai;
 use crate::move_codec;
-use crate::rules::Move;
+use crate::rules::ResolvedMove;
 use crate::state::GameState;
 use numpy::PyArray2;
 use numpy::PyArrayMethods;
@@ -74,7 +74,7 @@ pub struct NnSearchResult {
 
 struct Child {
     candidate_id: usize,
-    mv: Move,
+    mv: ResolvedMove,
     node: usize,
 }
 
@@ -342,8 +342,8 @@ fn descend(
             // The teacher uses candidate_actions_k(..., 4); expanding every
             // legal concrete move here would expose the net to many actions
             // that never appeared in the bootstrap training targets.
-            let moves: Vec<Move> = if cfg.candidate_k == 0 {
-                crate::rules::legal_moves(work)
+            let moves: Vec<ResolvedMove> = if cfg.candidate_k == 0 {
+                crate::rules::legal_resolved_moves(work)
             } else {
                 heuristic_ai::candidate_actions_k(work, cfg.candidate_k)
                     .into_iter()

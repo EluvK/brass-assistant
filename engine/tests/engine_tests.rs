@@ -2,9 +2,9 @@ use _engine::data::{Era, IndustryType, industry_tiles};
 use _engine::engine::{TurnResult, advance_turn, handle_turn_result, step};
 use _engine::map::*;
 use _engine::rules::{
-    Move, apply_move, execute_build, execute_network, execute_network_double,
+    ResolvedMove, apply_move, execute_build, execute_network, execute_network_double,
     get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links,
-    iron_source_options, legal_moves,
+    iron_source_options, legal_resolved_moves,
 };
 use _engine::scoring;
 use _engine::state::{BoardTile, Card, GameState};
@@ -22,7 +22,7 @@ fn default_heuristic_entry_point_is_the_search_policy() {
     let heuristic = _engine::heuristic_ai::choose_action(&mut heuristic_state);
     assert!(heuristic.score.is_finite());
     assert!(
-        legal_moves(&mut heuristic_state)
+        legal_resolved_moves(&mut heuristic_state)
             .iter()
             .any(|mv| format!("{:?}", mv) == format!("{:?}", heuristic.mv))
     );
@@ -36,7 +36,7 @@ fn heuristic_candidates_are_legal_and_never_dead_end() {
             if state.game_over {
                 break;
             }
-            let legal = legal_moves(&mut state);
+            let legal = legal_resolved_moves(&mut state);
             let candidates = _engine::heuristic_ai::candidate_actions_k(&mut state, 3);
             if !legal.is_empty() {
                 assert!(!candidates.is_empty(), "seed={seed} produced no candidate");
@@ -438,7 +438,7 @@ fn failed_step_does_not_advance_turn() {
     let invalid_card_index = state.players[state.current_player_id()].hand.len();
     let (result, turn) = step(
         &mut state,
-        &Move::Pass {
+        &ResolvedMove::Pass {
             card_index: invalid_card_index,
         },
     );
@@ -617,7 +617,7 @@ fn canal_era_rejects_brewery4_and_pottery5() {
         "Pottery V is a rail-era-only build"
     );
 
-    // 1) Move generation must exclude them in the canal era.
+    // 1) ResolvedMove generation must exclude them in the canal era.
     let targets = get_valid_build_targets(&state, pid);
     assert!(
         !targets.iter().any(|t| t.ind == IndustryType::Brewery),
@@ -1226,14 +1226,19 @@ fn legal_moves_do_not_offer_unaffordable_double_develop() {
         },
     );
 
-    let moves = legal_moves(&mut state);
+    let moves = legal_resolved_moves(&mut state);
     let single_develops = moves
         .iter()
-        .filter(|mv| matches!(mv, _engine::rules::Move::Develop { ind2: None, .. }))
+        .filter(|mv| matches!(mv, _engine::rules::ResolvedMove::Develop { ind2: None, .. }))
         .count();
     let double_develops = moves
         .iter()
-        .filter(|mv| matches!(mv, _engine::rules::Move::Develop { ind2: Some(_), .. }))
+        .filter(|mv| {
+            matches!(
+                mv,
+                _engine::rules::ResolvedMove::Develop { ind2: Some(_), .. }
+            )
+        })
         .count();
 
     assert!(
@@ -1675,7 +1680,7 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
     let sell = _engine::heuristic_ai::candidate_actions_k(&mut state, 1)
         .into_iter()
         .find_map(|d| match d.mv {
-            _engine::rules::Move::Sell {
+            _engine::rules::ResolvedMove::Sell {
                 keys,
                 merchant_indices,
                 use_merchant_beer,
@@ -1710,7 +1715,7 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
 
 #[test]
 fn every_double_rail_move_from_legal_moves_executes() {
-    use _engine::rules::{Move, apply_move, legal_moves};
+    use _engine::rules::{ResolvedMove, apply_move, legal_resolved_moves};
     let mut state = setup_clean_rail_state(2);
     let pid = 0;
     place_test_presence_tile(&mut state, Loc::Stafford, pid);
@@ -1719,8 +1724,8 @@ fn every_double_rail_move_from_legal_moves_executes() {
 
     // Every generated NetworkDouble must execute; this is the regression guard
     // for the coal1/coal2 enumeration fix.
-    for mv in legal_moves(&mut state) {
-        if let Move::NetworkDouble { .. } = &mv {
+    for mv in legal_resolved_moves(&mut state) {
+        if let ResolvedMove::NetworkDouble { .. } = &mv {
             let mut sim = state.clone();
             let res = apply_move(&mut sim, &mv);
             assert!(
@@ -1734,7 +1739,7 @@ fn every_double_rail_move_from_legal_moves_executes() {
 
 #[test]
 fn legal_moves_include_executable_multi_tile_sell() {
-    use _engine::rules::{Move, apply_move, legal_moves};
+    use _engine::rules::{ResolvedMove, apply_move, legal_resolved_moves};
     let mut state = setup_clean_rail_state(3);
     let pid = 0;
     state.players[pid].hand = vec![Card::WildLocation];
@@ -1787,29 +1792,29 @@ fn legal_moves_include_executable_multi_tile_sell() {
         has_beer: true,
     }];
 
-    let moves = legal_moves(&mut state);
-    let multi: Vec<&Move> = moves
+    let moves = legal_resolved_moves(&mut state);
+    let multi: Vec<&ResolvedMove> = moves
         .iter()
-        .filter(|mv| matches!(mv, Move::Sell { keys, .. } if keys.len() >= 2))
+        .filter(|mv| matches!(mv, ResolvedMove::Sell { keys, .. } if keys.len() >= 2))
         .collect();
     assert!(!multi.is_empty(), "a multi-tile sell should be generated");
     assert!(
         moves
             .iter()
-            .any(|mv| matches!(mv, Move::Sell { keys, .. } if keys.len() == 4)),
+            .any(|mv| matches!(mv, ResolvedMove::Sell { keys, .. } if keys.len() == 4)),
         "a Sell action must be able to include all four tiles; no artificial 3-tile cap"
     );
 
     let multi_mv = multi
         .iter()
-        .find(|mv| matches!(mv, Move::Sell { keys, .. } if keys.len() == 2))
+        .find(|mv| matches!(mv, ResolvedMove::Sell { keys, .. } if keys.len() == 2))
         .copied()
         .expect("a two-tile sell should be generated");
     let mut sim = state.clone();
     let res = apply_move(&mut sim, &multi_mv);
     assert!(res.is_ok(), "multi-tile sell must execute: {res:?}");
     let sold_keys = match multi_mv {
-        Move::Sell { keys, .. } => keys,
+        ResolvedMove::Sell { keys, .. } => keys,
         _ => unreachable!(),
     };
     assert!(
@@ -2138,7 +2143,7 @@ fn double_develop_rechecks_the_uncovered_same_industry_tile() {
         .into_iter()
         .next()
         .expect("two iron sources must be available");
-    let mv = Move::Develop {
+    let mv = ResolvedMove::Develop {
         ind1: IndustryType::Pottery,
         ind2: Some(IndustryType::Pottery),
         iron,
@@ -2146,14 +2151,16 @@ fn double_develop_rechecks_the_uncovered_same_industry_tile() {
     };
 
     assert!(
-        !legal_moves(&mut state).iter().any(|candidate| matches!(
-            candidate,
-            Move::Develop {
-                ind1: IndustryType::Pottery,
-                ind2: Some(IndustryType::Pottery),
-                ..
-            }
-        )),
+        !legal_resolved_moves(&mut state)
+            .iter()
+            .any(|candidate| matches!(
+                candidate,
+                ResolvedMove::Develop {
+                    ind1: IndustryType::Pottery,
+                    ind2: Some(IndustryType::Pottery),
+                    ..
+                }
+            )),
         "the invalid same-industry double develop must not be generated"
     );
 
@@ -2196,7 +2203,7 @@ fn heuristic_keeps_same_industry_double_develop_as_a_candidate() {
     assert!(
         candidates.iter().any(|decision| matches!(
             decision.mv,
-            Move::Develop {
+            ResolvedMove::Develop {
                 ind1: IndustryType::Brewery,
                 ind2: Some(IndustryType::Brewery),
                 ..

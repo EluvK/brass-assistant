@@ -14,7 +14,7 @@ use crate::data::IndustryType;
 use crate::engine::{advance_turn, handle_turn_result};
 use crate::heuristic_ai::{self, Decision};
 use crate::map::Loc;
-use crate::rules::{Move, apply_move};
+use crate::rules::{ResolvedMove, apply_move};
 use crate::state::{Card, GameState, deck_composition};
 use rand::RngExt;
 use rand::seq::SliceRandom;
@@ -68,7 +68,7 @@ impl Default for MctsConfig {
 pub const MAX_PLAYERS: usize = 4;
 
 // ---------------------------------------------------------------------------
-// Move identity (ignores card choice, which is irrelevant for tree matching)
+// ResolvedMove identity (ignores card choice, which is irrelevant for tree matching)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -109,9 +109,9 @@ enum MoveKey {
     Pass,
 }
 
-fn move_key(mv: &Move) -> MoveKey {
+fn move_key(mv: &ResolvedMove) -> MoveKey {
     match mv {
-        Move::Build {
+        ResolvedMove::Build {
             loc,
             slot_index,
             ind,
@@ -132,11 +132,11 @@ fn move_key(mv: &Move) -> MoveKey {
                 iron: iron_ids,
             }
         }
-        Move::Network { conn_id, coal, .. } => MoveKey::Network {
+        ResolvedMove::Network { conn_id, coal, .. } => MoveKey::Network {
             conn: *conn_id,
             coal: *coal,
         },
-        Move::NetworkDouble {
+        ResolvedMove::NetworkDouble {
             conn1,
             conn2,
             coal1,
@@ -150,7 +150,7 @@ fn move_key(mv: &Move) -> MoveKey {
             coal2: *coal2,
             beer: *beer,
         },
-        Move::Develop {
+        ResolvedMove::Develop {
             ind1, ind2, iron, ..
         } => {
             let mut iron_ids: Vec<(usize, bool)> = iron.iter().map(|i| (i.key, i.free)).collect();
@@ -161,7 +161,7 @@ fn move_key(mv: &Move) -> MoveKey {
                 iron: iron_ids,
             }
         }
-        Move::Sell {
+        ResolvedMove::Sell {
             keys,
             merchant_indices,
             use_merchant_beer,
@@ -199,13 +199,13 @@ fn move_key(mv: &Move) -> MoveKey {
                 beer_sources,
             }
         }
-        Move::Loan { .. } => MoveKey::Loan,
-        Move::Scout { card_indices } => {
+        ResolvedMove::Loan { .. } => MoveKey::Loan,
+        ResolvedMove::Scout { card_indices } => {
             let mut c = *card_indices;
             c.sort_unstable();
             MoveKey::Scout { cards: c }
         }
-        Move::Pass { .. } => MoveKey::Pass,
+        ResolvedMove::Pass { .. } => MoveKey::Pass,
     }
 }
 
@@ -310,7 +310,7 @@ struct Node {
 }
 
 struct Child {
-    mv: Move,
+    mv: ResolvedMove,
     node: usize,
 }
 

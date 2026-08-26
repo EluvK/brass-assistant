@@ -1429,7 +1429,7 @@ impl GameState {
         true
     }
 
-    /// Move a newly built coal/iron tile's cubes into its market at the most
+    /// ResolvedMove a newly built coal/iron tile's cubes into its market at the most
     /// expensive empty spaces; builder collects the price of each space filled.
     /// Returns money gained (caller credits the player). Flips tile if emptied.
     pub fn auto_sell_to_market(&mut self, key: usize) -> i32 {

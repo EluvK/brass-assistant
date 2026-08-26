@@ -5,7 +5,7 @@
 
 use crate::data::Era;
 use crate::map::*;
-use crate::rules::Move;
+use crate::rules::ResolvedMove;
 use crate::state::GameState;
 
 /// The boundary reached while advancing the game clock.
@@ -259,7 +259,7 @@ pub fn handle_turn_result(state: &mut GameState, tr: TurnResult) {
 ///
 /// The caller still owns the returned era/game transition and may pass it to
 /// [`handle_turn_result`] immediately.
-pub fn step(state: &mut GameState, mv: &Move) -> (Result<String, String>, TurnResult) {
+pub fn step(state: &mut GameState, mv: &ResolvedMove) -> (Result<String, String>, TurnResult) {
     let result = crate::rules::apply_move(state, mv);
     let tr = if result.is_ok() {
         advance_turn(state)

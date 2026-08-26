@@ -25,7 +25,7 @@
 
 use crate::data::Era;
 use crate::engine::{TurnResult, advance_turn, handle_turn_result};
-use crate::rules::{Move, apply_move};
+use crate::rules::{ResolvedMove, apply_move};
 use crate::state::GameState;
 
 /// What ended the loop.
@@ -57,9 +57,10 @@ pub enum AfterEra {
 /// are fire-and-forget (or stats/printing).
 pub struct GameHooks<'a> {
     /// Called before `apply_move` (state is still pre-move).
-    pub before_move: Option<&'a mut dyn FnMut(&mut GameState, &Move)>,
+    pub before_move: Option<&'a mut dyn FnMut(&mut GameState, &ResolvedMove)>,
     /// Called after `apply_move` with its result (before `advance_turn`).
-    pub after_move: Option<&'a mut dyn FnMut(&mut GameState, &Move, &Result<String, String>)>,
+    pub after_move:
+        Option<&'a mut dyn FnMut(&mut GameState, &ResolvedMove, &Result<String, String>)>,
     /// Called on `EndCanalEra` / `EndGame`, BEFORE the era cleanup runs.
     pub on_era: Option<&'a mut dyn FnMut(&mut GameState, Era) -> AfterEra>,
     /// Called AFTER the era cleanup ran (only when the transition was run).
@@ -84,7 +85,7 @@ pub fn play(
     state: &mut GameState,
     max_moves: usize,
     mut hooks: GameHooks<'_>,
-    mut choose: impl FnMut(&mut GameState) -> Option<Move>,
+    mut choose: impl FnMut(&mut GameState) -> Option<ResolvedMove>,
 ) -> LoopOutcome {
     let mut moves = 0;
     loop {

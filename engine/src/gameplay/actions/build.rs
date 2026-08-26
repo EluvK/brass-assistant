@@ -250,7 +250,7 @@ pub fn execute_build(
         .ok_or("No tile available")?;
 
     // Era restrictions (defense in depth: `get_valid_build_targets` already
-    // enforces these, but raw Move::Build from Python / move_codec must also be
+    // enforces these, but raw ResolvedMove::Build from Python / move_codec must also be
     // rejected). E.g. Brewery IV and Pottery V are canal_era=false.
     if state.era == Era::Canal && !tile_def.canal_era {
         return Err(format!(
