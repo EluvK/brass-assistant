@@ -663,26 +663,26 @@ tr.sel {
 
 <script>
 const CITY_POS = {
-  Belper:[700,60],
-  Derby:[735,240],
-  Leek:[480,40],
-  StokeOnTrent:[240,80],
-  Stone:[200,220],
-  Uttoxeter:[465,240],
-  Stafford:[280,340],
-  BurtonOnTrent:[600,390],
-  Cannock:[380,460],
-  Tamworth:[680,545],
+  Belper:[750,60],
+  Derby:[785,240],
+  Leek:[520,40],
+  StokeOnTrent:[290,80],
+  Stone:[250,220],
+  Uttoxeter:[515,240],
+  Stafford:[330,340],
+  BurtonOnTrent:[650,390],
+  Cannock:[430,460],
+  Tamworth:[730,545],
   Walsall:[500,580],
-  Wolverhampton:[300,590],
-  Coalbrookdale:[130,600],
-  Dudley:[350,730],
-  Kidderminster:[160,805],
-  Worcester:[300,960],
-  Birmingham:[560,780],
-  Coventry:[800,865],
-  Nuneaton:[800,650],
-  Redditch:[545,960]
+  Wolverhampton:[350,590],
+  Coalbrookdale:[180,600],
+  Dudley:[400,730],
+  Kidderminster:[210,780],
+  Worcester:[330,940],
+  Birmingham:[610,780],
+  Coventry:[850,865],
+  Nuneaton:[850,650],
+  Redditch:[595,960]
 };
 
 const CITY_KEYS = [
@@ -694,13 +694,13 @@ const CITY_KEYS = [
 ];
 
 const SPECIAL_POS = {
-  20:[5,610],
-  21:[400,1000],
-  22:[745,1000],
-  23:[80,65],
-  24:[900,220],
-  25:[250,485],
-  26:[180,900]
+  20:[25,610],
+  21:[450,1000],
+  22:[795,1000],
+  23:[130,65],
+  24:[950,220],
+  25:[300,485],
+  26:[230,880]
 };
 
 const SPECIAL_NAMES = {
@@ -1383,7 +1383,7 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
         ? `${farmTile.industry} L${farmTile.level} · 资源${farmTile.resources}`
         : '空置';
       const merchantMarker = merchantEntries.length
-        ? `<rect class="merchant-site ${merchantEntries.every(m => m.buys === '空置' || !m.has_beer) ? 'used' : ''}" x="-58" y="-25" width="116" height="50"/>
+        ? `<rect class="merchant-site ${merchantEntries.every(m => m.buys === '空置' || !m.has_beer) ? 'used' : ''}" x="-48" y="-25" width="96" height="50"/>
            <text class="merchant-site-title" y="-10">${esc(name)}</text>
            <text class="merchant-site-info" y="3">${esc(merchantEntries.map(m => m.buys).join(' / '))}</text>
            <text class="merchant-site-info" y="15">${esc(merchantEntries.map(m => m.buys === '空置' ? '无啤酒' : m.has_beer ? '啤酒在' : '啤酒已用').join(' / '))}</text>`
