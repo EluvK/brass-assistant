@@ -562,18 +562,7 @@ impl ReplaySession {
                 return Err(e);
             }
         };
-        let selected = move_codec::encode(&mv);
-        if !legal
-            .iter()
-            .any(|candidate| move_codec::encode(candidate) == selected)
-        {
-            let e = format!(
-                "{} returned a non-legal action",
-                self.adapters[player].name()
-            );
-            self.failure = Some(e.clone());
-            return Err(e);
-        }
+        let selected = mv.describe(&self.state);
         let legal_actions = trace.candidates.clone();
         let result = apply_move(&mut self.state, &mv).map_err(|e| {
             self.failure = Some(e.clone());
