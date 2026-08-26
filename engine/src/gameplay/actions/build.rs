@@ -93,6 +93,21 @@ fn check_build_target(
     let player = &state.players[pid];
     let next_tile = player.next_tile(ind)?;
 
+    // When a city has a dedicated slot for this industry, the industry must
+    // be placed there instead of occupying a shared (A/B) slot. This prevents
+    // blocking the dedicated slot for no strategic reason.
+    if loc.is_city() {
+        let slots = city_slots(loc);
+        let current = slots.get(slot_index)?;
+        if current.len() > 1
+            && slots
+                .iter()
+                .any(|allowed| allowed.len() == 1 && allowed[0] == ind)
+        {
+            return None;
+        }
+    }
+
     // Era restrictions
     if state.era == Era::Canal && !next_tile.canal_era {
         return None;
@@ -229,6 +244,13 @@ pub fn execute_build(
         let allowed = city_slots(loc).get(slot_index).ok_or("Invalid city slot")?;
         if !allowed.contains(&ind) {
             return Err("Industry is not allowed in this city slot".into());
+        }
+        if allowed.len() > 1
+            && city_slots(loc)
+                .iter()
+                .any(|slot| slot.len() == 1 && slot[0] == ind)
+        {
+            return Err("Industry must be built in its dedicated city slot".into());
         }
         let key = state
             .city_slot_key(loc, slot_index)

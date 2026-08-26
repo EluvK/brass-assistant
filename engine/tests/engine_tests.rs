@@ -288,6 +288,48 @@ fn build_targets_include_multi_icon_slots_when_single_icon_slot_exists_elsewhere
 }
 
 #[test]
+fn build_targets_should_not_include_slot_that_allow_multi_icon_builds_when_single_icon_slot_exists_at_same_location()
+ {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::Location(Loc::StokeOnTrent)];
+    state.players[pid].consume_tile(IndustryType::Manufacturer); // remove level one.
+
+    let targets = get_valid_build_targets(&state, pid);
+
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| {
+                target.loc == Loc::StokeOnTrent && target.ind == IndustryType::Manufacturer
+            })
+            .count(),
+        1,
+        "multi-icon slot should not be included when single-icon slot exists at the same location"
+    );
+}
+
+#[test]
+fn build_targets_should_include_all_valid_city_slots() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::Location(Loc::Derby)];
+
+    let targets = get_valid_build_targets(&state, pid);
+
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| { target.loc == Loc::Derby && target.ind == IndustryType::CottonMill })
+            .count(),
+        2,
+        "all valid city slots should be included"
+    );
+}
+
+#[test]
 fn network_targets_are_canal_or_rail_only() {
     let state = setup(4);
     let pid = state.current_player_id();
