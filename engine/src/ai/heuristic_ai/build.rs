@@ -473,29 +473,12 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
         // beer demand plus a small rail-network buffer. Building beyond that is
         // wasted, and level-1 breweries vanish at era end so they're weak.
         let barrels = owned_beer_barrels(state, pid) as f64 + tile.resource_cubes as f64; // this brewery's contribution
-        let demand = sellable_beer_demand(state, pid) as f64
-            + if state.era == Era::Rail { 1.0 } else { 0.5 };
+        let demand = sellable_beer_demand(state, pid) as f64;
         let surplus = (barrels - demand).max(0.0);
-        let sat = -1.0 * surplus;
-        let sell_support = if demand > 0.0 { 0.4 } else { 0.1 };
-        let rail_beer_value = if state.era == Era::Rail {
-            0.4 * tile.resource_cubes as f64
-        } else {
-            0.0
-        };
-        let level_bonus = if tile.level >= 2 { 0.3 } else { 0.0 };
-        beer_bonus += sell_support + rail_beer_value + level_bonus + sat;
-
-        // Canal-era level-1 brewery is often a weak tempo move: it disappears
-        // at era end and does not support rail links. Bias toward develop-first
-        // (brewery 2+) unless there is clear immediate sell demand.
-        if state.era == Era::Canal && tile.level == 1 {
-            let rounds_left = state.rounds_remaining();
-            let demand_now = sellable_beer_demand(state, pid) as f64;
-            let no_real_demand = if demand_now < 1.0 { 1.0 } else { 0.0 };
-            let long_horizon = if rounds_left > 3.0 { 1.0 } else { 0.0 };
-            beer_bonus -= 1.0 + 0.7 * no_real_demand + 0.4 * long_horizon;
-        }
+        let sat = -0.6 * surplus;
+        let sell_support = if demand > 0.0 { 0.8 } else { 0.4 };
+        let rail_beer_value = if state.era == Era::Rail { 2.0 } else { 0.0 };
+        beer_bonus += sell_support + rail_beer_value + sat;
     }
 
     // Level-2+ tiles score their flipped VP at BOTH era ends

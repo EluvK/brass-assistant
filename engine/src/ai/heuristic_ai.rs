@@ -188,8 +188,8 @@ mod lookahead;
 pub use lookahead::choose_action;
 
 /// Top-K candidates per action type, for MCTS to get a wider prior.
-/// Build and Network get up to `k` candidates each; other action types keep
-/// their single best (develop/sell/loan/scout/pass).
+/// Build, single Network, and double-Rail Network get up to `k` candidates
+/// each; other action types keep their single best (develop/sell/loan/scout/pass).
 pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // Network masks are (re)validated inside `get_valid_build_targets` /
     // `get_valid_network_targets` / `get_second_rail_options`, which every
@@ -210,24 +210,41 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
         }
     }
     out.extend(score_top_networks(state, pid, k, &plan, &card_choices));
-    if let Some(d) = score_best_network_double(state, pid, &plan, &card_choices) {
-        out.push(d);
-    }
-    if let Some(d) = score_develop_plan(state, pid, &plan, &card_choices) {
-        out.push(d);
-    }
-    if let Some(d) = score_sell_plan(state, pid, &card_choices) {
-        out.push(d);
-    }
-    if let Some(d) = score_loan_result(state, pid, &card_choices) {
-        out.push(d);
-    }
-    if let Some(d) = score_scout_plan(state, pid, &card_choices) {
-        out.push(d);
-    }
-    if let Some(d) = score_pass_result(state, pid, &card_choices) {
-        out.push(d);
-    }
+    out.extend(score_top_network_doubles(
+        state,
+        pid,
+        k,
+        &plan,
+        &card_choices,
+    ));
+    // These scorers currently produce one canonical action per type. Keep the
+    // iterator-based shape here so each branch obeys the same Top-K contract
+    // and can grow to emit alternatives without changing this dispatcher.
+    out.extend(
+        score_develop_plan(state, pid, &plan, &card_choices)
+            .into_iter()
+            .take(k),
+    );
+    out.extend(
+        score_sell_plan(state, pid, &card_choices)
+            .into_iter()
+            .take(k),
+    );
+    out.extend(
+        score_loan_result(state, pid, &card_choices)
+            .into_iter()
+            .take(k),
+    );
+    out.extend(
+        score_scout_plan(state, pid, &card_choices)
+            .into_iter()
+            .take(k),
+    );
+    out.extend(
+        score_pass_result(state, pid, &card_choices)
+            .into_iter()
+            .take(k),
+    );
 
     // Candidate pruning must never turn a position with executable actions
     // into a dead end (for example callers passing k=0). Keep one legal fallback

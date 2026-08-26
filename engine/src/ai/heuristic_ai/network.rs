@@ -363,21 +363,23 @@ pub(crate) fn score_top_networks(
         .collect()
 }
 
-fn score_best_network_double(
+pub(crate) fn score_top_network_doubles(
     state: &mut GameState,
     pid: usize,
+    k: usize,
     plan: &Plan,
     card_choices: &CardChoices,
-) -> Option<Decision> {
+) -> Vec<Decision> {
+    if k == 0 { return Vec::new(); }
     if state.era != Era::Rail {
-        return None;
+        return Vec::new();
     }
     let player = &state.players[pid];
     if player.rail_links < 2 {
-        return None;
+        return Vec::new();
     }
     let singles = get_valid_network_targets(state, pid);
-    let mut best: Option<(usize, usize, f64)> = None;
+    let mut scored: Vec<(usize, usize, f64)> = Vec::new();
     for conn1 in singles {
         for conn2 in get_valid_second_rail_links(state, pid, conn1) {
             // Value both links and charge realistic resource cost:
@@ -410,16 +412,16 @@ fn score_best_network_double(
             if touches_farm {
                 s += 0.8;
             }
-            let better = match &best {
-                Some((_, _, bs)) => s > *bs,
-                None => true,
-            };
-            if better {
-                best = Some((conn1, conn2, s));
-            }
+            scored.push((conn1, conn2, s));
         }
     }
-    let (conn1, conn2, score) = best?;
+    scored.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+    let Some(card_index) = card_choices.first().map(|(index, _)| *index) else { return Vec::new() };
+    let mut out = Vec::with_capacity(k);
+    for (conn1, conn2, score) in scored {
+        if out.len() >= k {
+            break;
+        }
     // Prefer consuming our own beer (advances our own income when it flips) over
     // an opponent's beer (which would advance theirs). The coal2 options must be
     // enumerated against the SAME coal1 we actually use (not an internally
@@ -427,19 +429,19 @@ fn score_best_network_double(
     let coal1 = crate::rules::coal_options_for_connection(state, &connections()[conn1], 1)
         .into_iter()
         .next()
-        .and_then(|o| o.into_iter().next())?;
-    let opt = crate::rules::get_second_rail_options(state, pid, conn1, coal1)
+        .and_then(|o| o.into_iter().next());
+    let Some(coal1) = coal1 else { continue };
+    let Some(opt) = crate::rules::get_second_rail_options(state, pid, conn1, coal1)
         .into_iter()
-        .find(|o| o.conn == conn2)?;
-    let beer = opt
+        .find(|o| o.conn == conn2) else { continue };
+    let Some(beer) = opt
         .beers
         .iter()
         .copied()
         .find(|b| b.kind == crate::graph::BeerSourceKind::Own)
-        .or_else(|| opt.beers.first().copied())?;
-    let coal2 = opt.coal2_opts.first().and_then(|o| o.first()).copied()?;
-    let card_index = card_choices.first().map(|(index, _)| *index)?;
-    Some(Decision {
+        .or_else(|| opt.beers.first().copied()) else { continue };
+    let Some(coal2) = opt.coal2_opts.first().and_then(|o| o.first()).copied() else { continue };
+    out.push(Decision {
         mv: Move::NetworkDouble {
             conn1,
             conn2,
@@ -449,5 +451,7 @@ fn score_best_network_double(
             card_index,
         },
         score,
-    })
+    });
+    }
+    out
 }
