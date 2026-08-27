@@ -22,6 +22,9 @@ const VP_WEIGHT: f64 = 1.0;
 pub(super) const BASE_MONEY_WEIGHT: f64 = 0.12;
 pub(super) const BASE_INCOME_WEIGHT: f64 = 0.25;
 const FLEX_WEIGHT: f64 = 0.8;
+// Rebuilding our own tile removes its end-game VP from the board. Keep this
+// explicit so the heuristic does not value an upgrade as a free replacement.
+const OWN_OVERBUILD_VP_LOSS_WEIGHT: f64 = 1.0;
 
 // Hard policy constraints (temporary strategic guardrails requested by user).
 const BAN_BUILD_LV1_BREWERY: bool = true;

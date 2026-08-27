@@ -42,9 +42,9 @@ fn sell_plan_executes_all(
     card_index: usize,
 ) -> bool {
     let mut sim = state.clone();
-    let Ok(beer_sources) = crate::rules::plan_sell_beer_sources(
-        state, pid, keys, merchant_indices, use_merchant,
-    ) else {
+    let Ok(beer_sources) =
+        crate::rules::plan_sell_beer_sources(state, pid, keys, merchant_indices, use_merchant)
+    else {
         return false;
     };
     if execute_sell(
@@ -69,11 +69,7 @@ fn sell_plan_executes_all(
     })
 }
 
-fn score_sell_plan(
-    state: &GameState,
-    pid: usize,
-    card_choices: &CardChoices,
-) -> Option<Decision> {
+fn score_sell_plan(state: &GameState, pid: usize, card_choices: &CardChoices) -> Option<Decision> {
     let targets = get_valid_sell_targets(state, pid);
     if targets.is_empty() {
         return None;
@@ -178,50 +174,21 @@ fn score_sell_plan(
         urgency_bonus += 1.2;
     }
 
-    // Canal late-game tactical prior: deplete beer and flip breweries before
-    // level-1 cleanup, or the barrels evaporate with no value.
-    let mut canal_beer_drain_bonus = 0.0;
-    if state.era == Era::Canal && rounds_left <= 2.5 {
-        let (before_barrels, before_flipped) = own_brewery_stats(state, pid);
-        let mut sim = state.clone();
-        let beer_sources = crate::rules::plan_sell_beer_sources(
-            state, pid, &keys, &merchant_indices, &use_merchant,
-        )
-        .ok()?;
-        if execute_sell(
-            &mut sim,
-            pid,
-            &keys,
-            &merchant_indices,
-            &use_merchant,
-            &beer_sources,
-            card_index,
-        )
-        .is_ok()
-        {
-            let (after_barrels, after_flipped) = own_brewery_stats(&sim, pid);
-            let consumed = before_barrels.saturating_sub(after_barrels) as f64;
-            let flipped_gain = after_flipped.saturating_sub(before_flipped) as f64;
-            canal_beer_drain_bonus = consumed * 0.9 + flipped_gain * 2.2;
-            if before_barrels > 0 && after_barrels == 0 {
-                canal_beer_drain_bonus += 3.8;
-            }
-        }
-    }
-
     // Flipping a sellable advances income: that's a recurring cash stream,
     // not just a one-time VP. Add the income value explicitly.
     let income_stream = total_income * income_weight(state) * 0.5;
 
     let vp_equivalent_score = vp_equivalent(state, total_vp, total_income, 0.0, 0.0);
     let vp_score = match (state.era, state.round) {
-        (Era::Canal, 0..=3) => vp_equivalent_score * 0.3, // round 1,2,3
-        (Era::Canal, 4..=6) => vp_equivalent_score * 0.6,
-        (Era::Canal, 7..) => vp_equivalent_score * 1.0,
-        (Era::Rail, _) => vp_equivalent_score * 1.0,
+        (Era::Canal, 0..=3) => vp_equivalent_score * 0.1, // round 1,2,3
+        (Era::Canal, 4..=6) => vp_equivalent_score * 0.2,
+        (Era::Canal, 7..) => vp_equivalent_score * 0.6,
+        (Era::Rail, 0..=3) => vp_equivalent_score * 0.1,
+        (Era::Rail, 4..=6) => vp_equivalent_score * 0.2,
+        (Era::Rail, 7..) => vp_equivalent_score * 0.6,
     };
 
-    let score = vp_score + total_bonus + urgency_bonus + income_stream + canal_beer_drain_bonus;
+    let score = vp_score + total_bonus + urgency_bonus + income_stream;
 
     // Canonical Sell actions use ascending city-tile keys. The plan above is
     // ranked by merchant bonus/value, so its construction order can differ
@@ -243,28 +210,28 @@ fn score_sell_plan(
             (keys, merchants, beer)
         },
     );
-    let beer_sources = crate::rules::plan_sell_beer_sources(
-        state, pid, &keys, &merchant_indices, &use_merchant,
-    )
-    .ok()?;
-    let free_develop = merchant_indices
-        .iter()
-        .zip(use_merchant.iter())
-        .find_map(|(&merchant, &uses_beer)| {
-            (uses_beer
-                && matches!(
-                    crate::map::merchant_bonus_at(state.merchants[merchant].loc),
-                    crate::map::MerchantBonus::Develop(_)
-                ))
-            .then(|| {
-                state.players[pid]
-                    .developable_types()
-                    .into_iter()
-                    .max_by_key(|(_, tile)| tile.level)
-                    .map(|(ind, _)| ind)
-            })
-            .flatten()
-        });
+    let beer_sources =
+        crate::rules::plan_sell_beer_sources(state, pid, &keys, &merchant_indices, &use_merchant)
+            .ok()?;
+    let free_develop =
+        merchant_indices
+            .iter()
+            .zip(use_merchant.iter())
+            .find_map(|(&merchant, &uses_beer)| {
+                (uses_beer
+                    && matches!(
+                        crate::map::merchant_bonus_at(state.merchants[merchant].loc),
+                        crate::map::MerchantBonus::Develop(_)
+                    ))
+                .then(|| {
+                    state.players[pid]
+                        .developable_types()
+                        .into_iter()
+                        .max_by_key(|(_, tile)| tile.level)
+                        .map(|(ind, _)| ind)
+                })
+                .flatten()
+            });
 
     Some(Decision {
         mv: ResolvedMove::Sell {
@@ -276,6 +243,9 @@ fn score_sell_plan(
             card_index,
         },
         score,
-        card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
+        card_score: card_choices
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(f64::INFINITY),
     })
 }

@@ -189,28 +189,6 @@ fn count_new_unbuilt_neighbor_connections(state: &GameState, city_id: Loc) -> us
         .count()
 }
 
-fn own_brewery_stats(state: &GameState, pid: usize) -> (usize, usize) {
-    let mut barrels = 0usize;
-    let mut flipped = 0usize;
-    for tile in state.city_tiles.iter().flatten() {
-        if tile.player == pid && tile.ind == IndustryType::Brewery {
-            barrels += tile.resource_cubes as usize;
-            if tile.flipped {
-                flipped += 1;
-            }
-        }
-    }
-    for tile in state.farm_tiles.iter().flatten() {
-        if tile.player == pid {
-            barrels += tile.resource_cubes as usize;
-            if tile.flipped {
-                flipped += 1;
-            }
-        }
-    }
-    (barrels, flipped)
-}
-
 /// Can `pid` reach a merchant barrel (any accepted industry) from `loc`?
 fn beer_barrels_reachable(state: &GameState, loc: Loc) -> bool {
     let connected = connected_locations(state, loc);
@@ -271,6 +249,20 @@ fn resource_source_ratio(state: &GameState, cand: &BuildTarget) -> f64 {
     free_available += free_coal.min(cand.cost_coal as f64);
     free_available += free_iron.min(cand.cost_iron as f64);
     (free_available / needed).clamp(0.0, 1.0)
+}
+
+/// VP forfeited by replacing one of our own tiles. Overbuilding an opponent's
+/// depleted resource tile does not discard any of our scoring potential.
+fn own_overbuild_vp_loss(state: &GameState, pid: usize, cand: &BuildTarget) -> f64 {
+    let existing = if cand.loc.is_city() {
+        state.tile_at(cand.loc, cand.slot_index)
+    } else {
+        state.farm_tile(cand.loc)
+    };
+    existing
+        .filter(|tile| tile.player == pid)
+        .map(|tile| tile.def.vp as f64 * OWN_OVERBUILD_VP_LOSS_WEIGHT)
+        .unwrap_or(0.0)
 }
 
 fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan: &Plan) -> f64 {
@@ -462,6 +454,7 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
     // cheaper and faster. Reward builds on an established resource pool.
     let resource_ratio = resource_source_ratio(state, cand);
     let interaction_bonus = (resource_ratio - 0.5).max(0.0) * 0.8;
+    let own_overbuild_loss = own_overbuild_vp_loss(state, pid, cand);
 
     let mut score = vp_equivalent(
         state,
@@ -475,7 +468,8 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
         + beer_bonus
         + cost_efficiency
         + market_adjust
-        + interaction_bonus;
+        + interaction_bonus
+        - own_overbuild_loss;
 
     // Plan ("流派") soft bonus: building the target industry aligns with the
     // player's production plan. Only applies from Canal-Late onward — in
@@ -588,5 +582,44 @@ mod tests {
         });
 
         assert_eq!(owned_beer_barrels(&state, pid), 2);
+    }
+
+    #[test]
+    fn own_overbuild_deducts_replaced_tile_vp_only() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(9), 2);
+        let pid = state.current_player_id();
+        let loc = Loc::Birmingham;
+        let cand = BuildTarget {
+            loc,
+            slot_index: 0,
+            ind: IndustryType::CottonMill,
+            cost_money: 0,
+            cost_total: 0,
+            cost_coal: 0,
+            cost_iron: 0,
+        };
+
+        assert_eq!(own_overbuild_vp_loss(&state, pid, &cand), 0.0);
+
+        let def = industry_tiles(IndustryType::CottonMill)[0];
+        state.place_tile(
+            loc,
+            0,
+            BoardTile {
+                player: pid,
+                ind: IndustryType::CottonMill,
+                def,
+                flipped: false,
+                resource_cubes: 0,
+            },
+        );
+        assert_eq!(own_overbuild_vp_loss(&state, pid, &cand), def.vp as f64);
+
+        let key = state.city_slot_key(loc, 0).unwrap();
+        state.city_tiles[key]
+            .as_mut()
+            .unwrap()
+            .player = (pid + 1) % state.players.len();
+        assert_eq!(own_overbuild_vp_loss(&state, pid, &cand), 0.0);
     }
 }

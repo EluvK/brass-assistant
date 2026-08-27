@@ -772,7 +772,7 @@ async function one() {
 
     do {
       await refresh();
-      if (data.busy) await wait(80);
+      if (data.busy) await wait(20);
     } while (data.busy);
 
   } catch (error) {
@@ -796,7 +796,7 @@ async function runNext() {
   await one();
 
   if (running && !data?.failure && !data?.complete) {
-    runTimer = setTimeout(runNext,350);
+    runTimer = setTimeout(runNext,20);
   } else {
     pause();
   }

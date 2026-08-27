@@ -661,7 +661,7 @@ mod tests {
             assert!(
                 step.legal_actions
                     .iter()
-                    .any(|x| x.canonical == step.chosen)
+                    .any(|x| x.description == step.chosen)
             );
         }
     }
