@@ -48,7 +48,7 @@ def test_snapshot_replay_materializes_current_full_legal_candidates():
     state = be.GameState(seed=51, players=4)
     teacher, _, _ = state.choose_heuristic()
     sample = Sample(
-        pid=state.current_player_id, era=state.era, value=np.zeros(4, dtype=np.float32),
+        pid=state.current_player_id, era=state.era, rank=np.zeros(4, dtype=np.float32), winner=np.zeros(4, dtype=np.float32),
         econ=np.zeros(2, dtype=np.float32), snapshot=bytes(state.snapshot()),
         teacher_canonical=teacher,
     )

@@ -6,6 +6,7 @@ use super::{CardChoices, Decision};
 use crate::rules::ResolvedMove;
 use crate::map::{Loc, merchant_bonus_at};
 use crate::rules::{SellRoute, execute_sell, get_valid_sell_targets, plan_sell_beer_sources};
+use crate::gameplay::actions::SellTarget;
 use crate::state::GameState;
 
 /// Value of the merchant bonus gained by selling with a merchant's own
@@ -86,19 +87,20 @@ fn tile_sell_value(state: &GameState, ctx: &EvalContext, key: usize) -> f64 {
     })
 }
 
-pub(super) fn score_sell_plan(
+pub(super) fn score_sell_plans(
     state: &GameState,
     ctx: &EvalContext,
     card_choices: &CardChoices,
-) -> Option<Decision> {
+) -> Vec<Decision> {
     let pid = ctx.pid;
-    let w = &ctx.cfg.sell;
     let targets = get_valid_sell_targets(state, pid);
     if targets.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    let card_index = card_choices.first().map(|(index, _)| *index)?;
+    let Some(card_index) = card_choices.first().map(|(index, _)| *index) else {
+        return Vec::new();
+    };
 
     // Rank targets by the merchant beer bonus they can grab, then by tile
     // value; sell all (matches aiPlayer.js sellPlan behavior).
@@ -116,10 +118,43 @@ pub(super) fn score_sell_plan(
         .collect();
     ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then(b.1.total_cmp(&a.1)));
 
+    // v4: emit up to SOURCE_VARIANTS plans; variant n>0 gives the FIRST ranked
+    // tile the runner-up merchant route so search can choose between them.
+    let mut out = Vec::new();
+    for first_route_offset in 0..super::SOURCE_VARIANTS {
+        if let Some(decision) = sell_plan_for(
+            state,
+            ctx,
+            card_choices,
+            card_index,
+            &targets,
+            &ranked,
+            first_route_offset,
+        ) {
+            out.push(decision);
+        }
+    }
+    out
+}
+
+/// One Sell plan: greedy route pick over ranked targets; the first ranked tile
+/// starts scanning its routes at `first_route_offset`.
+fn sell_plan_for(
+    state: &GameState,
+    ctx: &EvalContext,
+    card_choices: &CardChoices,
+    card_index: usize,
+    targets: &[SellTarget],
+    ranked: &[(usize, f64, f64)],
+    first_route_offset: usize,
+) -> Option<Decision> {
+    let pid = ctx.pid;
+    let w = &ctx.cfg.sell;
+
     let mut keys = Vec::new();
     let mut merchant_indices = Vec::new();
     let mut use_merchant = Vec::new();
-    for (key, _, _) in &ranked {
+    for (index, (key, _, _)) in ranked.iter().enumerate() {
         let Some(target) = targets.iter().find(|t| t.key == *key) else {
             continue;
         };
@@ -128,8 +163,9 @@ pub(super) fn score_sell_plan(
             sell_route_value(state, ctx, b)
                 .total_cmp(&sell_route_value(state, ctx, a))
         });
+        let offset = if index == 0 { first_route_offset } else { 0 };
 
-        for route in routes {
+        for route in routes.iter().skip(offset) {
             let mut try_keys = keys.clone();
             let mut try_merchants = merchant_indices.clone();
             let mut try_use = use_merchant.clone();
@@ -196,7 +232,7 @@ pub(super) fn score_sell_plan(
         .collect();
     routes.sort_by_key(|(key, _, _)| *key);
     let (keys, merchant_indices, use_merchant) = routes.into_iter().fold(
-        (Vec::new(), Vec::new(), Vec::new()),
+        (Vec::<usize>::new(), Vec::<usize>::new(), Vec::<bool>::new()),
         |(mut keys, mut merchants, mut beer), (key, merchant, use_merchant)| {
             keys.push(key);
             merchants.push(merchant);

@@ -128,10 +128,10 @@ python/
 `brass_ai._engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
 
 - `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为 `board`、`links`、`global`、`own_hand`、`opp_hands`、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
-- `state_to_tensor()`：供训练样本采集使用的单状态特征；当前 state-feature schema v3 的维度固定为 board `(17, 49)`、links `(7, 39)`、global `(114,)`、own hand `(35,)`、 opponent hands `(105,)`。links 同时编码地图静态的水路/铁路可建性、动态建成状态与归属；global 包含每位玩家的手牌数、本回合花费、收入格和收入等级。Rust 还导出 board-cell/location 与 connection endpoint 拓扑，Python 网络据此做节点-边消息传递。
+- `state_to_tensor()`：供训练样本采集使用的单状态特征；当前 state-feature schema v4 的维度固定为 board `(24, 49)`、links `(7, 39)`、global `(168,)`、own hand `(35,)`、 opponent hands `(105,)`。links 同时编码地图静态的水路/铁路可建性、动态建成状态与归属；global 包含每位玩家的手牌数、本回合花费、收入格和收入等级，以及每个商家的收货类型（5 种：Blank/Any/棉纺/制造厂/陶器）与啤酒状态；board 额外携带静态的槽位行业能力与槽位序号平面。Rust 还导出 board-cell/location 与 connection endpoint 拓扑，Python 网络据此做节点-边消息传递。
 - `legal_candidates()`：Rust 返回完整可执行动作及其结构化特征；网络只对当前候选集合执行 softmax。
 
-网络当前直接对每个具体候选动作输出 logit；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。235 维动作特征的逐块布局、每类动作的实测编码示例，以及 policy/value/econ/type 四个网络头的设计见 [ai-action-encoding.md](./ai-action-encoding.md)。
+网络当前直接对每个具体候选动作输出 logit（FiLM 调制 + 候选集上下文）；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。301 维动作特征的逐块布局、每类动作的实测编码示例，以及 policy/rank/winner/econ 网络头的设计见 [ai-action-encoding.md](./ai-action-encoding.md)。
 
 #### 自博弈与训练循环
 

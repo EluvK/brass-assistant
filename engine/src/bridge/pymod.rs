@@ -7,10 +7,10 @@
 //!     .round / .game_over / .current_player_money
 //!     .legal_moves() -> legacy fully resolved executable moves
 //!     .legal_operations() -> structural operations with card candidates
-//!     .legal_candidates() -> list[(canonical:str, features: float32[235])]
+//!     .legal_candidates() -> list[(canonical:str, features: float32[301])]
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
 //!     .determinize() -> GameState            # opponent-hand sampling
-//!     .legal_candidates() -> list[(canonical:str, features: float32[235])]
+//!     .legal_candidates() -> list[(canonical:str, features: float32[301])]
 //!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
 //!     .choose_heuristic() -> (canonical, describe, score)
 //!   module: action/state feature schemas and state-graph topology constants

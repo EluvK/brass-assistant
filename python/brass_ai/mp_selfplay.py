@@ -102,7 +102,8 @@ def _pack_samples(samples: list[Sample]) -> dict:
             "candidates": np.empty((0, 0, ACTION_FEATURE_DIM), dtype=np.float32),
             "candidate_mask": np.empty((0, 0), dtype=np.bool_),
             "policy": np.empty((0, 0), dtype=np.float32),
-            "value": np.empty((0, 4), dtype=np.float32),
+            "rank": np.empty((0, 4), dtype=np.float32),
+            "winner": np.empty((0, 4), dtype=np.float32),
             "econ": np.empty((0, 2), dtype=np.float32),
         }
     candidates, candidate_mask = pad_candidate_features(
@@ -122,7 +123,8 @@ def _pack_samples(samples: list[Sample]) -> dict:
         "candidates": candidates.numpy(),
         "candidate_mask": candidate_mask.numpy(),
         "policy": policy,
-        "value": np.stack([s.value for s in samples]).astype(np.float32),
+        "rank": np.stack([s.rank for s in samples]).astype(np.float32),
+        "winner": np.stack([s.winner for s in samples]).astype(np.float32),
         "econ": np.stack([s.econ for s in samples]).astype(np.float32),
         "count": n,
     }
@@ -143,7 +145,8 @@ def unpack_samples(packed: dict) -> list[Sample]:
                 opp_hands=packed["opp_hands"][i],
                 candidates=packed["candidates"][i, packed["candidate_mask"][i]],
                 policy=packed["policy"][i, packed["candidate_mask"][i]],
-                value=packed["value"][i].astype(np.float32),
+                rank=packed["rank"][i].astype(np.float32),
+                winner=packed["winner"][i].astype(np.float32),
                 econ=packed["econ"][i].astype(np.float32),
             )
         )

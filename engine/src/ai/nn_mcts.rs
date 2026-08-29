@@ -477,15 +477,31 @@ fn add_value(arena: &mut Vec<Node>, path: &[usize], value: &[f64]) {
     }
 }
 
+/// Per-seat terminal search value: `1 - normalized final rank` (ties share the
+/// average rank), matching the Python rank-head target scale (rank/n, MSE) so
+/// network leaf values and terminal backups stay in one unit system.
 fn terminal_value(vps: Vec<i32>, n_players: usize) -> Vec<f64> {
-    let vals: Vec<f64> = vps.iter().map(|&v| v as f64).collect();
-    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
-    let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
-    let std = var.sqrt();
-    if std < 1e-6 {
-        return vec![0.0; n_players];
+    let n = vps.len().max(1);
+    let mut order: Vec<usize> = (0..n).collect();
+    // Rank 1 belongs to the most VP (the winner), so `1 - rank/n` is highest
+    // for the best seat and stays aligned with the winner head.
+    order.sort_by_key(|&i| std::cmp::Reverse(vps[i]));
+    let mut rank = vec![0.0f64; n];
+    let mut i = 0;
+    while i < n {
+        let mut j = i;
+        while j + 1 < n && vps[order[j + 1]] == vps[order[i]] {
+            j += 1;
+        }
+        let avg = (i + j) as f64 / 2.0 + 1.0; // average 1-based rank of the tie group
+        for &idx in &order[i..=j] {
+            rank[idx] = avg;
+        }
+        i = j + 1;
     }
-    vals.iter().map(|v| (v - mean) / std).collect()
+    (0..n_players)
+        .map(|p| 1.0 - rank[p] / n as f64)
+        .collect()
 }
 
 fn apply_dirichlet_noise(
@@ -602,7 +618,8 @@ fn flush_net(
     let mut results = Vec::with_capacity(requests.len());
     for (ri, req) in requests.iter().enumerate() {
         let r0 = ri * 4;
-        // Value head predicts the 4-player z vector directly from one perspective.
+        // Value = 1 - normalized rank per seat (higher = better), the same
+        // scale as `terminal_value` backups.
         let value: Vec<f64> = (0..MAX_PLAYERS).map(|p| values[r0 + p] as f64).collect();
         let priors = match &req.kind {
             RequestKind::Expand {

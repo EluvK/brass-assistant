@@ -423,6 +423,7 @@ impl GameState {
             wild_industry_pile: data.wild_industry_pile,
         };
         state.rebuild_free_sources();
+        state.rebuild_network_masks();
         Ok(state)
     }
 }
@@ -1479,7 +1480,7 @@ impl GameState {
     }
 }
 
-fn farm_index(loc: Loc) -> Option<usize> {
+pub(crate) fn farm_index(loc: Loc) -> Option<usize> {
     match loc {
         Loc::BreweryNorth => Some(0),
         Loc::BrewerySouth => Some(1),

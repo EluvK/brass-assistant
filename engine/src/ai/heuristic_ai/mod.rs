@@ -53,11 +53,17 @@ pub(crate) use cards::move_card_score;
 use build::score_top_builds;
 use cards::{CardChoices, ranked_card_choices_with};
 use context::EvalContext;
-use develop::score_develop_plan;
+use develop::score_develop_plans;
 use loan::score_loan_result;
 use network::{score_top_network_doubles, score_top_networks};
 use scout_pass::{score_pass_result, score_scout_plan};
-use sell::score_sell_plan;
+use sell::score_sell_plans;
+
+/// Candidate source-variant width (v4): for each Build/Network/NetDouble
+/// geometry (and Sell/Develop plan) the generator emits up to this many
+/// variants that differ in free-source identity, so search — not the
+/// generator — decides whose buildings flip. See docs/ai-encoding-v4-design.md §2.
+pub(crate) const SOURCE_VARIANTS: usize = 2;
 
 pub struct Decision {
     pub mv: ResolvedMove,
@@ -65,6 +71,35 @@ pub struct Decision {
     pub score: f64,
     /// Keep-value score of the card(s) consumed by this decision.
     pub card_score: f64,
+}
+
+/// First `m` source options that differ in free-source identity, judged by
+/// `key` over each option's sources (market-only re-pricings collapse). The
+/// first entry is the engine-default option; `T` is the option, `S` the source.
+pub(crate) fn distinct_source_options<I, S, K>(
+    options: I,
+    key: impl Fn(&S) -> K,
+    m: usize,
+) -> Vec<Vec<S>>
+where
+    I: IntoIterator,
+    I::Item: IntoIterator<Item = S>,
+    S: Clone,
+    K: Eq + std::hash::Hash,
+{
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<Vec<S>> = Vec::new();
+    for option in options {
+        let option: Vec<S> = option.into_iter().collect();
+        let signature: Vec<K> = option.iter().map(&key).collect();
+        if seen.insert(signature) {
+            out.push(option);
+            if out.len() >= m {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Stable identity for the operation layer. Card references are intentionally
@@ -141,11 +176,11 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
         &plan,
         &card_choices,
     ));
-    // These scorers currently produce one canonical action per type. Keep the
-    // iterator-based shape here so each branch obeys the same Top-K contract
-    // and can grow to emit alternatives without changing this dispatcher.
+    // These scorers emit up to SOURCE_VARIANTS alternative plans per type.
+    // Keep the iterator-based shape here so each branch obeys the same Top-K
+    // contract and can grow to emit alternatives without changing this dispatcher.
     out.extend(
-        score_develop_plan(state, &ctx, &plan, &card_choices)
+        score_develop_plans(state, &ctx, &plan, &card_choices)
             .into_iter()
             .take(k),
     );
@@ -156,7 +191,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     let mut unique = std::collections::HashSet::new();
     out.retain(|d| unique.insert(operation_key(&d.mv)));
 
-    out.extend(score_sell_plan(state, &ctx, &card_choices).into_iter().take(k));
+    out.extend(score_sell_plans(state, &ctx, &card_choices).into_iter().take(k));
     out.extend(
         score_loan_result(state, &ctx, &plan, &card_choices)
             .into_iter()

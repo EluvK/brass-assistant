@@ -22,7 +22,7 @@ def test_trainer_reduces_loss_and_is_persistent():
 
     net.eval()
     with torch.no_grad():
-        pl_before, _, _, _ = compute_loss(b, net, 0.0, "cpu")
+        pl_before = compute_loss(b, net, 0.0, "cpu")[1]
 
     trainer.train_on_samples(samples[:])
 
@@ -35,7 +35,7 @@ def test_trainer_reduces_loss_and_is_persistent():
     # Loss on the training data should drop after fitting.
     net.eval()
     with torch.no_grad():
-        pl_after, _, _, _ = compute_loss(b, net, 0.0, "cpu")
+        pl_after = compute_loss(b, net, 0.0, "cpu")[1]
     assert pl_after.item() < pl_before.item(), \
         "policy loss should decrease after training"
     assert before_lr > 0.0

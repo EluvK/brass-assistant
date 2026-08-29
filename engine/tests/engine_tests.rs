@@ -66,6 +66,65 @@ fn heuristic_candidates_are_legal_and_never_dead_end() {
     }
 }
 
+#[test]
+fn snapshot_restore_rebuilds_network_masks() {
+    use _engine::rules::{apply_move, legal_resolved_moves};
+
+    // Continue playing FROM restored mid-game states. apply_move's card
+    // validation reads the cached network masks WITHOUT ensure_network_masks
+    // (that ensure lives in the enumeration path only), so a restored state
+    // must come back with a rebuilt cache baseline; an empty baseline makes
+    // card validations on pre-restore network links/tiles disagree with the
+    // enumerators after a few moves of incremental maintenance.
+    for seed in [7u64, 21, 99] {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(seed), 4);
+        let mut checkpoints: Vec<Vec<u8>> = Vec::new();
+        for step in 1..=40 {
+            if state.game_over {
+                break;
+            }
+            // Checkpoint BEFORE the move (exp decision-point semantics): the
+            // pre-move-10/20/30/40 states.
+            if step % 10 == 0 {
+                checkpoints.push(state.snapshot_bytes().expect("snapshot"));
+            }
+            let decision = _engine::heuristic_ai::choose_action(&mut state);
+            apply_move(&mut state, &decision.mv).expect("heuristic decision must apply");
+            let tr = advance_turn(&mut state);
+            handle_turn_result(&mut state, tr);
+        }
+        for (checkpoint, bytes) in checkpoints.iter().enumerate() {
+            let mut restored = GameState::from_snapshot_bytes(bytes).expect("restore");
+            for step in 0..60 {
+                if restored.game_over {
+                    break;
+                }
+                let mut probe = restored.clone();
+                assert!(
+                    !legal_resolved_moves(&mut probe).is_empty(),
+                    "seed={seed} checkpoint={checkpoint} step={step}: no legal moves"
+                );
+                // Mirror the production pattern (PyO3 choose_heuristic): the
+                // decision is made on a CLONE, then applied to the original.
+                // Choosing directly on `restored` would run the enumeration
+                // path's ensure_network_masks and heal the cache every step.
+                let decision = {
+                    let mut clone = restored.clone();
+                    _engine::heuristic_ai::choose_action(&mut clone)
+                };
+                if let Err(e) = apply_move(&mut restored, &decision.mv) {
+                    panic!(
+                        "seed={seed} checkpoint={checkpoint} step={step}: restored state rejected a legal move: {e}, mv={:?}",
+                        decision.mv
+                    );
+                }
+                let tr = advance_turn(&mut restored);
+                handle_turn_result(&mut restored, tr);
+            }
+        }
+    }
+}
+
 fn setup_clean_rail_state(players: usize) -> GameState {
     let mut state = setup(players);
     state.era = Era::Rail;

@@ -1,7 +1,16 @@
-"""Candidate-scoring Policy-Value network for Brass: Birmingham.
+"""Candidate-scoring Policy-Value network for Brass: Birmingham (head set v4).
 
 The engine supplies a variable-size set of concrete legal moves. The policy
 scores those candidates conditional on the state and never learns legality.
+
+Head set (v4, see docs/ai-encoding-v4-design.md §4):
+* policy: FiLM-modulated action embedding + masked-mean candidate-set context,
+  scored per candidate (O(N), no candidate self-attention).
+* rank head: per-seat normalized final rank (rank/n, MSE) — comparable across
+  games and order-preserving within one game; replaces the per-game VP z-score.
+* winner head: per-seat winner distribution (softmax CE); the search value for
+  a seat is `1 - rank` (higher = better), matching the Rust terminal backup.
+* econ: era-split heads (canal / rail), 2 outputs each.
 """
 
 from __future__ import annotations
@@ -24,7 +33,7 @@ class NetConfig:
     graph_layers: int = 3
     trunk: int = 256
     action_emb: int = 128
-    action_features: int = getattr(be, "ACTION_FEATURE_DIM", 235)
+    action_features: int = getattr(be, "ACTION_FEATURE_DIM", 301)
     global_len: int = be.GLOBAL_LEN
     hand_len: int = be.HAND_LEN
     opp_hands_len: int = be.HAND_LEN * 3
@@ -74,13 +83,19 @@ class PolicyValueNet(nn.Module):
             nn.Linear(self.cfg.action_features, self.cfg.action_emb), nn.ReLU(),
             nn.Linear(self.cfg.action_emb, self.cfg.action_emb), nn.ReLU(),
         )
+        # FiLM: the state modulates every action embedding (multiplicative
+        # interaction), then each candidate also sees the set context — the
+        # masked mean of all candidates — so scores depend on the candidate
+        # SET, not only on the single action.
+        self.film = nn.Linear(self.cfg.trunk, 2 * self.cfg.action_emb)
         self.action_score = nn.Sequential(
-            nn.Linear(self.cfg.trunk + self.cfg.action_emb, self.cfg.trunk), nn.ReLU(),
+            nn.Linear(3 * self.cfg.action_emb, self.cfg.trunk), nn.ReLU(),
             nn.Linear(self.cfg.trunk, 1),
         )
-        self.action_type_head = nn.Linear(self.cfg.trunk, N_ACTIONS)
-        self.value_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
-        self.econ_head = nn.Linear(self.cfg.trunk, 2)
+        self.rank_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
+        self.winner_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
+        self.econ_canal_head = nn.Linear(self.cfg.trunk, 2)
+        self.econ_rail_head = nn.Linear(self.cfg.trunk, 2)
 
     @staticmethod
     def _scatter_mean(values: torch.Tensor, indices: torch.Tensor, size: int) -> torch.Tensor:
@@ -132,25 +147,39 @@ class PolicyValueNet(nn.Module):
         state = self.encode_state(batch)
         if state.shape[0] != action_features.shape[0]:
             raise ValueError("state batch and action batch sizes differ")
-        actions = self.action_encoder(action_features)
-        state_per_action = state.unsqueeze(1).expand(-1, actions.shape[1], -1)
-        logits = self.action_score(torch.cat([state_per_action, actions], dim=-1)).squeeze(-1)
+
         if candidate_mask is None:
-            candidate_mask = torch.ones_like(logits, dtype=torch.bool)
+            candidate_mask = torch.ones(
+                action_features.shape[:2], dtype=torch.bool, device=action_features.device
+            )
         else:
-            candidate_mask = candidate_mask.to(device=logits.device, dtype=torch.bool)
-            if candidate_mask.shape != logits.shape:
+            candidate_mask = candidate_mask.to(device=action_features.device, dtype=torch.bool)
+            if candidate_mask.shape != action_features.shape[:2]:
                 raise ValueError("candidate_mask must have shape (B,N)")
         if (~candidate_mask).all(dim=1).any():
             raise ValueError("each state must contain at least one legal candidate")
+
+        actions = self.action_encoder(action_features)
+        gamma, beta = self.film(state).chunk(2, dim=-1)
+        modulated = gamma.unsqueeze(1) * actions + beta.unsqueeze(1)  # (B,N,E)
+        weights = candidate_mask.unsqueeze(-1).to(modulated.dtype)
+        ctx = (modulated * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)  # (B,E)
+        ctx = ctx.unsqueeze(1).expand(-1, modulated.shape[1], -1)
+        logits = self.action_score(
+            torch.cat([modulated, ctx, modulated * ctx], dim=-1)
+        ).squeeze(-1)
+
+        rank = self.rank_head(state)
         log_probs = torch.log_softmax(logits.masked_fill(~candidate_mask, float("-inf")), dim=1)
+        econ = torch.cat([self.econ_canal_head(state), self.econ_rail_head(state)], dim=-1)
         return {
-            "type_logits": self.action_type_head(state),
             "candidate_logits": logits,
             "candidate_log_probs": log_probs,
             "candidate_mask": candidate_mask,
-            "value": self.value_head(state),
-            "econ": self.econ_head(state),
+            "rank": rank,                       # per-seat normalized final rank
+            "value": 1.0 - rank,                # search scale (higher = better)
+            "winner_logits": self.winner_head(state),
+            "econ": econ,                       # (B,4): canal head | rail head
         }
 
     def policy_value(self, batch: dict, action_features: torch.Tensor,

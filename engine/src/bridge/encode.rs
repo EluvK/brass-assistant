@@ -2,17 +2,19 @@
 //!
 //! Layout (all normalized to ~[0,1], mostly one-hot / fractional):
 //!
-//!   board   (17, 49)  plane-major. 49 cells = 47 city slots + 2 brewery farms.
+//!   board   (24, 49)  plane-major. 49 cells = 47 city slots + 2 brewery farms.
 //!     0 occupied | 1-4 owner one-hot | 5-10 industry one-hot |
-//!     11 flipped | 12 cubes/5 | 13 level/8 | 14 vp/20 | 15 income/7 | 16 is_farm
+//!     11 flipped | 12 cubes/5 | 13 level/8 | 14 vp/20 | 15 income/7 | 16 is_farm |
+//!     17-22 allowed-industry one-hot (static map capability) | 23 slot index/4
 //!
 //!   links   (7, 39)  plane-major over the 39 connections.
 //!     0 can_build_canal | 1 can_build_rail | 2 built | 3-6 owner one-hot
 //!
-//!   global  (114,)
+//!   global  (168,)
 //!     temporal (4) | per-player public state (4 * 17) |
 //!     coal-market one-hot (15) | iron-market one-hot (11) |
-//!     current execution queue (4 * 4)
+//!     current execution queue (4 * 4) |
+//!     merchants: 9 x buy-type one-hot (5: Blank/Any/Cotton/Manufacturer/Pottery) | 9 has_beer
 //!
 //!   own_hand  (35,)  bag-of-cards for the current player:
 //!     0-26 location counts/8 | 27-32 industry counts/8 |
@@ -20,18 +22,18 @@
 //!
 //!   opp_hands (3*35,) same bag-of-cards for the other players (determinized).
 
-use crate::data::Era;
-use crate::map::{ALL_LOCATIONS, CITY_COUNT, connections};
-use crate::state::{Card, GameState};
+use crate::data::{Era, IndustryType};
+use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots, connections};
+use crate::state::{BuyType, Card, GameState, loc_from_key};
 
 pub const LOC_COUNT: usize = ALL_LOCATIONS.len(); // 27
 
-pub const BOARD_PLANES: usize = 17;
+pub const BOARD_PLANES: usize = 24;
 pub const BOARD_CELLS: usize = 49; // 47 city slots + 2 farms
 pub const LINK_PLANES: usize = 7;
 pub const LINK_CELLS: usize = 39;
-pub const GLOBAL_LEN: usize = 114;
-pub const STATE_FEATURE_SCHEMA_VERSION: usize = 3;
+pub const GLOBAL_LEN: usize = 168;
+pub const STATE_FEATURE_SCHEMA_VERSION: usize = 4;
 pub const HAND_LEN: usize = 35; // 27 locations + 6 industries + 2 wilds
 pub const MAX_PLAYERS: usize = 4;
 pub const MAX_OPPONENTS: usize = 3;
@@ -158,6 +160,28 @@ fn global_vec(state: &GameState, _pid: usize) -> Vec<f32> {
         g[queue_base + queue_pos * MAX_PLAYERS + seat] = 1.0;
     }
 
+    // Merchant block: per-game randomized setup facts (what each merchant buys
+    // and whether its beer is still available). The tile mix
+    // (`map::merchant_tile_mix`) only ever deals Blank / Any / cotton /
+    // manufacturer / pottery buyers — coal, iron and beer are raw materials,
+    // never merchant goods — so the one-hot is 5 wide, not per-industry.
+    let merchant_base = queue_base + MAX_PLAYERS * MAX_PLAYERS;
+    for (i, merchant) in state.merchants.iter().enumerate().take(9) {
+        let code = match merchant.buys {
+            BuyType::Blank => 0usize,
+            BuyType::Any => 1,
+            BuyType::Industry(IndustryType::CottonMill) => 2,
+            BuyType::Industry(IndustryType::Manufacturer) => 3,
+            BuyType::Industry(IndustryType::Pottery) => 4,
+            BuyType::Industry(_) => {
+                debug_assert!(false, "merchant cannot buy raw materials");
+                1
+            }
+        };
+        g[merchant_base + i * 5 + code] = 1.0;
+        g[merchant_base + 9 * 5 + i] = merchant.has_beer as u8 as f32;
+    }
+
     g
 }
 
@@ -186,6 +210,18 @@ fn board_vec(state: &GameState) -> Vec<f32> {
         }
         if is_farm {
             b[16 * BOARD_CELLS + cell] = 1.0;
+            // Farms host breweries only; slot index 0.
+            b[(17 + IndustryType::Brewery as usize) * BOARD_CELLS + cell] = 1.0;
+        } else if let Some((loc, slot_index)) = loc_from_key(cell) {
+            // Static slot capability: which industries this slot accepts, so
+            // empty slots still carry "what can be built here".
+            let slots = city_slots(loc);
+            if let Some(allowed) = slots.get(slot_index) {
+                for &ind in allowed.iter() {
+                    b[(17 + ind as usize) * BOARD_CELLS + cell] = 1.0;
+                }
+            }
+            b[23 * BOARD_CELLS + cell] = slot_index as f32 / 4.0;
         }
     }
     b
@@ -247,7 +283,7 @@ mod tests {
     use rand_chacha::ChaCha12Rng;
 
     #[test]
-    fn v3_encodes_static_link_capabilities_and_public_turn_economy() {
+    fn v4_encodes_static_capabilities_and_public_turn_economy() {
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(7), 4);
         state.spend_money(0, 80);
         let encoded = state_to_tensor(&state, 0);
@@ -261,5 +297,29 @@ mod tests {
         let p0 = 4;
         assert_eq!(encoded.global[p0 + 2], 1.0, "opening hand has eight cards");
         assert_eq!(encoded.global[p0 + 16], 0.8);
+
+        // Static slot-capability planes: an empty coal-capable slot must be
+        // recognizable, and every cell carries its slot index plane.
+        let coal_plane = 17 + crate::data::IndustryType::CoalMine as usize;
+        assert!(encoded.board[coal_plane * BOARD_CELLS..(coal_plane + 1) * BOARD_CELLS]
+            .iter()
+            .any(|&v| v == 1.0));
+        assert!(encoded.board[17 * BOARD_CELLS..24 * BOARD_CELLS]
+            .iter()
+            .all(|&v| (0.0..=1.0).contains(&v)));
+
+        // Merchant block: every merchant has exactly one buy-type code lit and
+        // a binary beer flag. The game's tile mix only deals cotton /
+        // manufacturer / pottery / any / blank, so codes 0..4 suffice.
+        let merchant_base = 114;
+        for i in 0..9 {
+            let one_hot_sum: f32 =
+                encoded.global[merchant_base + i * 5..merchant_base + i * 5 + 5]
+                    .iter()
+                    .sum();
+            assert_eq!(one_hot_sum, 1.0, "merchant {i} buy-type one-hot");
+            assert!(encoded.global[merchant_base + 45 + i] == 0.0
+                || encoded.global[merchant_base + 45 + i] == 1.0);
+        }
     }
 }

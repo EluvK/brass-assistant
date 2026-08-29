@@ -88,16 +88,16 @@ fn develop_guardrail_penalty(ctx: &EvalContext, ind: IndustryType, level: u8) ->
     base + per_level * (level.saturating_sub(2)) as f64
 }
 
-pub(super) fn score_develop_plan(
+pub(super) fn score_develop_plans(
     state: &GameState,
     ctx: &EvalContext,
     plan: &Plan,
     card_choices: &CardChoices,
-) -> Option<Decision> {
+) -> Vec<Decision> {
     let w = &ctx.cfg.develop;
     let pid = ctx.pid;
     if !can_develop(state, pid) {
-        return None;
+        return Vec::new();
     }
     let mut types = state.players[pid].developable_types();
     if ctx.cfg.guardrails.ban_develop_iron_lv2_plus {
@@ -107,15 +107,15 @@ pub(super) fn score_develop_plan(
         types.retain(|(ind, tile)| !(*ind == IndustryType::Brewery && tile.level >= 2));
     }
     if types.is_empty() {
-        return None;
+        return Vec::new();
     }
     let iron = find_iron_sources(state);
     if iron.is_empty() {
-        return None;
+        return Vec::new();
     }
     let player = &state.players[pid];
     if !iron[0].free && iron[0].price as i32 > player.money {
-        return None;
+        return Vec::new();
     }
 
     let mut scored: Vec<(IndustryType, f64)> = types
@@ -124,16 +124,48 @@ pub(super) fn score_develop_plan(
         .collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-    let first = scored[0];
+    // v4: emit up to SOURCE_VARIANTS plans, each led by a different target
+    // industry, so search can pick between removal alternatives.
+    let mut out = Vec::new();
+    for primary_idx in 0..super::SOURCE_VARIANTS.min(scored.len()) {
+        if let Some(decision) =
+            develop_plan_for(state, ctx, plan, card_choices, w, pid, &iron, &scored, primary_idx)
+        {
+            out.push(decision);
+        }
+    }
+    out
+}
+
+/// One Develop plan led by `scored[primary_idx]` as the first removed industry.
+#[allow(clippy::too_many_arguments)]
+fn develop_plan_for(
+    state: &GameState,
+    ctx: &EvalContext,
+    plan: &Plan,
+    card_choices: &CardChoices,
+    w: &super::config::DevelopWeights,
+    pid: usize,
+    iron: &[crate::graph::IronSource],
+    scored: &[(IndustryType, f64)],
+    primary_idx: usize,
+) -> Option<Decision> {
+    let first = scored[primary_idx];
     let two_source_cost: i32 = iron
         .iter()
         .take(2)
         .map(|s| if s.free { 0 } else { s.price as i32 })
         .sum();
+    let player = &state.players[pid];
     let can_afford_second = iron.len() >= 2 && two_source_cost <= player.money;
 
     let second = if can_afford_second {
-        let best_other = scored.iter().skip(1).map(|s| (s.0, s.1)).next();
+        let best_other = scored
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != primary_idx)
+            .map(|(_, s)| (s.0, s.1))
+            .next();
         let same_industry = state
             .players[pid]
             .tile_after(first.0, 1)

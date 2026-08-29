@@ -177,15 +177,32 @@ pub(crate) fn score_top_networks(
     let Some(card_index) = card_choices.first().map(|(index, _)| *index) else {
         return Vec::new();
     };
-    scored
-        .into_iter()
-        .map(|(conn_id, parts)| {
-            let coal = if ctx.is_rail() {
-                cheapest_connection_coal_source(state, conn_id)
-            } else {
-                None
-            };
-            Decision {
+    let mut out = Vec::new();
+    for (conn_id, parts) in scored {
+        // v4: default (cheapest) coal plus up to SOURCE_VARIANTS-1 distinct
+        // free-source identities per connection.
+        let coal_variants: Vec<Option<crate::graph::CoalSource>> = if ctx.is_rail() {
+            let mut variants = vec![cheapest_connection_coal_source(state, conn_id)];
+            for option in super::distinct_source_options(
+                crate::rules::coal_options_for_connection(state, &connections()[conn_id], 1),
+                |s: &crate::graph::CoalSource| (s.kind, s.key),
+                super::SOURCE_VARIANTS,
+            ) {
+                if let Some(source) = option.into_iter().next() {
+                    if !variants.contains(&Some(source)) {
+                        variants.push(Some(source));
+                    }
+                }
+                if variants.len() >= super::SOURCE_VARIANTS {
+                    break;
+                }
+            }
+            variants
+        } else {
+            vec![None]
+        };
+        for coal in coal_variants {
+            out.push(Decision {
                 mv: ResolvedMove::Network {
                     conn_id,
                     coal,
@@ -196,9 +213,10 @@ pub(crate) fn score_top_networks(
                     .first()
                     .map(|(_, s)| *s)
                     .unwrap_or(f64::INFINITY),
-            }
-        })
-        .collect()
+            });
+        }
+    }
+    out
 }
 
 pub(crate) fn score_top_network_doubles(
@@ -263,52 +281,56 @@ pub(crate) fn score_top_network_doubles(
         return Vec::new();
     };
     let mut out = Vec::with_capacity(k);
+    let mut geometries = 0usize;
     for (conn1, conn2, score) in scored {
-        if out.len() >= k {
+        if geometries >= k {
             break;
         }
-        // Prefer consuming our own beer (advances our own income when it
-        // flips) over an opponent's. The coal2 options must be enumerated
-        // against the SAME coal1 we actually use, otherwise the emitted move
-        // may fail to execute.
-        let coal1 = crate::rules::coal_options_for_connection(state, &connections()[conn1], 1)
-            .into_iter()
-            .next()
-            .and_then(|o| o.into_iter().next());
-        let Some(coal1) = coal1 else { continue };
-        let Some(opt) = get_second_rail_options(state, ctx.pid, conn1, coal1)
-            .into_iter()
-            .find(|o| o.conn == conn2)
-        else {
-            continue;
-        };
-        let Some(beer) = opt
-            .beers
-            .iter()
-            .copied()
-            .find(|b| b.kind == BeerSourceKind::Own)
-            .or_else(|| opt.beers.first().copied())
-        else {
-            continue;
-        };
-        let Some(coal2) = opt.coal2_opts.first().and_then(|o| o.first()).copied() else {
-            continue;
-        };
-        out.push(Decision {
-            mv: ResolvedMove::NetworkDouble {
-                conn1,
-                conn2,
-                coal1,
-                coal2,
-                beer,
-                card_index,
-            },
-            score,
-            card_score: card_choices
-                .first()
-                .map(|(_, s)| *s)
-                .unwrap_or(f64::INFINITY),
-        });
+        // v4: up to SOURCE_VARIANTS variants per geometry, differing in coal1
+        // identity; the best coal1 also varies the beer source (Own first).
+        // The coal2 options must be enumerated against the SAME coal1 we
+        // actually use, otherwise the emitted move may fail to execute.
+        let coal1_opts = super::distinct_source_options(
+            crate::rules::coal_options_for_connection(state, &connections()[conn1], 1),
+            |s: &crate::graph::CoalSource| (s.kind, s.key),
+            super::SOURCE_VARIANTS,
+        );
+        for (vi, mut option) in coal1_opts.into_iter().enumerate() {
+            let Some(coal1) = option.pop() else { continue };
+            let Some(opt) = get_second_rail_options(state, ctx.pid, conn1, coal1)
+                .into_iter()
+                .find(|o| o.conn == conn2)
+            else {
+                continue;
+            };
+            // Prefer consuming our own beer (advances our own income when it
+            // flips) over an opponent's.
+            let mut beers: Vec<crate::graph::BeerSource> = opt.beers.iter().copied().collect();
+            beers.sort_by_key(|b| b.kind != BeerSourceKind::Own);
+            let beer_cap = if vi == 0 { super::SOURCE_VARIANTS } else { 1 };
+            beers.truncate(beer_cap);
+            for beer in beers {
+                let Some(coal2) = opt.coal2_opts.first().and_then(|o| o.first()).copied() else {
+                    continue;
+                };
+                out.push(Decision {
+                    mv: ResolvedMove::NetworkDouble {
+                        conn1,
+                        conn2,
+                        coal1,
+                        coal2,
+                        beer,
+                        card_index,
+                    },
+                    score,
+                    card_score: card_choices
+                        .first()
+                        .map(|(_, s)| *s)
+                        .unwrap_or(f64::INFINITY),
+                });
+            }
+        }
+        geometries += 1;
     }
     out
 }

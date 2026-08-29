@@ -56,8 +56,10 @@ def main():
                     help="only keep games whose lowest final VP is strictly above this value")
     ap.add_argument("--max-attempts", type=int, default=None,
                     help="candidate-game cap when a VP quality filter is enabled (default: 10x --games)")
-    ap.add_argument("--full-legal-candidates", action="store_true",
-                    help="train on every legal candidate instead of the teacher shortlist")
+    ap.add_argument("--shortlist-candidates", action="store_true",
+                    help="train on the teacher shortlist instead of every legal candidate "
+                         "(v4 default is full-legal: source-identity features removed the "
+                         "one-hot target conflicts, see docs/ai-encoding-v4-design.md §4.4)")
     ap.add_argument("--sample-dir", type=Path,
                     help="reuse existing imitation-*.pkl shards; skips generation and never deletes this directory")
     ap.add_argument("--delete-samples-on-success", action="store_true",
@@ -103,7 +105,7 @@ def main():
                 min_avg_vp=args.min_avg_vp,
                 min_vp=args.min_vp,
                 max_attempts=args.max_attempts,
-                full_legal_candidates=args.full_legal_candidates,
+                full_legal_candidates=not args.shortlist_candidates,
             )
             print(f"generated imitation shards for {args.games} heuristic games "
                   f"({time.time()-t0:.0f}s)")
@@ -171,7 +173,8 @@ def main():
             print(f"checkpoint updated after epoch {trainer.epoch_count}: {ckpt_path}")
         mean_losses = {k: sum(x[k] for x in losses) / len(losses) for k in losses[0]}
         print(f"trained {total_samples} samples ({time.time()-t1:.0f}s): "
-              f"policy={mean_losses['policy']:.3f} value={mean_losses['value']:.3f}")
+              f"policy={mean_losses['policy']:.3f} rank={mean_losses['rank']:.3f} "
+              f"winner={mean_losses['winner']:.3f}")
         if args.enable_policy_eval:
             metrics = {}
             metric_weight = 0
@@ -192,7 +195,7 @@ def main():
             print(f"policy eval: top1={metrics['policy_top1']:.1%} "
                   f"top3={metrics['policy_top3']:.1%} "
                   f"top5={metrics['policy_top5']:.1%} "
-                  f"type_top1={metrics['action_type_top1']:.1%} "
+                  f"winner_top1={metrics['winner_top1']:.1%} "
                   f"entropy={metrics['policy_entropy']:.2f} "
                   f"candidates={metrics['candidate_count_mean']:.1f}"
                   f"/p95={metrics['candidate_count_p95']:.0f}")

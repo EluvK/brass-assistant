@@ -357,26 +357,46 @@ pub(crate) fn score_top_builds(
         if let Some((card_index, card_score)) = pick_build_card(state, pid, &cand, keep_scores) {
             let coal_needed = cand.cost_coal as usize;
             let iron_needed = cand.cost_iron as usize;
-            let coal = crate::rules::coal_source_options(state, cand.loc, coal_needed)
-                .into_iter()
-                .next()
-                .unwrap_or_default();
-            let iron = crate::rules::iron_source_options(state, iron_needed)
-                .into_iter()
-                .next()
-                .unwrap_or_default();
-            out.push(Decision {
-                mv: ResolvedMove::Build {
-                    loc: cand.loc,
-                    slot_index: cand.slot_index,
-                    ind: cand.ind,
-                    coal,
-                    iron,
-                    card_index,
-                },
-                score,
-                card_score,
-            });
+            // v4: emit up to SOURCE_VARIANTS variants of this geometry that
+            // differ in free-source identity; search resolves whose buildings
+            // flip, the generator only guarantees the alternatives exist.
+            let coal_opts = super::distinct_source_options(
+                crate::rules::coal_source_options(state, cand.loc, coal_needed),
+                |s: &crate::graph::CoalSource| (s.kind, s.key),
+                super::SOURCE_VARIANTS,
+            );
+            let iron_opts = super::distinct_source_options(
+                crate::rules::iron_source_options(state, iron_needed),
+                |s: &crate::graph::IronSource| (s.key, s.free),
+                super::SOURCE_VARIANTS,
+            );
+            let empty: Vec<crate::graph::CoalSource> = Vec::new();
+            let coal_opts: Vec<Vec<crate::graph::CoalSource>> =
+                if coal_opts.is_empty() { vec![empty] } else { coal_opts };
+            let empty_iron: Vec<crate::graph::IronSource> = Vec::new();
+            let iron_opts: Vec<Vec<crate::graph::IronSource>> =
+                if iron_opts.is_empty() { vec![empty_iron] } else { iron_opts };
+            let mut variants = 0usize;
+            'variants: for coal in &coal_opts {
+                for iron in &iron_opts {
+                    out.push(Decision {
+                        mv: ResolvedMove::Build {
+                            loc: cand.loc,
+                            slot_index: cand.slot_index,
+                            ind: cand.ind,
+                            coal: coal.clone(),
+                            iron: iron.clone(),
+                            card_index,
+                        },
+                        score,
+                        card_score,
+                    });
+                    variants += 1;
+                    if variants >= super::SOURCE_VARIANTS {
+                        break 'variants;
+                    }
+                }
+            }
         }
     }
     out

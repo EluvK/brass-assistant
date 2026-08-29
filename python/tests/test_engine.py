@@ -11,13 +11,13 @@ from brass_ai import _engine as be
 
 
 def test_constants_shape_consistency():
-    assert be.BOARD_PLANES == 17
+    assert be.BOARD_PLANES == 24
     assert be.BOARD_CELLS == 49
     assert be.LINK_PLANES == 7
     assert be.LINK_CELLS == 39
-    assert be.GLOBAL_LEN == 114
+    assert be.GLOBAL_LEN == 168
     assert be.HAND_LEN == 35
-    assert be.STATE_FEATURE_SCHEMA_VERSION == 3
+    assert be.STATE_FEATURE_SCHEMA_VERSION == 4
     assert len(be.BOARD_CELL_LOCATIONS) == be.BOARD_CELLS
     assert len(be.CONNECTION_ENDPOINTS) == be.LINK_CELLS * 2
     assert len(be.CONNECTION_VIA_FARMS) == be.LINK_CELLS
@@ -79,9 +79,9 @@ def test_determinize_preserves_own_hand_and_count():
 def test_state_to_tensor_shapes_and_determinism():
     g = be.GameState(seed=11, players=4)
     board, links, global_vec, own_hand, opp_hands = g.state_to_tensor()
-    assert board.shape == (17, 49)
+    assert board.shape == (24, 49)
     assert links.shape == (7, 39)
-    assert global_vec.shape == (114,)
+    assert global_vec.shape == (168,)
     assert own_hand.shape == (35,)
     assert opp_hands.shape == (105,)
 

@@ -36,9 +36,9 @@ def test_rust_selfplay_produces_complete_game_samples():
     assert len(vps) == 4
     for sample in samples:
         assert np.isclose(sample.policy.sum(), 1.0)
-        assert sample.value.shape == (4,)
+        assert sample.rank.shape == (4,)
         assert sample.econ.shape == (2,)
-        assert np.isfinite(sample.value).all()
+        assert np.isfinite(sample.rank).all()
 
 
 def test_truncated_selfplay_is_rejected():

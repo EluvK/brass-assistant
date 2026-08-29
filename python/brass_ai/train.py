@@ -1,10 +1,12 @@
 """AlphaZero-style training loop with a persistent optimizer.
 
-Loss (per sample):
+Loss (per sample, head set v4):
   L = -sum_a p_a * log_softmax(score(s, a))_a     (policy CE over concrete
       Engine-generated legal candidates; padding is masked only for batching)
-    + ||value_4 - z_4||^2                         (MSE on the 4-player
-      normalized final-VP vector, no tanh on the value head)
+    + ||rank_4 - target_4||^2                     (MSE on per-seat normalized
+      final rank; the search value for a seat is 1 - rank)
+    + 0.5 * winner_CE                             (per-seat winner distribution)
+    + 0.2 * econ_MSE                              (era-split auxiliary heads)
     + l2 * ||theta||^2
 
 The `Trainer` class owns the network, a persistent AdamW optimizer and a
@@ -49,7 +51,7 @@ class TrainConfig:
     min_lr: float = 1e-5
     amp: bool = True         # fp16 autocast (no-op on CPU)
     econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
-    econ_neg_weight: float = 3.0  # extra weight on samples with negative income
+    econ_neg_weight: float = 1.0  # extra weight on samples with negative income (1.0 = off, kept for ablation)
     # Bound the largest padded candidate matrix in one GPU batch. Full-legal
     # states can have hundreds of candidates, so a fixed sample batch is unsafe.
     max_candidate_batch: int = 65536
@@ -212,44 +214,49 @@ class Trainer:
 
 
 def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
-                 econ_lambda: float = 0.2, econ_neg_weight: float = 3.0):
+                 econ_lambda: float = 0.2, econ_neg_weight: float = 1.0,
+                 winner_weight: float = 0.5):
     tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
     out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
     target = tensors["policy"]
     policy_loss = -(target * out["candidate_log_probs"].masked_fill(
         ~out["candidate_mask"], 0.0
     )).sum(dim=1).mean()
-    value_loss = F.mse_loss(out["value"], tensors["value"])
 
-    # This auxiliary objective is the action-type marginal implied by the
-    # candidate policy target. It guides coarse action selection without ever
-    # reintroducing a flat slot head.
-    type_target = torch.einsum("bn,bnt->bt", target, tensors["candidates"][..., :7])
-    type_loss = -(type_target * F.log_softmax(out["type_logits"], dim=1)).sum(dim=1).mean()
+    # Rank head: per-seat normalized final rank (rank/n). Comparable across
+    # games and order-preserving within one game — replaces the per-game VP
+    # z-score target of v3.
+    rank_loss = F.mse_loss(out["rank"], tensors["rank"])
 
-    # Economic-supervision auxiliary loss. Targets are raw (income_level -10..30,
-    # money); normalize income to ~0..1 and clamp money so the MSE is scale-
-    # comparable with the VP loss. Negative-income samples get extra weight
-    # (the "negative economy is a real problem" prior); no maximization target
-    # is imposed — the net just learns to predict the real economy, so it
-    # spontaneously avoids income collapse without chasing income maximization.
+    # Winner head: distribution over the winning seat(s); ties share mass.
+    winner_loss = -(tensors["winner"] * F.log_softmax(out["winner_logits"], dim=1)).sum(dim=1).mean()
+
+    # Economic-supervision auxiliary loss, SPLIT BY ERA (each sample trains the
+    # head of its own era: canal samples -> canal-end economy, rail samples ->
+    # final economy), so no head ever sees two different target definitions.
+    # Targets are raw (income_level, money); normalize both to ~0..1. Negative
+    # income can keep extra weight via econ_neg_weight (default 1.0 = off).
     econ_target = tensors["econ"]  # (B,2): (income_level, money)
     inc_t = ((econ_target[:, 0] + 10.0) / 40.0).clamp(0.0, 1.0)
     money_t = (econ_target[:, 1] / 100.0).clamp(0.0, 1.0)
-    econ = out["econ"]
-    inc_pred = (econ[:, 0] + 10.0) / 40.0
-    money_pred = econ[:, 1] / 100.0
-    inc_loss = F.mse_loss(inc_pred, inc_t)
-    money_loss = F.mse_loss(money_pred, money_t)
-    # Extra weight on samples whose target income is negative.
-    neg_mask = (econ_target[:, 0] < 0).float()
-    inc_loss_neg = F.mse_loss(inc_pred, inc_t, reduction="none")
-    w = 1.0 + (econ_neg_weight - 1.0) * neg_mask
-    inc_loss = (inc_loss_neg * w).mean()
-    econ_loss = econ_lambda * (inc_loss + money_loss)
+    econ = out["econ"]  # (B,4): [:2] canal head, [2:] rail head
+    era = tensors["era"]
+    era_loss = torch.zeros((), device=device)
+    for active, pred in ((era == 0, econ[:, :2]), (era != 0, econ[:, 2:])):
+        mask = active.float()
+        if mask.sum() == 0:
+            continue
+        inc_pred = (pred[:, 0] + 10.0) / 40.0
+        money_pred = pred[:, 1] / 100.0
+        w = 1.0 + (econ_neg_weight - 1.0) * (econ_target[:, 0] < 0).float()
+        inc_loss = (F.mse_loss(inc_pred, inc_t, reduction="none") * w * mask).sum() / mask.sum()
+        money_loss = (F.mse_loss(money_pred, money_t, reduction="none") * mask).sum() / mask.sum()
+        era_loss = era_loss + (inc_loss + money_loss) * mask.mean()
+    econ_loss = econ_lambda * era_loss
 
     l2_loss = sum(p.pow(2).sum() for p in net.parameters()) * l2
-    return policy_loss + 0.1 * type_loss, value_loss, econ_loss, l2_loss
+    total = policy_loss + rank_loss + winner_weight * winner_loss + econ_loss + l2_loss
+    return total, policy_loss, rank_loss, winner_loss, econ_loss, l2_loss
 
 
 def train_on_batch(net, batch, cfg: TrainConfig, optimizer) -> dict:
@@ -257,18 +264,20 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer) -> dict:
     optimizer.zero_grad(set_to_none=True)
     if cfg.amp and cfg.device != "cpu":
         with torch.autocast(device_type=cfg.device):
-            pl, vl, el, ll = compute_loss(
+            losses = compute_loss(
                 batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
-        total = pl + vl + el + ll
+        total = losses[0]
         total.backward()
     else:
-        pl, vl, el, ll = compute_loss(
+        losses = compute_loss(
             batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
-        (pl + vl + el + ll).backward()
+        losses[0].backward()
     optimizer.step()
+    _, pl, rl, wl, el, ll = losses
     return {
         "policy": pl.detach().item(),
-        "value": vl.detach().item(),
+        "rank": rl.detach().item(),
+        "winner": wl.detach().item(),
         "econ": el.detach().item(),
         "l2": ll.detach().item(),
     }
@@ -290,12 +299,14 @@ def _to_batch(samples: list[Sample]) -> dict:
     pol = np.zeros(candidate_mask.shape, dtype=np.float32)
     for i, sample in enumerate(samples):
         pol[i, :len(sample.policy)] = sample.policy
-    val = np.stack([s.value for s in samples]).astype(np.float32)
+    val = np.stack([s.rank for s in samples]).astype(np.float32)
+    win = np.stack([s.winner for s in samples]).astype(np.float32)
     econ = np.stack([s.econ for s in samples]).astype(np.float32)
     era = np.asarray([s.era for s in samples], dtype=np.int64)
     return {
         "board": b, "links": l, "global": g,
-        "own_hand": o, "opp_hands": p, "policy": pol, "value": val,
+        "own_hand": o, "opp_hands": p, "policy": pol, "rank": val,
+        "winner": win,
         "candidates": candidates.numpy(), "candidate_mask": candidate_mask.numpy(),
         "econ": econ, "era": era,
     }
@@ -324,7 +335,7 @@ def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "c
     net.eval()
     try:
         totals = {"policy_top1": 0.0, "policy_top3": 0.0, "policy_top5": 0.0,
-                  "policy_entropy": 0.0, "action_type_top1": 0.0}
+                  "policy_entropy": 0.0, "winner_top1": 0.0}
         candidate_counts = []
         seen = 0
         with torch.no_grad():
@@ -351,8 +362,8 @@ def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "c
                         totals["policy_top5"] += (ranking[:, :5] == target_idx[:, None]).any(dim=1).sum().item()
                         log_probs = out["candidate_log_probs"].masked_fill(~mask, 0.0)
                         totals["policy_entropy"] += (-(log_probs * log_probs.exp()).sum(dim=1)).sum().item()
-                        type_target = torch.einsum("bn,bnt->bt", target, tensors["candidates"][..., :7])
-                        totals["action_type_top1"] += (out["type_logits"].argmax(dim=1) == type_target.argmax(dim=1)).sum().item()
+                        totals["winner_top1"] += (out["winner_logits"].argmax(dim=1)
+                                                  == tensors["winner"].argmax(dim=1)).sum().item()
                         candidate_counts.extend(mask.sum(dim=1).detach().cpu().tolist())
                         seen += n
         metrics = {key: value / seen for key, value in totals.items()}

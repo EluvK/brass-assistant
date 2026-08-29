@@ -69,10 +69,18 @@ policy/value 利用公开历史形成 belief，而不是把未知手牌当作独
 
 ## Training Roadmap
 
-1. 建立 held-out teacher validation 和 full-candidate benchmark。
+1. 建立 held-out teacher validation 和 full-candidate benchmark。candidate
+   recall 指标（已训练策略在全合法集上的 top-1/top-3 是否落在 shortlist 内）已定义于
+   [ai-action-encoding.md](ai-action-encoding.md) §7.4，待有 schema 兼容的
+   checkpoint 后即可测量（现有 0822/0823 checkpoint 均为 state-schema v2 产物，已被门禁拒绝）。
 2. 为 imitation shortlist 加入有限 hard negatives，缩小训练与 MCTS 推理的候选
-   分布差异。
+   分布差异。两条路径的候选集本身一致（同一 `candidate_actions_k(4)`），
+   真正的偏差来自候选生成器：实测被 shortlist 排除的 Develop 备选中 32% 的
+   终局 margin 反超 teacher 选择（同文档 §7.3）。
 3. 校准 policy/value，确认 candidate encoder 能泛化后，完成最小 self-play run。
+   v4 编码/网络头改造已落地（2026-08-29）：动作特征 301 维、状态张量 v4（含商家块）、
+   生成器来源变体、FiLM+集合上下文 policy、rank/winner 头，见
+   [ai-encoding-v4-design.md](ai-encoding-v4-design.md)；下一步是首次 v4 full-legal bootstrap。
 4. 用 MCTS visit distribution 逐步替换 heuristic teacher，并保留历史 checkpoint
    opponent pool。
 5. 增加 winner/rank value 和 history/belief 表示。
