@@ -76,7 +76,7 @@ class SearchResult:
 
 
 class RustISMCTS:
-    """Drop-in replacement for `brass_ai.mcts.ISMCTS` backed by the Rust search."""
+    """ISMCTS search driven by the Rust engine with a Python network callback."""
 
     def __init__(self, net: PolicyValueNet, cfg: RustMCTSConfig | None = None):
         self.cfg = cfg or RustMCTSConfig()

@@ -54,7 +54,7 @@ fn industry(out: &mut [f32], offset: usize, ind: crate::data::IndustryType) {
     one_hot(out, offset, 6, ind as usize);
 }
 
-/// Encode a concrete move into the stable v2 action-feature schema.
+/// Encode a concrete move into the stable v3 action-feature schema.
 ///
 /// `card_index` is an execution reference only. Card semantics are read from
 /// the pre-move current player's hand so the network never learns hand order.

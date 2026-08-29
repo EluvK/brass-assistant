@@ -131,7 +131,7 @@ python/
 - `state_to_tensor()`：供训练样本采集使用的单状态特征；当前 state-feature schema v3 的维度固定为 board `(17, 49)`、links `(7, 39)`、global `(114,)`、own hand `(35,)`、 opponent hands `(105,)`。links 同时编码地图静态的水路/铁路可建性、动态建成状态与归属；global 包含每位玩家的手牌数、本回合花费、收入格和收入等级。Rust 还导出 board-cell/location 与 connection endpoint 拓扑，Python 网络据此做节点-边消息传递。
 - `legal_candidates()`：Rust 返回完整可执行动作及其结构化特征；网络只对当前候选集合执行 softmax。
 
-网络当前直接对每个具体候选动作输出 logit；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。
+网络当前直接对每个具体候选动作输出 logit；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。235 维动作特征的逐块布局、每类动作的实测编码示例，以及 policy/value/econ/type 四个网络头的设计见 [ai-action-encoding.md](./ai-action-encoding.md)。
 
 #### 自博弈与训练循环
 

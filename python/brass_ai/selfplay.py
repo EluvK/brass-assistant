@@ -40,8 +40,8 @@ class SearchLike(Protocol):
 class Sample:
     pid: int
     board: np.ndarray | None = None  # (17,49)
-    links: np.ndarray | None = None  # (6,39)
-    global_vec: np.ndarray | None = None  # (50,)
+    links: np.ndarray | None = None  # (7,39)
+    global_vec: np.ndarray | None = None  # (114,)
     own_hand: np.ndarray | None = None  # (35,)
     opp_hands: np.ndarray | None = None  # (105,)
     candidates: np.ndarray | None = None  # (N,235), materialized on demand

@@ -38,8 +38,8 @@ Rust heuristic self-play
 | 数据 | 形状/含义 |
 | --- | --- |
 | board | `float32 (17, 49)` |
-| links | `float32 (6, 39)` |
-| global | `float32 (50,)` |
+| links | `float32 (7, 39)` |
+| global | `float32 (114,)` |
 | own_hand | `float32 (35,)` |
 | opp_hands | `float32 (105,)`，三名对手手牌 |
 | candidate features | `float32 (N, 235)` |
@@ -47,7 +47,7 @@ Rust heuristic self-play
 | value target | 四名玩家终局 VP 标准化向量 `(vp - mean) / std`；平局为全零 |
 | econ target | `(income_level, money)`，辅助监督 |
 
-动作特征 schema 当前为 `ACTION_FEATURE_SCHEMA_VERSION = 2`。Python adapter 和 checkpoint 会拒绝未知 schema；Rust 修改动作编码时必须同步更新这些位置和测试。
+动作特征 schema 当前为 `ACTION_FEATURE_SCHEMA_VERSION = 3`。Python adapter 和 checkpoint 会拒绝未知 schema；Rust 修改动作编码时必须同步更新这些位置和测试。动作特征 235 维的具体布局见 [ai-action-encoding.md](./ai-action-encoding.md)。
 
 ## 当前目录
 
@@ -139,6 +139,8 @@ scheduler
 epoch
 action_feature_dim
 action_feature_schema_version
+state_feature_schema_version
+state_feature_shapes
 ```
 
 因此 `--resume` 只能使用 Trainer 生成的完整 checkpoint，不能使用只含模型参数的文件。

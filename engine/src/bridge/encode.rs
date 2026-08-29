@@ -10,7 +10,7 @@
 //!     0 can_build_canal | 1 can_build_rail | 2 built | 3-6 owner one-hot
 //!
 //!   global  (114,)
-//!     temporal (4) | per-player public state (4 * 16) |
+//!     temporal (4) | per-player public state (4 * 17) |
 //!     coal-market one-hot (15) | iron-market one-hot (11) |
 //!     current execution queue (4 * 4)
 //!
@@ -247,7 +247,7 @@ mod tests {
     use rand_chacha::ChaCha12Rng;
 
     #[test]
-    fn v2_encodes_static_link_capabilities_and_public_turn_economy() {
+    fn v3_encodes_static_link_capabilities_and_public_turn_economy() {
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(7), 4);
         state.spend_money(0, 80);
         let encoded = state_to_tensor(&state, 0);

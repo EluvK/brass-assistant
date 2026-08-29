@@ -514,8 +514,8 @@ fn apply_dirichlet_noise(
 // ---------------------------------------------------------------------------
 
 /// Encode every pending request (ONE row each, from the state's current player
-/// perspective) and ask the Python `net_fn` for (type (B,7), goal (B,P),
-/// value (B,4)); split results back per request.
+/// perspective) and ask the Python `net_fn` for (candidate_logits (B,max_N),
+/// values (B,4)); split results back per request.
 fn flush_net(
     py: Python<'_>,
     net_fn: &Py<PyAny>,
