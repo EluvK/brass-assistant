@@ -146,6 +146,8 @@ fn estimate_flip_probability(
             } else {
                 b += 0.1;
             }
+        } else {
+            b -= 0.6;
         }
         // Adjacent unbuilt links mean a merchant can still be connected later.
         let open_links = count_new_unbuilt_neighbor_connections(state, city_id);
@@ -155,7 +157,7 @@ fn estimate_flip_probability(
         match state.players[pid].hand.len() {
             0 => b -= 10.0,
             1 => b -= 5.0,
-            2..=3 => b -= 2.0, 
+            2..=3 => b -= 2.0,
             _ => {}
         }
         b
@@ -442,13 +444,6 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
         beer_bonus += sell_support + rail_beer_value + sat;
     }
 
-    // Level-2+ tiles score their flipped VP at BOTH era ends
-    let double_vp = if tile.level >= 2 && state.era == Era::Rail {
-        2.0
-    } else {
-        1.0
-    };
-
     // "Free-riding" efficiency: if the build's coal/iron can come from board
     // mines/works (own or opponents) instead of the paid market, the action is
     // cheaper and faster. Reward builds on an established resource pool.
@@ -458,7 +453,7 @@ fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget, plan
 
     let mut score = vp_equivalent(
         state,
-        tile.vp as f64 * flip_prob * double_vp + link_self_value,
+        tile.vp as f64 * flip_prob + link_self_value,
         tile.income as f64 * flip_prob,
         -(cand.cost_total as f64),
         0.0,
@@ -616,10 +611,7 @@ mod tests {
         assert_eq!(own_overbuild_vp_loss(&state, pid, &cand), def.vp as f64);
 
         let key = state.city_slot_key(loc, 0).unwrap();
-        state.city_tiles[key]
-            .as_mut()
-            .unwrap()
-            .player = (pid + 1) % state.players.len();
+        state.city_tiles[key].as_mut().unwrap().player = (pid + 1) % state.players.len();
         assert_eq!(own_overbuild_vp_loss(&state, pid, &cand), 0.0);
     }
 }

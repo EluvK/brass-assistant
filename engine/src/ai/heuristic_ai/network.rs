@@ -131,7 +131,11 @@ fn score_network_candidate(
     };
 
     let (current_link_vp, future_link_vp) = link_current_and_potential_vps(state, conn_id, cities);
-    let potential_link_vp = current_link_vp as f64 + future_link_vp as f64;
+    let potential_link_vp = match state.round {
+        0..=3 => current_link_vp as f64 + future_link_vp as f64 * 0.8,
+        4..=6 => current_link_vp as f64 + future_link_vp as f64 * 0.5,
+        _ => current_link_vp as f64 + future_link_vp as f64 * 0.3,
+    };
 
     let player = &state.players[pid];
     let links_built = if is_canal {

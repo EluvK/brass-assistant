@@ -348,6 +348,28 @@ h2 {
   filter:drop-shadow(0 0 5px rgba(217,119,6,.75));
 }
 
+.farm-city .city-boundary {
+  fill:#f1f5f3;
+  fill-opacity:.98;
+  stroke:#65777a;
+  stroke-width:2;
+  rx:13;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.12));
+  pointer-events:none;
+}
+
+.farm-city .city-boundary-inner {
+  fill:none;
+  stroke:rgba(255,255,255,.9);
+  stroke-width:1;
+  rx:11;
+  pointer-events:none;
+}
+
+.farm-city .city-slot {
+  pointer-events:none;
+}
+
 .farm-site {
   fill:#f5fbf7;
   stroke:#65777a;
@@ -937,55 +959,93 @@ function renderActions() {
 
 function stepEffects(step) {
   if (!step || step.kind !== 'action') return [];
+
   const beforeTiles = Object.fromEntries(step.before.tiles.map(t => [t.place, t]));
   const afterTiles = Object.fromEntries(step.after.tiles.map(t => [t.place, t]));
   const effects = [];
+
   for (const [place, tile] of Object.entries(afterTiles)) {
     const old = beforeTiles[place];
-    if (!old) effects.push(`建造：${place} · ${tile.industry} Lv${tile.level}`);
-    else if (old.flipped !== tile.flipped || old.level !== tile.level) {
+
+    if (!old) {
+      effects.push(`建造：${place} · ${tile.industry} Lv${tile.level}`);
+    } else if (old.flipped !== tile.flipped || old.level !== tile.level) {
       effects.push(`产业变化：${place} · ${old.industry} → ${tile.industry} Lv${tile.level}${tile.flipped ? '（已翻面）' : ''}`);
     }
   }
+
   for (const old of step.before.tiles) {
-    if (!afterTiles[old.place]) effects.push(`移除：${old.place} · ${old.industry}`);
+    if (!afterTiles[old.place]) {
+      effects.push(`移除：${old.place} · ${old.industry}`);
+    }
   }
-  const cityName = id => step.before.cities.find(c => c.id === id)?.name || `地点${id}`;
+
+  const cityName = id =>
+    step.before.cities.find(c => c.id === id)?.name ||
+    `地点${id}`;
+
   step.after.routes.forEach((route, i) => {
     const old = step.before.routes[i];
+
     if (old && old.owner == null && route.owner != null) {
       effects.push(`铺设${route.kind === 'rail' ? '铁路' : '水路'}：${cityName(route.a)} ↔ ${cityName(route.b)}`);
     }
   });
+
   return effects;
 }
 
 function effectTargets(step) {
-  const result = { slots:new Map(), farms:false, routes:new Set() };
+  const result = {
+    slots:new Map(),
+    farms:false,
+    routes:new Set()
+  };
+
   if (!step || step.kind !== 'action') return result;
-  const beforeTiles = Object.fromEntries(step.before.tiles.map(t => [t.place, t]));
+
+  const beforeTiles =
+    Object.fromEntries(step.before.tiles.map(t => [t.place,t]));
+
   for (const tile of step.after.tiles) {
     const old = beforeTiles[tile.place];
+
     if (!old || old.flipped !== tile.flipped || old.level !== tile.level) {
-      if (tile.place.startsWith('Farm #')) result.farms = true;
-      else {
+      if (tile.place.startsWith('Farm #')) {
+        result.farms = true;
+      } else {
         const match = tile.place.match(/^(.*) #(\d+)$/);
+
         if (match) {
-          if (!result.slots.has(match[1])) result.slots.set(match[1], new Set());
+          if (!result.slots.has(match[1])) {
+            result.slots.set(match[1],new Set());
+          }
+
           result.slots.get(match[1]).add(Number(match[2]) - 1);
         }
       }
     }
   }
-  step.after.routes.forEach((route, i) => {
+
+  step.after.routes.forEach((route,i) => {
     const old = step.before.routes[i];
-    if (old && old.owner == null && route.owner != null) result.routes.add(i);
+
+    if (old && old.owner == null && route.owner != null) {
+      result.routes.add(i);
+    }
   });
+
   return result;
 }
 
 document.addEventListener('keydown', event => {
-  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'w' && event.key !== 's') return;
+  if (
+    event.key !== 'ArrowUp' &&
+    event.key !== 'ArrowDown' &&
+    event.key !== 'w' &&
+    event.key !== 's'
+  ) return;
+
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
   if (!data?.steps?.length) return;
 
@@ -1082,7 +1142,7 @@ function slotMarkup(slot,index,layout) {
 
   const industry =
     occupied
-      ? String(slot.industry || '').replace(/_/g,' ')
+      ? String(slot.industry || '').replace(/\_/g,' ')
       : '空置';
 
   const level =
@@ -1204,7 +1264,14 @@ function routeGeometry(routes,index) {
   };
 }
 
-function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new Set() }) {
+function drawBoard(
+  state,
+  targets = {
+    cities:new Set(),
+    farms:false,
+    routes:new Set()
+  }
+) {
   const signature =
     state.routes
       .map(r =>
@@ -1219,7 +1286,16 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
       .join('|') +
     '||' +
     (state.merchants || [])
-      .map(m => `${m.loc}:${m.buys}:${m.has_beer ? 1 : 0}`)
+      .map(m =>
+        `${m.loc}:${m.buys}:${m.has_beer ? 1 : 0}`
+      )
+      .join('|') +
+    '||' +
+    (state.tiles || [])
+      .filter(t => t.place === 'Farm #1' || t.place === 'Farm #2')
+      .map(t =>
+        `${t.place}:${t.owner}:${t.industry}:${t.level}:${t.resources}:${t.flipped ? 1 : 0}`
+      )
       .join('|');
 
   const svg = q('#map');
@@ -1380,25 +1456,96 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
       const merchantEntries = Number(id) < 25
         ? (state.merchants || []).filter(m => m.loc === Number(id))
         : [];
-      const farmIndex = id === '25' ? 0 : id === '26' ? 1 : -1;
-      const farmTile = farmIndex >= 0
-        ? state.tiles.find(t => t.place === `Farm #${farmIndex + 1}`)
-        : null;
-      const farmClass = farmTile ? `farm-site occupied p${farmTile.owner}` : 'farm-site';
-      const farmLabel = farmTile
-        ? `${farmTile.industry} L${farmTile.level} · 资源${farmTile.resources}`
-        : '空置';
+
+      const farmIndex =
+        id === '25'
+          ? 0
+          : id === '26'
+          ? 1
+          : -1;
+
+      const farmTile =
+        farmIndex >= 0
+          ? state.tiles.find(
+              t => t.place === `Farm #${farmIndex + 1}`
+            )
+          : null;
+
+      const farmSlot =
+        farmIndex >= 0
+          ? {
+              occupied:Boolean(farmTile),
+              owner:farmTile?.owner,
+              industry:farmTile?.industry || 'Beer',
+              level:farmTile?.level,
+              resources:farmTile?.resources,
+              flipped:farmTile?.flipped,
+              allowed:['Beer']
+            }
+          : null;
+
       const merchantMarker = merchantEntries.length
-        ? `<rect class="merchant-site ${merchantEntries.every(m => m.buys === '空置' || !m.has_beer) ? 'used' : ''}" x="-48" y="-25" width="96" height="50"/>
-           <text class="merchant-site-title" y="-10">${esc(name)}</text>
-           <text class="merchant-site-info" y="3">${esc(merchantEntries.map(m => m.buys).join(' / '))}</text>
-           <text class="merchant-site-info" y="15">${esc(merchantEntries.map(m => m.buys === '空置' ? '无啤酒' : m.has_beer ? '啤酒在' : '啤酒已用').join(' / '))}</text>`
+        ? `
+          <rect
+            class="merchant-site ${merchantEntries.every(m => m.buys === '空置' || !m.has_beer) ? 'used' : ''}"
+            x="-48"
+            y="-25"
+            width="96"
+            height="50"
+          />
+          <text class="merchant-site-title" y="-10">${esc(name)}</text>
+          <text class="merchant-site-info" y="3">${esc(merchantEntries.map(m => m.buys).join(' / '))}</text>
+          <text class="merchant-site-info" y="15">${esc(merchantEntries.map(m => m.buys === '空置' ? '无啤酒' : m.has_beer ? '啤酒在' : '啤酒已用').join(' / '))}</text>
+        `
         : farmIndex >= 0
-        ? `<rect class="${farmClass}" x="-48" y="-24" width="96" height="48"/>
-           <text class="farm-site-title" y="-7">${esc(name)}</text>
-           <text class="farm-site-info" y="9">${esc(farmLabel)}</text>`
-        : `<circle class="farm" r="10"/>
-           <text class="farm-name" y="-15">${esc(name)}</text>`;
+        ? `
+          <g
+            class="farm-city"
+            data-farm-index="${farmIndex}"
+          >
+            <rect
+              class="city-boundary"
+              x="-42"
+              y="-42"
+              width="84"
+              height="84"
+            />
+
+            <rect
+              class="city-boundary-inner"
+              x="-39"
+              y="-39"
+              width="78"
+              height="78"
+            />
+
+            <text
+              class="city-name"
+              y="-51"
+            >${esc(name)}</text>
+
+            <g
+              class="city-slots"
+              transform="translate(-24,-24)"
+            >
+              ${slotMarkup(
+                farmSlot,
+                0,
+                {
+                  width:48,
+                  height:48,
+                  columns:1,
+                  rows:1,
+                  positions:[[0,0]]
+                }
+              )}
+            </g>
+          </g>
+        `
+        : `
+          <circle class="farm" r="10"/>
+          <text class="farm-name" y="-15">${esc(name)}</text>
+        `;
 
       out += `
         <g
@@ -1407,7 +1554,31 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
           transform="translate(${p[0]},${p[1]})"
         >
           ${merchantMarker}
-          ${merchantEntries.length ? `<title>${esc(merchantEntries.map(m => `${m.buys} · ${m.buys === '空置' ? '无啤酒' : m.has_beer ? '啤酒在' : '啤酒已用'}`).join('；'))}</title>` : ''}
+          ${
+            merchantEntries.length
+              ? `
+                <title>
+                  ${esc(
+                    merchantEntries
+                      .map(m =>
+                        `${m.buys} · ${m.buys === '空置'
+                          ? '无啤酒'
+                          : m.has_beer
+                          ? '啤酒在'
+                          : '啤酒已用'}`
+                      )
+                      .join('；')
+                  )}
+                </title>
+              `
+              : farmIndex >= 0
+              ? `
+                <title>
+                  ${esc(name)} · Beer · ${farmTile ? `L${farmTile.level}` : '空置'}
+                </title>
+              `
+              : ''
+          }
         </g>
       `;
     }
@@ -1608,7 +1779,7 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
           occupied
             ? String(
                 slot.industry || ''
-              ).replace(/_/g,' ')
+              ).replace(/\_/g,' ')
             : String(
                 slot.allowed || []
               ).replace(/,/g,' / ') ||
@@ -1642,23 +1813,134 @@ function drawBoard(state, targets = { cities:new Set(), farms:false, routes:new 
     });
   }
 
-  svg.querySelectorAll('.city-effect, .effect-target, .farm-effect').forEach(node => {
-    node.classList.remove('city-effect', 'effect-target', 'farm-effect');
+  for (const [farmIndex,farmNumber] of [[0,1],[1,2]]) {
+    const farmTile =
+      state.tiles.find(
+        t => t.place === `Farm #${farmNumber}`
+      );
+
+    const farm =
+      svg.querySelector(
+        `[data-farm-index="${farmIndex}"]`
+      );
+
+    if (!farm) continue;
+
+    const node =
+      farm.querySelector('[data-city-slot="0"]');
+
+    if (!node) continue;
+
+    const rect =
+      node.querySelector('.city-slot');
+
+    const title =
+      node.querySelector('.city-slot-title');
+
+    const level =
+      node.querySelector('.city-slot-level');
+
+    const info =
+      node.querySelector('.city-slot-info');
+
+    const occupied =
+      Boolean(farmTile);
+
+    const ownerClass =
+      occupied && farmTile.owner != null
+        ? `p${farmTile.owner}`
+        : '';
+
+    rect.setAttribute(
+      'class',
+      [
+        'city-slot',
+        occupied ? 'occupied' : '',
+        ownerClass
+      ]
+        .filter(Boolean)
+        .join(' ')
+    );
+
+    if (title) {
+      title.textContent =
+        occupied
+          ? String(
+              farmTile.industry || 'Beer'
+            ).replace(/\_/g,' ')
+          : 'Beer';
+    }
+
+    if (level) {
+      level.textContent =
+        occupied
+          ? `L${farmTile.level ?? '-'}`
+          : '';
+    }
+
+    if (info) {
+      info.textContent =
+        occupied
+          ? `资源 ${farmTile.resources ?? 0}`
+          : '';
+    }
+
+    node.querySelector('title').textContent =
+      occupied
+        ? `槽位 1（Beer）\nP${farmTile.owner} · ${farmTile.industry} · L${farmTile.level} · ${farmTile.flipped ? '已翻面' : '未翻面'} · 资源 ${farmTile.resources ?? 0}`
+        : '槽位 1（Beer）\n空置';
+  }
+
+  svg.querySelectorAll(
+    '.city-effect, .effect-target, .farm-effect'
+  ).forEach(node => {
+    node.classList.remove(
+      'city-effect',
+      'effect-target',
+      'farm-effect'
+    );
   });
+
   state.cities.forEach(city => {
     const slots = [...targets.slots.entries()]
-      .find(([name]) => name === city.name || name.startsWith(city.name) || city.name.startsWith(name))?.[1];
+      .find(([name]) =>
+        name === city.name ||
+        name.startsWith(city.name) ||
+        city.name.startsWith(name)
+      )?.[1];
+
     if (!slots) return;
-    const node = svg.querySelector(`[data-city="${city.id}"]`);
+
+    const node =
+      svg.querySelector(
+        `[data-city="${city.id}"]`
+      );
+
     slots.forEach(index => {
       node
-        ?.querySelector(`[data-city-slot="${index}"] .city-slot`)
+        ?.querySelector(
+          `[data-city-slot="${index}"] .city-slot`
+        )
         ?.classList.add('effect-target');
     });
   });
-  if (targets.farms) svg.querySelectorAll('[data-farm] .farm-site').forEach(node => node.classList.add('farm-effect'));
+
+  if (targets.farms) {
+    svg
+      .querySelectorAll(
+        '[data-farm] [data-city-slot="0"] .city-slot'
+      )
+      .forEach(node =>
+        node.classList.add('farm-effect')
+      );
+  }
+
   targets.routes.forEach(index => {
-    svg.querySelector(`[data-route="${index}"]`)?.classList.add('effect-target');
+    svg
+      .querySelector(
+        `[data-route="${index}"]`
+      )
+      ?.classList.add('effect-target');
   });
 }
 
@@ -1741,7 +2023,10 @@ function render() {
       ? detail
       : null;
 
-  const state = step ? step.before : data.current;
+  const state =
+    step
+      ? step.before
+      : data.current;
 
   const boardState =
     step?.kind === 'era_end'
@@ -1821,7 +2106,10 @@ function render() {
       </div>
     `).join('');
 
-  drawBoard(boardState, effectTargets(step));
+  drawBoard(
+    boardState,
+    effectTargets(step)
+  );
 
   q('#detail').className =
     data.failure
@@ -1844,9 +2132,12 @@ function render() {
           : 'Select a generated step.'
     );
 
-  q('#effect').innerHTML = stepEffects(step)
-    .map(effect => `<div class="effect-line">${esc(effect)}</div>`)
-    .join('');
+  q('#effect').innerHTML =
+    stepEffects(step)
+      .map(effect =>
+        `<div class="effect-line">${esc(effect)}</div>`
+      )
+      .join('');
 
   renderActions();
 }
