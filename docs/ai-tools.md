@@ -69,15 +69,25 @@ python/
 
 ## 环境与回归
 
-从仓库根目录执行：
+虚拟环境需要 Python 3.12，初次安装虚拟环境命令如下：
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
+uv venv --python 3.12 .venv
+source .venv/Scripts/activate
+uv pip install -e ".[dev]"
+```
 
-# Rust bridge 有修改时重新安装扩展
-python -m maturin develop --release
+后续使用虚拟环境时，只需激活虚拟环境即可：
+
+```powershell
+source .venv/Scripts/activate
+```
+
+安装 Rust 扩展和运行回归测试
+
+```powershell
+# Rust bridge 有修改时需要重新安装扩展
+maturin develop --release
 
 # Python 当前回归测试
 python -m pytest python/tests -q
