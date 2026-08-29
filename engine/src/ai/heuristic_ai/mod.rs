@@ -1,0 +1,224 @@
+//! Heuristic AI baseline for Brass Birmingham.
+//!
+//! Architecture (one concern per module):
+//!
+//! - [`config`]: every tunable weight/threshold/switch, grouped by topic.
+//! - [`context`]: `EvalContext`, built once per candidate batch — strategy
+//!   phase, per-phase weights, remaining rounds, and the round-dependent
+//!   convenience predicates every scorer shares.
+//! - [`value`]: the scoring currency. Every scorer emits a `ScoreParts`
+//!   breakdown (vp / money / income / flex / strategic / risk) and
+//!   `ScoreParts::total` is the single place where components are converted
+//!   into comparable VP equivalents. Also hosts the read-only board VP
+//!   estimate mirroring `gameplay::scoring::score_era`, and the market
+//!   model.
+//! - [`board`] / [`probability`]: shared board queries (merchant reach,
+//!   beer availability, ...) and the single flip-probability model.
+//! - One scoring module per action type (`build`, `network`, `develop`,
+//!   `sell`, `loan`, `scout_pass`), each decomposed into named factor
+//!   functions; `cards` is the independent card-selection head.
+//! - [`plan`]: the "流派" production-plan selection; [`lookahead`]: the
+//!   deterministic 2-ply action policy on top of the scored candidates.
+//!
+//! Public entry points are consumed by `mcts_ai`, `replay`, the binaries
+//! and the PyO3 bridge; their signatures are a stability contract.
+
+use crate::rules::ResolvedMove;
+use crate::state::GameState;
+
+mod board;
+mod build;
+mod cards;
+mod config;
+mod context;
+mod develop;
+mod loan;
+mod lookahead;
+mod network;
+mod plan;
+mod probability;
+mod scout_pass;
+mod sell;
+mod value;
+
+pub use config::HeuristicConfig;
+pub use context::EraProfile;
+pub use lookahead::choose_action;
+pub use plan::{Phase, Plan, compute_plan, era_phase};
+
+// Card-selection head: public helpers for replay tooling and tests.
+pub use cards::{card_choices_for_move, card_keep_score, ranked_card_choices};
+
+pub(crate) use cards::move_card_score;
+use build::score_top_builds;
+use cards::{CardChoices, ranked_card_choices_with};
+use context::EvalContext;
+use develop::score_develop_plan;
+use loan::score_loan_result;
+use network::{score_top_network_doubles, score_top_networks};
+use scout_pass::{score_pass_result, score_scout_plan};
+use sell::score_sell_plan;
+
+pub struct Decision {
+    pub mv: ResolvedMove,
+    /// Score of the operation itself (independent of the card used).
+    pub score: f64,
+    /// Keep-value score of the card(s) consumed by this decision.
+    pub card_score: f64,
+}
+
+/// Stable identity for the operation layer. Card references are intentionally
+/// excluded; card selection is a separate policy dimension.
+pub(crate) fn operation_key(mv: &ResolvedMove) -> String {
+    match mv {
+        ResolvedMove::Build {
+            loc,
+            slot_index,
+            ind,
+            coal,
+            iron,
+            ..
+        } => format!("build:{loc:?}:{slot_index}:{ind:?}:{coal:?}:{iron:?}"),
+        ResolvedMove::Network { conn_id, coal, .. } => format!("network:{conn_id}:{coal:?}"),
+        ResolvedMove::NetworkDouble {
+            conn1,
+            conn2,
+            coal1,
+            coal2,
+            beer,
+            ..
+        } => format!("network2:{conn1}:{conn2}:{coal1:?}:{coal2:?}:{beer:?}"),
+        ResolvedMove::Develop {
+            ind1, ind2, iron, ..
+        } => format!("develop:{ind1:?}:{ind2:?}:{iron:?}"),
+        ResolvedMove::Sell {
+            keys,
+            merchant_indices,
+            use_merchant_beer,
+            beer_sources,
+            free_develop,
+            ..
+        } => format!(
+            "sell:{keys:?}:{merchant_indices:?}:{use_merchant_beer:?}:{beer_sources:?}:{free_develop:?}"
+        ),
+        ResolvedMove::Loan { .. } => "loan".into(),
+        // Scout is one operation; the three discarded cards belong to the
+        // separate card-selection head and must not multiply operation nodes.
+        ResolvedMove::Scout { .. } => "scout".into(),
+        ResolvedMove::Pass { .. } => "pass".into(),
+    }
+}
+
+/// Top-K candidates per action type, for MCTS to get a wider prior.
+/// Build, single Network, and double-Rail Network get up to `k` candidates
+/// each; other action types keep their single best (develop/sell/loan/scout/pass).
+pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
+    // Network masks are (re)validated inside `get_valid_build_targets` /
+    // `get_valid_network_targets` / `get_second_rail_options`, which every
+    // scoring path below enters before any direct `is_in_network` read — no
+    // redundant ensure here (hot path: MCTS calls this once per tree node).
+    let pid = state.current_player_id();
+    let cfg = HeuristicConfig::default();
+    let ctx = EvalContext::new(state, pid, &cfg);
+
+    // Card utility is state-wide and independent of the concrete action type.
+    // Compute it once for this candidate batch and share it with all consumers.
+    let build_targets = crate::rules::get_valid_build_targets(state, pid);
+    let card_choices = ranked_card_choices_with(state, pid, &build_targets, &cfg);
+    let mut out = Vec::new();
+    let plan = compute_plan(state, pid);
+
+    for d in score_top_builds(state, &ctx, k, &plan, &build_targets, &card_choices) {
+        if d.score != f64::NEG_INFINITY {
+            out.push(d);
+        }
+    }
+    out.extend(score_top_networks(state, &ctx, k, &plan, &card_choices));
+    out.extend(score_top_network_doubles(
+        state,
+        &ctx,
+        k,
+        &plan,
+        &card_choices,
+    ));
+    // These scorers currently produce one canonical action per type. Keep the
+    // iterator-based shape here so each branch obeys the same Top-K contract
+    // and can grow to emit alternatives without changing this dispatcher.
+    out.extend(
+        score_develop_plan(state, &ctx, &plan, &card_choices)
+            .into_iter()
+            .take(k),
+    );
+
+    // Enforce the operation/card separation at the candidate boundary. The
+    // first candidate wins ties; its ResolvedMove retains one executable card index,
+    // while `card_choices_for_move` exposes the independent card dimension.
+    let mut unique = std::collections::HashSet::new();
+    out.retain(|d| unique.insert(operation_key(&d.mv)));
+
+    out.extend(score_sell_plan(state, &ctx, &card_choices).into_iter().take(k));
+    out.extend(
+        score_loan_result(state, &ctx, &plan, &card_choices)
+            .into_iter()
+            .take(k),
+    );
+    out.extend(
+        score_scout_plan(state, &ctx, &card_choices)
+            .into_iter()
+            .take(k),
+    );
+    out.extend(score_pass_result(&card_choices).into_iter().take(k));
+
+    // Candidate pruning must never turn a position with executable actions
+    // into a dead end (for example callers passing k=0). Keep one legal fallback
+    // so MCTS always has a path to explore.
+    if out.is_empty()
+        && let Some(mv) = crate::rules::legal_resolved_moves(state).into_iter().next() {
+            let card_score = move_card_score(state, &mv);
+            out.push(Decision {
+                mv,
+                score: f64::NEG_INFINITY,
+                card_score,
+            });
+        }
+
+    out
+}
+
+/// Fallback "pass" decision (safe even on an empty hand).
+pub fn pass_decision(state: &GameState) -> Decision {
+    let cfg = HeuristicConfig::default();
+    let card_index = ranked_card_choices(state, state.current_player_id())
+        .first()
+        .map(|(card_index, _)| *card_index)
+        .unwrap_or(0);
+    Decision {
+        mv: ResolvedMove::Pass { card_index },
+        score: cfg.scout.pass_fallback_score,
+        card_score: card_keep_score(state, state.current_player_id(), card_index),
+    }
+}
+
+/// Position-value estimator for player `pid`, used as the MCTS leaf evaluator.
+///
+/// Combines board VP (estimated with the same settlement rules the era-end
+/// scoring uses), the income stream, and cash — all in VP equivalents via
+/// the shared `EvalContext` — plus hand flexibility, which reflects
+/// actionable potential better than a pure board snapshot.
+pub(crate) fn evaluate_position(state: &GameState, pid: usize) -> f64 {
+    let cfg = HeuristicConfig::default();
+    let ctx = EvalContext::new(state, pid, &cfg);
+    let p = &state.players[pid];
+
+    let vp = value::estimate_player_vp(state, pid, cfg.value.unflipped_vp_share);
+    let flex: f64 = ranked_card_choices(state, pid)
+        .into_iter()
+        .map(|(_, keep_score)| keep_score)
+        .sum();
+
+    p.vp as f64 * cfg.value.vp
+        + (vp.flipped_industry + vp.unflipped_expected + vp.link_current) * cfg.value.vp
+        + ctx.money_value(p.money as f64)
+        + ctx.income_value(p.income_level() as f64 * cfg.value.leaf_income_scale)
+        + ctx.flex_value(flex)
+}

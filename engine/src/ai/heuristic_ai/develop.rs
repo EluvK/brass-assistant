@@ -1,20 +1,109 @@
-// DEVELOP
-// ---------------------------------------------------------------------------
+//! Develop action scoring.
 
-fn score_develop_plan(
+use super::board::player_has_buildable_card;
+use super::context::EvalContext;
+use super::plan::Plan;
+use super::value::ScoreParts;
+use super::{CardChoices, Decision};
+use crate::data::{IndustryType, TileDef};
+use crate::graph::find_iron_sources;
+use crate::rules::{ResolvedMove, can_develop};
+use crate::state::GameState;
+
+/// Abstract value of developing one target tile away.
+///
+/// Develop removes a level-N tile and reveals the NEXT tile; its payoff is
+/// the unlocked (often rail-era, double-scoring) tile that build can use
+/// later. The raw value lives in the `vp` slot of [`ScoreParts`]; its scale
+/// is intentionally well below an immediate build.
+fn develop_target_value(
     state: &GameState,
-    pid: usize,
+    ctx: &EvalContext,
+    ind: IndustryType,
+    tile: TileDef,
+    unlock_offset: usize,
+    plan: &Plan,
+) -> f64 {
+    let w = &ctx.cfg.develop;
+    let unlocked = state.players[ctx.pid].tile_after(ind, unlock_offset);
+    let mut v = if tile.rail_era {
+        w.rail_era_tile
+    } else {
+        w.canal_era_tile
+    };
+    v += w.per_level * tile.level as f64;
+    // Premium for unlocking a double-scoring rail-era tile.
+    if unlocked.is_some_and(|ut| ut.rail_era) {
+        v += w.rail_unlock_bonus;
+    }
+    // Breweries are the economic engine (develop 1 -> build 2/3/4). In
+    // Canal-Early grabbing the beer spot early is almost a must — but
+    // developing costs iron, so only do it while iron is cheap.
+    if ind == IndustryType::Brewery && tile.level == 1 {
+        v += w.brewery_lv1_bonus;
+        if ctx.phase == super::plan::Phase::CanalEarly {
+            v += match state.iron_price() {
+                p if p < 2 => w.iron_price_very_cheap_bonus,
+                p if p <= 2 => w.iron_price_cheap_bonus,
+                p if p <= 3 => w.iron_price_marginal_bonus,
+                _ => w.iron_price_expensive_penalty,
+            };
+        }
+    }
+    // Canal-era develop wins the cross-era bonus; nudge it.
+    if ctx.is_canal() {
+        v += w.canal_bonus;
+    }
+    // Plan ("流派") alignment: developing toward the plan industry unlocks
+    // higher-level tiles of the goods we intend to sell.
+    if plan.industry == ind {
+        v += w.plan_bonus;
+    }
+    // Only meaningful if we actually hold a card to build it next.
+    if player_has_buildable_card(state, ctx.pid, ind) {
+        v += w.buildable_card_bonus;
+    }
+    v - develop_guardrail_penalty(ctx, ind, tile.level)
+}
+
+/// Policy guardrail penalties (see `Guardrails`): developing breweries or
+/// coal mines at level 2+ fights the intended engine, so make the scorer
+/// treat it as clearly inferior.
+fn develop_guardrail_penalty(ctx: &EvalContext, ind: IndustryType, level: u8) -> f64 {
+    let g = &ctx.cfg.guardrails;
+    if level < 2 {
+        return 0.0;
+    }
+    let (base, per_level) = match ind {
+        IndustryType::Brewery => (
+            g.develop_brewery_penalty_base,
+            g.develop_brewery_penalty_per_level,
+        ),
+        IndustryType::CoalMine => (
+            g.develop_coal_penalty_base,
+            g.develop_coal_penalty_per_level,
+        ),
+        _ => return 0.0,
+    };
+    base + per_level * (level.saturating_sub(2)) as f64
+}
+
+pub(super) fn score_develop_plan(
+    state: &GameState,
+    ctx: &EvalContext,
     plan: &Plan,
     card_choices: &CardChoices,
 ) -> Option<Decision> {
+    let w = &ctx.cfg.develop;
+    let pid = ctx.pid;
     if !can_develop(state, pid) {
         return None;
     }
     let mut types = state.players[pid].developable_types();
-    if BAN_DEVELOP_IRON_LV2_PLUS {
+    if ctx.cfg.guardrails.ban_develop_iron_lv2_plus {
         types.retain(|(ind, tile)| !(*ind == IndustryType::IronWorks && tile.level >= 2));
     }
-    if BAN_DEVELOP_BREWERY_LV2_PLUS_AT_CANAL_EARLY && state.era == Era::Canal {
+    if ctx.cfg.guardrails.ban_develop_brewery_lv2_canal_early && ctx.is_canal() {
         types.retain(|(ind, tile)| !(*ind == IndustryType::Brewery && tile.level >= 2));
     }
     if types.is_empty() {
@@ -29,60 +118,11 @@ fn score_develop_plan(
         return None;
     }
 
-    let score_target = |ind: IndustryType, tile: crate::data::TileDef, unlock_offset: usize| {
-        // Develop removes a level-1 tile and reveals the NEXT (level-2+)
-        // tile. Its payoff is the unlocked rail-era tile that double-scores
-        // flipped VP, but develop must stay well below an immediate build.
-        let unlocked = state.players[pid].tile_after(ind, unlock_offset);
-        let mut v = if tile.rail_era { 0.35 } else { 0.12 };
-        v += 0.18 * tile.level as f64;
-        if let Some(ut) = unlocked {
-            // Small premium for unlocking a double-scoring rail-era tile.
-            if ut.rail_era {
-                v += 0.25;
-            }
-        }
-        // Breweries are the economic engine (develop 1 -> build 2/3/4).
-        // In Canal-Early, grabbing the beer spot early is almost a must —
-        // but it must stay rational: developing costs iron, so only develop
-        // the brewery when iron is cheap (£1-2). At £3+ the iron is better
-        // spent building/supplying iron first instead.
-        if ind == IndustryType::Brewery && tile.level == 1 {
-            v += 0.55;
-            if era_phase(state) == Phase::CanalEarly {
-                let iron_price = state.iron_price();
-                if iron_price < 2 {
-                    v += 3.0
-                } else if iron_price <= 2 {
-                    v += 2.0;
-                } else if iron_price <= 3 {
-                    v += 0.5;
-                } else if iron_price > 3 {
-                    v -= 1.5;
-                }
-            }
-        }
-        // Canal-era develop wins the cross-era bonus; nudge it.
-        if state.era == Era::Canal {
-            v += 0.15;
-        }
-        // Plan ("流派") soft bonus: developing toward the target industry
-        // aligns with the production plan (unlock higher-level tiles of the
-        // goods we intend to sell).
-        if plan.industry == ind {
-            v += 0.3;
-        }
-        // Only meaningful if we actually hold a card to build it next.
-        if player_has_buildable_card(state, pid, ind) {
-            v += 0.3;
-        }
-        v - develop_guardrail_penalty(ind, tile.level)
-    };
     let mut scored: Vec<(IndustryType, f64)> = types
         .into_iter()
-        .map(|(ind, tile)| (ind, score_target(ind, tile, 1)))
+        .map(|(ind, tile)| (ind, develop_target_value(state, ctx, ind, tile, 1, plan)))
         .collect();
-    scored.sort_by(|a, b| (b.1).partial_cmp(&a.1).unwrap());
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
 
     let first = scored[0];
     let two_source_cost: i32 = iron
@@ -94,19 +134,20 @@ fn score_develop_plan(
 
     let second = if can_afford_second {
         let best_other = scored.iter().skip(1).map(|s| (s.0, s.1)).next();
-        let same_industry = state.players[pid]
+        let same_industry = state
+            .players[pid]
             .tile_after(first.0, 1)
             .filter(|tile| {
                 tile.can_develop
-                    && !(BAN_DEVELOP_IRON_LV2_PLUS
+                    && !(ctx.cfg.guardrails.ban_develop_iron_lv2_plus
                         && first.0 == IndustryType::IronWorks
                         && tile.level >= 2)
             })
-            .map(|tile| (first.0, score_target(first.0, tile, 2)));
+            .map(|tile| (first.0, develop_target_value(state, ctx, first.0, tile, 2, plan)));
         [best_other, same_industry]
             .into_iter()
             .flatten()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(&b.1))
     } else {
         None
     };
@@ -116,40 +157,48 @@ fn score_develop_plan(
         .take(if second.is_some() { 2 } else { 1 })
         .map(|s| if s.free { 0 } else { s.price as i32 })
         .sum();
-    // Iron is scarce and the develop action burns a full turn; charge a real
+    // Iron is scarce and develop burns a full turn: charge a real
     // opportunity cost so develop isn't a free high-score default.
-    let iron_scarcity = if iron[0].free { 0.0 } else { 0.6 };
-    let second_value = second.map(|(_, score)| score * 0.4).unwrap_or(0.0);
+    let iron_scarcity = if iron[0].free { 0.0 } else { w.iron_scarcity_cost };
+    let second_value = second.map(|(_, score)| score * w.second_target_scale).unwrap_or(0.0);
 
-    let mut score =
-        vp_equivalent(state, first.1 + second_value, 0.0, -(iron_cost as f64), 0.0) - iron_scarcity;
+    let mut parts = ScoreParts {
+        vp: first.1 + second_value,
+        money: -(iron_cost as f64),
+        ..Default::default()
+    };
 
-    if state.era == Era::Canal {
-        score *= 2.0;
-        // In canal, spending a Develop action for only one tile is usually
-        // tempo-inefficient; prefer two-tile develops when legal/affordable.
+    // Canal-era shaping: develop targets are worth more with a whole era
+    // ahead (scale), but spending the action on a single tile is usually
+    // tempo-inefficient — prefer double develops when legal/affordable.
+    if ctx.is_canal() {
+        parts.vp *= w.canal_scale;
         if second.is_none() {
-            score -= 2.0;
+            parts.strategic -= w.canal_single_target_penalty;
         } else {
-            score += 0.5;
+            parts.strategic += w.canal_double_target_bonus;
         }
     }
 
     // Action-economy guardrail: develop is only worth the action budget it
-    // consumes. Humans develop at most ~4 times in the canal era (8 tiles via
-    // double-develops) and ~0-1 times in the rail era — beyond that, develop
-    // crowds out builds/links/sells that actually score (even a bare link
-    // beats a 5th develop). Penalize past the era's limit, growing steeply.
-    let already = if state.era == Era::Canal {
+    // consumes. Humans develop at most ~4 times in the canal era (8 tiles
+    // via double-develops) and ~0-1 times in the rail era — beyond that,
+    // develop crowds out builds/links/sells that actually score.
+    let already = if ctx.is_canal() {
         state.players[pid].develops_in_canal
     } else {
         state.players[pid].develops_in_rail
     };
     let this_would_be = already + 1;
-    let limit = if state.era == Era::Canal { 4.0 } else { 1.0 };
+    let limit = if ctx.is_canal() {
+        w.canal_count_limit
+    } else {
+        w.rail_count_limit
+    };
     let over = (this_would_be as f64 - limit).max(0.0);
-    let develop_count_penalty = over * over * 2.0 + over;
-    score -= develop_count_penalty;
+    parts.risk -= over * over * w.over_limit_steepness + over;
+
+    parts.risk -= iron_scarcity;
 
     let iron_needed = if second.is_some() { 2 } else { 1 };
     let iron_choice = crate::rules::iron_source_options(state, iron_needed)
@@ -163,7 +212,7 @@ fn score_develop_plan(
             iron: iron_choice,
             card_index,
         },
-        score,
+        score: parts.total(ctx),
         card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
     })
 }

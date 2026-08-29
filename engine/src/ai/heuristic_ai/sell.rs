@@ -1,38 +1,46 @@
-// SELL
-// ---------------------------------------------------------------------------
+//! Sell action scoring.
 
-fn best_merchant_beer_bonus(state: &GameState, merchant_indices: &[usize]) -> f64 {
-    let mut best = 0.0f64;
-    for &i in merchant_indices {
-        let mt = &state.merchants[i];
-        if !mt.has_beer {
-            continue;
-        }
-        let value = merchant_bonus_value(state, mt.loc);
-        if value > best {
-            best = value;
-        }
+use super::context::EvalContext;
+use super::value::ScoreParts;
+use super::{CardChoices, Decision};
+use crate::rules::ResolvedMove;
+use crate::map::{Loc, merchant_bonus_at};
+use crate::rules::{SellRoute, execute_sell, get_valid_sell_targets, plan_sell_beer_sources};
+use crate::state::GameState;
+
+/// Value of the merchant bonus gained by selling with a merchant's own
+/// beer, as score components (VP / money / income / free develop).
+fn merchant_bonus_parts(_state: &GameState, ctx: &EvalContext, loc: Loc) -> ScoreParts {
+    let w = &ctx.cfg.sell;
+    match merchant_bonus_at(loc) {
+        crate::map::MerchantBonus::Vp(v) => ScoreParts {
+            vp: v as f64 * ctx.cfg.value.vp,
+            ..Default::default()
+        },
+        crate::map::MerchantBonus::Money(m) => ScoreParts {
+            money: m as f64,
+            ..Default::default()
+        },
+        crate::map::MerchantBonus::Income(spaces) => ScoreParts {
+            income: spaces as f64,
+            ..Default::default()
+        },
+        crate::map::MerchantBonus::Develop(_) => ScoreParts {
+            strategic: w.develop_bonus_value,
+            ..Default::default()
+        },
     }
-    best
 }
 
-fn merchant_bonus_value(state: &GameState, loc: Loc) -> f64 {
-    match crate::map::merchant_bonus_at(loc) {
-        crate::map::MerchantBonus::Vp(v) => v as f64 * VP_WEIGHT,
-        crate::map::MerchantBonus::Money(m) => m as f64 * money_weight(state),
-        crate::map::MerchantBonus::Income(spaces) => spaces as f64 * income_weight(state),
-        crate::map::MerchantBonus::Develop(_) => 0.5,
-    }
-}
-
-fn sell_route_value(state: &GameState, route: &crate::rules::SellRoute) -> f64 {
+fn sell_route_value(state: &GameState, ctx: &EvalContext, route: &SellRoute) -> f64 {
     if route.use_merchant_beer {
-        merchant_bonus_value(state, state.merchants[route.merchant_index].loc)
+        merchant_bonus_parts(state, ctx, state.merchants[route.merchant_index].loc).total(ctx)
     } else {
         0.0
     }
 }
 
+/// Verify the greedy plan actually executes and flips every included tile.
 fn sell_plan_executes_all(
     state: &GameState,
     pid: usize,
@@ -43,7 +51,7 @@ fn sell_plan_executes_all(
 ) -> bool {
     let mut sim = state.clone();
     let Ok(beer_sources) =
-        crate::rules::plan_sell_beer_sources(state, pid, keys, merchant_indices, use_merchant)
+        plan_sell_beer_sources(state, pid, keys, merchant_indices, use_merchant)
     else {
         return false;
     };
@@ -69,7 +77,22 @@ fn sell_plan_executes_all(
     })
 }
 
-fn score_sell_plan(state: &GameState, pid: usize, card_choices: &CardChoices) -> Option<Decision> {
+/// Printed VP plus the income advance of flipping one tile — the ranking
+/// key for which tiles to sell.
+fn tile_sell_value(state: &GameState, ctx: &EvalContext, key: usize) -> f64 {
+    let w = &ctx.cfg.sell;
+    state.city_tiles[key].as_ref().map_or(0.0, |tile| {
+        tile.def.vp as f64 + tile.def.income as f64 * w.tile_income_share
+    })
+}
+
+pub(super) fn score_sell_plan(
+    state: &GameState,
+    ctx: &EvalContext,
+    card_choices: &CardChoices,
+) -> Option<Decision> {
+    let pid = ctx.pid;
+    let w = &ctx.cfg.sell;
     let targets = get_valid_sell_targets(state, pid);
     if targets.is_empty() {
         return None;
@@ -77,25 +100,21 @@ fn score_sell_plan(state: &GameState, pid: usize, card_choices: &CardChoices) ->
 
     let card_index = card_choices.first().map(|(index, _)| *index)?;
 
-    // Rank targets, then sell all (matches aiPlayer.js sellPlan behavior).
+    // Rank targets by the merchant beer bonus they can grab, then by tile
+    // value; sell all (matches aiPlayer.js sellPlan behavior).
     let mut ranked: Vec<(usize, f64, f64)> = targets
         .iter()
         .map(|t| {
             let merchant_choices: Vec<usize> = t.routes.iter().map(|r| r.merchant_index).collect();
-            let bonus = best_merchant_beer_bonus(state, &merchant_choices);
-            let tile = &state.city_tiles[t.key];
-            let tile_value = tile.as_ref().map_or(0.0, |tile| {
-                tile.def.vp as f64 + tile.def.income as f64 * 0.3
-            });
-            (t.key, tile_value, bonus)
+            let bonus = merchant_choices
+                .iter()
+                .filter(|&&i| state.merchants[i].has_beer)
+                .map(|&i| merchant_bonus_parts(state, ctx, state.merchants[i].loc).total(ctx))
+                .fold(0.0f64, f64::max);
+            (t.key, tile_sell_value(state, ctx, t.key), bonus)
         })
         .collect();
-    ranked.sort_by(|a, b| {
-        (b.2)
-            .partial_cmp(&a.2)
-            .unwrap()
-            .then((b.1).partial_cmp(&a.1).unwrap())
-    });
+    ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then(b.1.total_cmp(&a.1)));
 
     let mut keys = Vec::new();
     let mut merchant_indices = Vec::new();
@@ -106,9 +125,8 @@ fn score_sell_plan(state: &GameState, pid: usize, card_choices: &CardChoices) ->
         };
         let mut routes = target.routes.clone();
         routes.sort_by(|a, b| {
-            sell_route_value(state, b)
-                .partial_cmp(&sell_route_value(state, a))
-                .unwrap()
+            sell_route_value(state, ctx, b)
+                .total_cmp(&sell_route_value(state, ctx, a))
         });
 
         for route in routes {
@@ -131,69 +149,45 @@ fn score_sell_plan(state: &GameState, pid: usize, card_choices: &CardChoices) ->
         return None;
     }
 
-    let total_income: f64 = keys
+    // Sum the realised effects of the accepted plan.
+    let mut parts = ScoreParts::default();
+    for (key, &merchant, &uses_beer) in keys
         .iter()
-        .map(|key| {
-            state.city_tiles[*key]
-                .as_ref()
-                .map_or(0.0, |tile| tile.def.income as f64)
-        })
-        .sum();
-    let total_bonus: f64 = keys
-        .iter()
-        .zip(merchant_indices.iter().copied())
-        .zip(use_merchant.iter().copied())
-        .map(|((_key, merchant_index), use_merchant)| {
-            if use_merchant {
-                merchant_bonus_value(state, state.merchants[merchant_index].loc)
-            } else {
-                0.0
-            }
-        })
-        .sum();
-    let total_vp: f64 = keys
-        .iter()
-        .map(|key| {
-            state.city_tiles[*key].as_ref().map_or(0.0, |tile| {
-                tile.def.vp as f64 + tile.def.income as f64 * 0.3
-            })
-        })
-        .sum();
-
-    // End-of-era urgency: in the final round of the canal era, canal-only
-    // (level-1) sellables vanish if unflipped — selling them now is essential
-    // or the VP + income is permanently lost. Boost the sell action sharply.
-    // In Rail-Late the finish is selling your built goods for VP — selling is
-    // the whole point of the late game, so weight it across the entire phase.
-    let rounds_left = state.rounds_remaining();
-    let canal_end = state.era == Era::Canal && rounds_left <= 2.0;
-    let rail_end = state.era == Era::Rail && rounds_left <= 1.0;
-    let urgent = canal_end || rail_end;
-    let mut urgency_bonus = if urgent { 3.0 } else { 0.0 };
-    if era_phase(state) == Phase::RailLate && !urgent {
-        urgency_bonus += 1.2;
+        .zip(merchant_indices.iter())
+        .zip(use_merchant.iter())
+        .map(|((k, m), u)| (k, m, u))
+    {
+        if let Some(tile) = state.city_tiles[*key].as_ref() {
+            parts.vp += tile.def.vp as f64;
+            parts.income += tile.def.income as f64;
+        }
+        if uses_beer {
+            parts.add(&merchant_bonus_parts(state, ctx, state.merchants[merchant].loc));
+        }
     }
 
-    // Flipping a sellable advances income: that's a recurring cash stream,
-    // not just a one-time VP. Add the income value explicitly.
-    let income_stream = total_income * income_weight(state) * 0.5;
+    // Flipping a sellable advances income: a recurring cash stream, not
+    // just one-time VP — credit the income again at a reduced share.
+    parts.income *= 1.0 + w.income_stream_share;
 
-    let vp_equivalent_score = vp_equivalent(state, total_vp, total_income, 0.0, 0.0);
-    let vp_score = match (state.era, state.round) {
-        (Era::Canal, 0..=3) => vp_equivalent_score * 0.1, // round 1,2,3
-        (Era::Canal, 4..=6) => vp_equivalent_score * 0.2,
-        (Era::Canal, 7..) => vp_equivalent_score * 0.6,
-        (Era::Rail, 0..=3) => vp_equivalent_score * 0.1,
-        (Era::Rail, 4..=6) => vp_equivalent_score * 0.2,
-        (Era::Rail, 7..) => vp_equivalent_score * 0.6,
-    };
+    // Early sells are mostly about income (VP grows later); the realised VP
+    // counts more as the era runs out.
+    let vp_scale = w.vp_scale_floor + w.vp_scale_span * (1.0 - ctx.era_frac);
+    parts.vp *= vp_scale;
 
-    let score = vp_score + total_bonus + urgency_bonus + income_stream;
+    // Era-end urgency: in the final canal rounds, canal-only (level-1)
+    // sellables vanish if unflipped — selling now is essential or the VP +
+    // income is permanently lost. In Rail-Late selling IS the whole point.
+    if ctx.is_era_endgame() {
+        parts.strategic += w.urgency_bonus;
+    } else if ctx.phase == super::plan::Phase::RailLate {
+        parts.strategic += w.rail_late_baseline_bonus;
+    }
 
     // Canonical Sell actions use ascending city-tile keys. The plan above is
     // ranked by merchant bonus/value, so its construction order can differ
-    // from legal_resolved_moves() even when it describes the same concrete action.
-    // Sort the aligned route vectors before returning the teacher move.
+    // from legal_resolved_moves() even for the same concrete action. Sort
+    // the aligned route vectors before returning the teacher move.
     let mut routes: Vec<(usize, usize, bool)> = keys
         .into_iter()
         .zip(merchant_indices)
@@ -211,27 +205,25 @@ fn score_sell_plan(state: &GameState, pid: usize, card_choices: &CardChoices) ->
         },
     );
     let beer_sources =
-        crate::rules::plan_sell_beer_sources(state, pid, &keys, &merchant_indices, &use_merchant)
-            .ok()?;
-    let free_develop =
-        merchant_indices
-            .iter()
-            .zip(use_merchant.iter())
-            .find_map(|(&merchant, &uses_beer)| {
-                (uses_beer
-                    && matches!(
-                        crate::map::merchant_bonus_at(state.merchants[merchant].loc),
-                        crate::map::MerchantBonus::Develop(_)
-                    ))
-                .then(|| {
-                    state.players[pid]
-                        .developable_types()
-                        .into_iter()
-                        .max_by_key(|(_, tile)| tile.level)
-                        .map(|(ind, _)| ind)
-                })
-                .flatten()
-            });
+        plan_sell_beer_sources(state, pid, &keys, &merchant_indices, &use_merchant).ok()?;
+    let free_develop = merchant_indices
+        .iter()
+        .zip(use_merchant.iter())
+        .find_map(|(&merchant, &uses_beer)| {
+            (uses_beer
+                && matches!(
+                    merchant_bonus_at(state.merchants[merchant].loc),
+                    crate::map::MerchantBonus::Develop(_)
+                ))
+            .then(|| {
+                state.players[pid]
+                    .developable_types()
+                    .into_iter()
+                    .max_by_key(|(_, tile)| tile.level)
+                    .map(|(ind, _)| ind)
+            })
+            .flatten()
+        });
 
     Some(Decision {
         mv: ResolvedMove::Sell {
@@ -242,7 +234,7 @@ fn score_sell_plan(state: &GameState, pid: usize, card_choices: &CardChoices) ->
             free_develop,
             card_index,
         },
-        score,
+        score: parts.total(ctx),
         card_score: card_choices
             .first()
             .map(|(_, s)| *s)

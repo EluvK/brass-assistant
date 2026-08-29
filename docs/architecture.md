@@ -68,8 +68,14 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   └─ scoring.rs  时代计分（连接 VP + 板块 VP）+ 终局排名
 │
 ├─ ai/ AI 决策层
-│   ├─ heuristic_ai.rs  启发式候选生成与各类行动评分
-│   ├─ heuristic_ai/
+│   ├─ heuristic_ai/    启发式候选生成与各类行动评分
+│   │   ├─ mod.rs       对外 API 门面（Decision / candidate_actions_k 等）+ 候选编排
+│   │   ├─ config.rs    HeuristicConfig：全部可调权重/阈值/开关（按主题分组）
+│   │   ├─ context.rs   EvalContext：每候选批一次的评估上下文（阶段/轮次/换算便捷函数）
+│   │   ├─ value.rs     统一量纲 ScoreParts + 只读 VP 估算（镜像 scoring.rs）+ 市场模型
+│   │   ├─ board.rs     公共盘面查询（merchant 可达 / 啤酒可用 / 自由资源比例等）
+│   │   ├─ probability.rs 唯一一套翻转概率模型（build 视角与 plan 视角共用）
+│   │   ├─ cards.rs     卡牌保留价值（独立卡牌选择头）
 │   │   ├─ lookahead.rs 确定性 2-ply 同回合 combo 前瞻
 │   │   ├─ plan.rs      时代分档与生产计划选择
 │   │   ├─ build.rs     Build 评分与候选生成
@@ -91,7 +97,7 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 ```
 
 依赖方向大体单向：`model` → `game_state` → `gameplay` → AI / bridge。`gameplay` 只生成规则意义上的合法动作；候选动作特征编码属于 bridge，因此规则层不依赖 bridge。
-唯一反向边：`bridge/encode.rs`（桥接层）依赖 `ai/heuristic_ai::estimate_rounds_remaining`（AI 层）——属"胶水层依赖全部"的既有设计，非漂移。
+历史反向边 `bridge/encode.rs` → `ai/heuristic_ai::estimate_rounds_remaining` 已消除：该函数现已并入 `GameState::rounds_remaining`，桥接层直接调用状态方法。
 
 为保持 Rust 调用方、二进制工具及 PyO3 绑定的兼容性，`lib.rs` 仍公开再导出 `_engine::rules`、`_engine::state` 等原有平铺路径；新代码应使用对应的职责层路径。
 

@@ -4,7 +4,7 @@ use crate::data::{Era, IndustryType};
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots};
 use crate::state::{Card, GameState};
 
-use super::owned_beer_barrels;
+use super::board::owned_beer_barrels;
 
 /// Four strategy phases: each era is split into an early and late half.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -13,15 +13,6 @@ pub enum Phase {
     CanalLate,
     RailEarly,
     RailLate,
-}
-
-/// Per-phase evaluation weights used throughout the heuristic.
-pub struct EraProfile {
-    pub phase: Phase,
-    pub income_w: f64,
-    pub money_w: f64,
-    pub network_w: f64,
-    pub alpha: f64,
 }
 
 pub fn era_phase(state: &GameState) -> Phase {
@@ -33,60 +24,39 @@ pub fn era_phase(state: &GameState) -> Phase {
     }
 }
 
-pub fn era_profile(state: &GameState) -> EraProfile {
-    let phase = era_phase(state);
-    let rounds = state.rounds_remaining();
-    let frac = (rounds / 8.0).clamp(0.0, 1.0);
-    match phase {
-        Phase::CanalEarly | Phase::CanalLate => EraProfile {
-            phase,
-            income_w: super::BASE_INCOME_WEIGHT * (1.8 + 0.6 * frac),
-            money_w: super::BASE_MONEY_WEIGHT * 0.55,
-            network_w: 0.1,
-            alpha: 0.6,
-        },
-        Phase::RailEarly => EraProfile {
-            phase,
-            income_w: super::BASE_INCOME_WEIGHT * (1.2 + 0.5 * frac),
-            money_w: super::BASE_MONEY_WEIGHT * 0.8,
-            network_w: 1.0,
-            alpha: 0.6,
-        },
-        Phase::RailLate => EraProfile {
-            phase,
-            income_w: 0.0,
-            money_w: 0.2,
-            network_w: 0.85,
-            alpha: 0.35,
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
+    use super::super::config::HeuristicConfig;
+    
     use super::*;
+    use crate::state::GameState;
     use rand_chacha::rand_core::SeedableRng;
+    use rand_chacha::ChaCha12Rng;
+
     #[test]
-    fn show_era_profile() {
-        let mut state = crate::state::GameState::new(rand_chacha::ChaCha12Rng::seed_from_u64(7), 4);
+    fn era_phase_splits_each_era_at_round_four() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(7), 4);
         for era in [Era::Canal, Era::Rail] {
             state.era = era;
-            for round in 1..=8 {
-                state.round = round;
-                let profile = era_profile(&state);
-                println!(
-                    "era={:?} round={} phase={:?} income_w={:.3} money_w={:.3} network_w={:.3} alpha={:.3}",
-                    era,
-                    round,
-                    profile.phase,
-                    profile.income_w,
-                    profile.money_w,
-                    profile.network_w,
-                    profile.alpha
-                );
-            }
+            state.round = 4;
+            assert_eq!(era_phase(&state), if era == Era::Canal { Phase::CanalEarly } else { Phase::RailEarly });
+            state.round = 5;
+            assert_eq!(era_phase(&state), if era == Era::Canal { Phase::CanalLate } else { Phase::RailLate });
         }
+    }
+
+    #[test]
+    fn era_profile_scales_income_down_and_money_up_as_the_era_runs_out() {
+        let cfg = HeuristicConfig::default();
+        let params = cfg.era.params(Phase::CanalEarly);
+        // Income is weighted by how much era is left: worth more early.
+        let income_full = cfg.value.income_base * (params.income_add + params.income_frac);
+        let income_empty = cfg.value.income_base * params.income_add;
+        assert!(income_full > income_empty);
+        // Rail-late drops income weighting entirely (no time to compound).
+        assert_eq!(cfg.era.params(Phase::RailLate).income_add, 0.0);
+        // The future discount is continuous in the remaining era fraction.
+        assert!(cfg.discount.floor + cfg.discount.span > cfg.discount.floor);
     }
 }
 
@@ -142,24 +112,11 @@ fn hand_support(state: &GameState, pid: usize, ind: IndustryType) -> usize {
     support.min(3)
 }
 
-fn plan_flip_probability(state: &GameState, pid: usize, ind: IndustryType) -> f64 {
-    if !ind.is_sellable() {
-        return 0.0;
-    }
-    if !state.merchants.iter().any(|mt| mt.accepts(ind)) {
-        return 0.15;
-    }
-    let beer_ok = owned_beer_barrels(state, pid) > 0
-        || state
-            .merchants
-            .iter()
-            .any(|mt| mt.has_beer && mt.accepts(ind));
-    if beer_ok { 0.7 } else { 0.3 }
-}
-
 /// Compute the production plan from board capacity, remaining tiles, cards,
 /// sell potential, and beer availability.
 pub fn compute_plan(state: &GameState, pid: usize) -> Plan {
+    let cfg = super::config::HeuristicConfig::default();
+    let ctx = super::context::EvalContext::new(state, pid, &cfg);
     let slots = vacant_board_slots(state);
     let mut best_industry = IndustryType::CottonMill;
     let mut best_score = f64::NEG_INFINITY;
@@ -193,7 +150,7 @@ pub fn compute_plan(state: &GameState, pid: usize) -> Plan {
         let hand_factor = 0.5 + 0.25 * hand_support(state, pid, ind) as f64;
         let score = plan_count as f64
             * avg_vp
-            * plan_flip_probability(state, pid, ind)
+            * super::probability::plan_flip_probability(state, &ctx, ind)
             * beer_factor
             * hand_factor;
         if score > best_score {
