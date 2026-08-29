@@ -29,7 +29,7 @@
 //!                       [9]free_develop [10]scout [11]reserved
 
 use crate::graph::{BeerSource, BeerSourceKind, CoalSource, CoalSourceKind, IronSource};
-use crate::map::{city_slots, connections, MERCHANT_LOC_MASK};
+use crate::map::{MERCHANT_LOC_MASK, city_slots, connections};
 use crate::r#move::ResolvedMove;
 use crate::state::{Card, GameState};
 

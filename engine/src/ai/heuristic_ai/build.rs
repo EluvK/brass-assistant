@@ -5,16 +5,16 @@
 //! `HeuristicConfig::build`, so tuning a coefficient means touching one
 //! named parameter instead of a magic literal.
 
+use super::Decision;
 use super::board::{
-    beer_available, beer_barrels_reachable, merchant_reachable, owned_beer_barrels,
-    own_overbuild_vp_loss, player_owns_link_touching, resource_source_ratio,
-    sellable_beer_demand, unbuilt_neighbor_connections,
+    beer_available, beer_barrels_reachable, merchant_reachable, own_overbuild_vp_loss,
+    owned_beer_barrels, player_owns_link_touching, resource_source_ratio, sellable_beer_demand,
+    unbuilt_neighbor_connections,
 };
 use super::context::EvalContext;
 use super::plan::{Phase, Plan};
 use super::probability::build_flip_probability;
 use super::value::{ScoreParts, market_scarcity, price_heat, simulate_market_sale};
-use super::Decision;
 use crate::data::IndustryType;
 use crate::graph::count_beer_sources;
 use crate::rules::{BuildTarget, ResolvedMove, valid_build_cards};
@@ -32,8 +32,8 @@ fn market_value(state: &GameState, ctx: &EvalContext, cand: &BuildTarget, cubes:
     // Coal demand is far higher than iron (every rail build/link eats it);
     // iron demand is steadier and the market fills faster, so iron scarcity
     // is discounted to avoid over-producing iron nobody will consume.
-    let scarcity = market_scarcity(state, is_coal)
-        * if is_coal { 1.0 } else { w.iron_scarcity_share };
+    let scarcity =
+        market_scarcity(state, is_coal) * if is_coal { 1.0 } else { w.iron_scarcity_share };
 
     // Iron works sell anywhere; coal needs a merchant in reach.
     let market_ok = !is_coal || merchant_reachable(state, cand.loc, cand.ind);
@@ -109,7 +109,12 @@ fn market_value(state: &GameState, ctx: &EvalContext, cand: &BuildTarget, cubes:
 
 /// Beer economy of the build: sellables need merchant + beer to flip, and
 /// breweries are worth a premium while they still have sellables to feed.
-fn beer_economy(state: &GameState, ctx: &EvalContext, cand: &BuildTarget, beers_to_sell: Option<u8>) -> ScoreParts {
+fn beer_economy(
+    state: &GameState,
+    ctx: &EvalContext,
+    cand: &BuildTarget,
+    beers_to_sell: Option<u8>,
+) -> ScoreParts {
     let w = &ctx.cfg.build;
     let mut strategic = 0.0;
     if cand.ind.is_sellable() {
@@ -164,7 +169,13 @@ fn beer_economy(state: &GameState, ctx: &EvalContext, cand: &BuildTarget, beers_
 /// Rail-era emergency coal prior: when the coal market is near empty, any
 /// legal coal mine is strategically premium because the whole table must
 /// pay expensive market coal otherwise. Independent of immediate auto-sell.
-fn rail_coal_shortage(state: &GameState, ctx: &EvalContext, cand: &BuildTarget, level: u8, cubes: u8) -> f64 {
+fn rail_coal_shortage(
+    state: &GameState,
+    ctx: &EvalContext,
+    cand: &BuildTarget,
+    level: u8,
+    cubes: u8,
+) -> f64 {
     let w = &ctx.cfg.build;
     if cand.ind != IndustryType::CoalMine || !ctx.is_rail() {
         return 0.0;
@@ -266,12 +277,7 @@ pub(super) fn score_build_candidate(
         (ratio - ctx.cfg.build.free_riding_threshold).max(0.0) * ctx.cfg.build.free_riding_bonus;
 
     // Rebuilding over one of our own tiles forfeits that tile's end-game VP.
-    parts.risk -= own_overbuild_vp_loss(
-        state,
-        ctx.pid,
-        cand,
-        ctx.cfg.value.own_overbuild_vp_loss,
-    );
+    parts.risk -= own_overbuild_vp_loss(state, ctx.pid, cand, ctx.cfg.value.own_overbuild_vp_loss);
 
     // Plan ("流派") soft bonus: building the plan industry aligns with the
     // production plan. Only from Canal-Late onward — in Canal-Early the
@@ -284,7 +290,9 @@ pub(super) fn score_build_candidate(
     // Rail-Late beer-gated finish: the whole late game hinges on flipping
     // sellables — "有酒才建产业". Reward the sellable build when beer is
     // genuinely available; `flip_prob` already keeps it low when not.
-    if ctx.phase == Phase::RailLate && cand.ind.is_sellable() && beer_available_for_sellable(state, ctx, cand)
+    if ctx.phase == Phase::RailLate
+        && cand.ind.is_sellable()
+        && beer_available_for_sellable(state, ctx, cand)
     {
         parts.strategic += ctx.cfg.build.rail_late_beer_bonus;
     }
@@ -295,8 +303,7 @@ pub(super) fn score_build_candidate(
 /// Beer for a Rail-Late sellable finish: own board sources at the location,
 /// or reachable merchant barrels.
 fn beer_available_for_sellable(state: &GameState, ctx: &EvalContext, cand: &BuildTarget) -> bool {
-    count_beer_sources(state, cand.loc, ctx.pid, &[]) > 0
-        || beer_barrels_reachable(state, cand.loc)
+    count_beer_sources(state, cand.loc, ctx.pid, &[]) > 0 || beer_barrels_reachable(state, cand.loc)
 }
 
 /// Pick the cheapest-to-discard legal card for a build target. Consumes the
@@ -343,10 +350,7 @@ pub(crate) fn score_top_builds(
             (t, s)
         })
         .collect();
-    scored.sort_by(|a, b| {
-        b.1.total(ctx)
-            .total_cmp(&a.1.total(ctx))
-    });
+    scored.sort_by(|a, b| b.1.total(ctx).total_cmp(&a.1.total(ctx)));
     scored.truncate(k);
     let mut out = Vec::new();
     for (cand, parts) in scored {
@@ -371,11 +375,17 @@ pub(crate) fn score_top_builds(
                 super::SOURCE_VARIANTS,
             );
             let empty: Vec<crate::graph::CoalSource> = Vec::new();
-            let coal_opts: Vec<Vec<crate::graph::CoalSource>> =
-                if coal_opts.is_empty() { vec![empty] } else { coal_opts };
+            let coal_opts: Vec<Vec<crate::graph::CoalSource>> = if coal_opts.is_empty() {
+                vec![empty]
+            } else {
+                coal_opts
+            };
             let empty_iron: Vec<crate::graph::IronSource> = Vec::new();
-            let iron_opts: Vec<Vec<crate::graph::IronSource>> =
-                if iron_opts.is_empty() { vec![empty_iron] } else { iron_opts };
+            let iron_opts: Vec<Vec<crate::graph::IronSource>> = if iron_opts.is_empty() {
+                vec![empty_iron]
+            } else {
+                iron_opts
+            };
             let mut variants = 0usize;
             'variants: for coal in &coal_opts {
                 for iron in &iron_opts {

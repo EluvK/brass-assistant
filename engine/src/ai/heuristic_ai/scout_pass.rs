@@ -35,10 +35,8 @@ fn scout_hand_refresh_score(card_choices: &CardChoices, ctx: &EvalContext) -> f6
     // Average quality shortfall measured against the base keep-score of a
     // plain location card (`CardWeights::location_base`).
     let anchor = ctx.cfg.cards.location_base;
-    let average_keep_score =
-        retained.iter().map(|(_, score)| score).sum::<f64>() / retained_count;
-    let average_quality_shortfall =
-        ((anchor - average_keep_score) / anchor).clamp(0.0, 1.0);
+    let average_keep_score = retained.iter().map(|(_, score)| score).sum::<f64>() / retained_count;
+    let average_quality_shortfall = ((anchor - average_keep_score) / anchor).clamp(0.0, 1.0);
 
     w.max_refresh
         * low_value_ratio
@@ -85,9 +83,7 @@ pub(super) fn score_scout_plan(
 /// score is naturally zero — below any positive-value action, above any
 /// money-losing one. In the unified currency there is no need for a magic
 /// negative constant.
-pub(super) fn score_pass_result(
-    card_choices: &CardChoices,
-) -> Option<Decision> {
+pub(super) fn score_pass_result(card_choices: &CardChoices) -> Option<Decision> {
     let card_index = card_choices.first().map(|(index, _)| *index).unwrap_or(0);
     Some(Decision {
         mv: ResolvedMove::Pass { card_index },
@@ -104,8 +100,8 @@ mod scout_pass_tests {
     use super::scout_hand_refresh_score;
     use crate::ai::heuristic_ai::{EvalContext, HeuristicConfig};
     use crate::state::GameState;
-    use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     #[test]
     fn scout_hand_refresh_rewards_a_weak_retained_hand_without_high_value_cards() {

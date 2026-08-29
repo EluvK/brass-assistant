@@ -116,7 +116,12 @@ pub fn resource_source_ratio(state: &GameState, cand: &BuildTarget) -> f64 {
 /// VP forfeited by replacing one of our own tiles. Overbuilding an
 /// opponent's depleted resource tile does not discard any of our scoring
 /// potential.
-pub fn own_overbuild_vp_loss(state: &GameState, pid: usize, cand: &BuildTarget, weight: f64) -> f64 {
+pub fn own_overbuild_vp_loss(
+    state: &GameState,
+    pid: usize,
+    cand: &BuildTarget,
+    weight: f64,
+) -> f64 {
     let existing = if cand.loc.is_city() {
         state.tile_at(cand.loc, cand.slot_index)
     } else {
@@ -207,7 +212,10 @@ mod tests {
                 resource_cubes: 0,
             },
         );
-        assert_eq!(own_overbuild_vp_loss(&state, pid, &cand, 1.0), def.vp as f64);
+        assert_eq!(
+            own_overbuild_vp_loss(&state, pid, &cand, 1.0),
+            def.vp as f64
+        );
 
         let key = state.city_slot_key(loc, 0).unwrap();
         state.city_tiles[key].as_mut().unwrap().player = (pid + 1) % state.players.len();

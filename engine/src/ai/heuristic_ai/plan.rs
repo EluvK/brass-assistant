@@ -27,11 +27,11 @@ pub fn era_phase(state: &GameState) -> Phase {
 #[cfg(test)]
 mod tests {
     use super::super::config::HeuristicConfig;
-    
+
     use super::*;
     use crate::state::GameState;
-    use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     #[test]
     fn era_phase_splits_each_era_at_round_four() {
@@ -39,9 +39,23 @@ mod tests {
         for era in [Era::Canal, Era::Rail] {
             state.era = era;
             state.round = 4;
-            assert_eq!(era_phase(&state), if era == Era::Canal { Phase::CanalEarly } else { Phase::RailEarly });
+            assert_eq!(
+                era_phase(&state),
+                if era == Era::Canal {
+                    Phase::CanalEarly
+                } else {
+                    Phase::RailEarly
+                }
+            );
             state.round = 5;
-            assert_eq!(era_phase(&state), if era == Era::Canal { Phase::CanalLate } else { Phase::RailLate });
+            assert_eq!(
+                era_phase(&state),
+                if era == Era::Canal {
+                    Phase::CanalLate
+                } else {
+                    Phase::RailLate
+                }
+            );
         }
     }
 

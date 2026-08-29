@@ -499,9 +499,7 @@ fn terminal_value(vps: Vec<i32>, n_players: usize) -> Vec<f64> {
         }
         i = j + 1;
     }
-    (0..n_players)
-        .map(|p| 1.0 - rank[p] / n as f64)
-        .collect()
+    (0..n_players).map(|p| 1.0 - rank[p] / n as f64).collect()
 }
 
 fn apply_dirichlet_noise(

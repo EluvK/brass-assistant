@@ -49,8 +49,8 @@ pub use plan::{Phase, Plan, compute_plan, era_phase};
 // Card-selection head: public helpers for replay tooling and tests.
 pub use cards::{card_choices_for_move, card_keep_score, ranked_card_choices};
 
-pub(crate) use cards::move_card_score;
 use build::score_top_builds;
+pub(crate) use cards::move_card_score;
 use cards::{CardChoices, ranked_card_choices_with};
 use context::EvalContext;
 use develop::score_develop_plans;
@@ -191,7 +191,11 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     let mut unique = std::collections::HashSet::new();
     out.retain(|d| unique.insert(operation_key(&d.mv)));
 
-    out.extend(score_sell_plans(state, &ctx, &card_choices).into_iter().take(k));
+    out.extend(
+        score_sell_plans(state, &ctx, &card_choices)
+            .into_iter()
+            .take(k),
+    );
     out.extend(
         score_loan_result(state, &ctx, &plan, &card_choices)
             .into_iter()
@@ -208,14 +212,15 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // into a dead end (for example callers passing k=0). Keep one legal fallback
     // so MCTS always has a path to explore.
     if out.is_empty()
-        && let Some(mv) = crate::rules::legal_resolved_moves(state).into_iter().next() {
-            let card_score = move_card_score(state, &mv);
-            out.push(Decision {
-                mv,
-                score: f64::NEG_INFINITY,
-                card_score,
-            });
-        }
+        && let Some(mv) = crate::rules::legal_resolved_moves(state).into_iter().next()
+    {
+        let card_score = move_card_score(state, &mv);
+        out.push(Decision {
+            mv,
+            score: f64::NEG_INFINITY,
+            card_score,
+        });
+    }
 
     out
 }

@@ -47,8 +47,7 @@ impl<'a> EvalContext<'a> {
         let params = cfg.era.params(phase);
         let profile = EraProfile {
             phase,
-            income_w: cfg.value.income_base
-                * (params.income_add + params.income_frac * era_frac),
+            income_w: cfg.value.income_base * (params.income_add + params.income_frac * era_frac),
             money_w: cfg.value.money_base * params.money_mult,
             network_w: params.network_w,
             alpha: params.alpha,

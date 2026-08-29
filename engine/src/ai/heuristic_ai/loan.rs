@@ -46,10 +46,12 @@ pub(super) fn score_loan_result(
 
     // Same-turn combo value: Loan is strongest when it immediately unlocks
     // a productive second action (Loan -> Build / Network / Develop / Sell).
-    if cash < w.combo_cash_threshold && ctx.rounds_remaining > w.combo_min_rounds_left
-        && let Some(sim_gain) = best_same_turn_after_loan(state, ctx, card_choices) {
-            parts.strategic += sim_gain.max(0.0) * w.combo_scale;
-        }
+    if cash < w.combo_cash_threshold
+        && ctx.rounds_remaining > w.combo_min_rounds_left
+        && let Some(sim_gain) = best_same_turn_after_loan(state, ctx, card_choices)
+    {
+        parts.strategic += sim_gain.max(0.0) * w.combo_scale;
+    }
 
     // Idle protection: if the current hand can't do anything positive, borrow.
     if cash < w.idle_cash_threshold {
@@ -117,7 +119,10 @@ pub(super) fn score_loan_result(
     Some(Decision {
         mv: ResolvedMove::Loan { card_index },
         score: parts.total(ctx),
-        card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
+        card_score: card_choices
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(f64::INFINITY),
     })
 }
 
@@ -146,7 +151,12 @@ fn best_same_turn_after_loan(
 }
 
 /// Best build score the player could afford within a cash budget.
-fn best_affordable_build_score(state: &GameState, ctx: &EvalContext, budget: f64, plan: &Plan) -> f64 {
+fn best_affordable_build_score(
+    state: &GameState,
+    ctx: &EvalContext,
+    budget: f64,
+    plan: &Plan,
+) -> f64 {
     let mut best = f64::NEG_INFINITY;
     for t in get_valid_build_targets(state, ctx.pid) {
         if (t.cost_total as f64) > budget {
@@ -157,9 +167,5 @@ fn best_affordable_build_score(state: &GameState, ctx: &EvalContext, budget: f64
             best = s;
         }
     }
-    if best == f64::NEG_INFINITY {
-        0.0
-    } else {
-        best
-    }
+    if best == f64::NEG_INFINITY { 0.0 } else { best }
 }

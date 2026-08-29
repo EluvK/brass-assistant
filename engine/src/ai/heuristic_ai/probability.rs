@@ -76,8 +76,7 @@ fn resource_flip(
         Some(loc) => ind == IndustryType::IronWorks || merchant_reachable(state, loc, ind),
         // Plan-level view: an iron works always sells; coal needs *some*
         // accepting merchant on the board.
-        None => ind == IndustryType::IronWorks
-            || state.merchants.iter().any(|mt| mt.accepts(ind)),
+        None => ind == IndustryType::IronWorks || state.merchants.iter().any(|mt| mt.accepts(ind)),
     };
 
     // An island coal mine can't sell on build and — especially in the canal

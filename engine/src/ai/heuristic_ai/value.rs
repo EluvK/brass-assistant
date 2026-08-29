@@ -125,16 +125,18 @@ pub fn link_icons_at(state: &GameState, loc: crate::map::Loc) -> f64 {
         for slot in 0..city_slots(loc).len() {
             if let Some(k) = state.city_slot_key(loc, slot)
                 && let Some(t) = &state.city_tiles[k]
-                    && t.flipped {
-                        v += t.def.link_vp as f64;
-                    }
+                && t.flipped
+            {
+                v += t.def.link_vp as f64;
+            }
         }
         return v;
     }
     if let Some(t) = state.farm_tile(loc)
-        && t.flipped {
-            return t.def.link_vp as f64;
-        }
+        && t.flipped
+    {
+        return t.def.link_vp as f64;
+    }
     0.0
 }
 
@@ -205,15 +207,9 @@ pub struct MarketSale {
 
 pub fn simulate_market_sale(state: &GameState, is_coal: bool, cubes: u8) -> MarketSale {
     let (prices, market) = if is_coal {
-        (
-            crate::map::COAL_MARKET_PRICES.as_slice(),
-            state.coal_market,
-        )
+        (crate::map::COAL_MARKET_PRICES.as_slice(), state.coal_market)
     } else {
-        (
-            crate::map::IRON_MARKET_PRICES.as_slice(),
-            state.iron_market,
-        )
+        (crate::map::IRON_MARKET_PRICES.as_slice(), state.iron_market)
     };
     let mut cash = 0.0;
     let mut m = market;

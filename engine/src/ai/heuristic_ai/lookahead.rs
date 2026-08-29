@@ -37,10 +37,11 @@ pub fn choose_action(state: &mut GameState) -> Decision {
             if let Some(c2) = second_candidates
                 .into_iter()
                 .max_by(|a, b| a.score.total_cmp(&b.score))
-                && apply_move(&mut s1, &c2.mv).is_ok() {
-                    let tr2 = advance_turn(&mut s1);
-                    handle_turn_result(&mut s1, tr2);
-                }
+                && apply_move(&mut s1, &c2.mv).is_ok()
+            {
+                let tr2 = advance_turn(&mut s1);
+                handle_turn_result(&mut s1, tr2);
+            }
             // 2-ply blend: a productive second action adds to the turn's
             // value, discounted by the phase's alpha.
             c1.score + ctx.profile.alpha * best_second.max(0.0)
@@ -83,8 +84,8 @@ fn end_of_turn_penalty(
     if income_delta >= lw.end_turn_income_exempt {
         return 0.0;
     }
-    let scarcity = ((lw.low_money_threshold - p.money) as f64 / lw.low_money_threshold as f64)
-        .clamp(0.0, 1.0);
+    let scarcity =
+        ((lw.low_money_threshold - p.money) as f64 / lw.low_money_threshold as f64).clamp(0.0, 1.0);
     let income_term = if p.income_level() < 0 {
         lw.end_turn_negative_income_weight
     } else {

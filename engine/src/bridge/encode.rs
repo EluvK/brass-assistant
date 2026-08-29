@@ -301,25 +301,30 @@ mod tests {
         // Static slot-capability planes: an empty coal-capable slot must be
         // recognizable, and every cell carries its slot index plane.
         let coal_plane = 17 + crate::data::IndustryType::CoalMine as usize;
-        assert!(encoded.board[coal_plane * BOARD_CELLS..(coal_plane + 1) * BOARD_CELLS]
-            .iter()
-            .any(|&v| v == 1.0));
-        assert!(encoded.board[17 * BOARD_CELLS..24 * BOARD_CELLS]
-            .iter()
-            .all(|&v| (0.0..=1.0).contains(&v)));
+        assert!(
+            encoded.board[coal_plane * BOARD_CELLS..(coal_plane + 1) * BOARD_CELLS]
+                .iter()
+                .any(|&v| v == 1.0)
+        );
+        assert!(
+            encoded.board[17 * BOARD_CELLS..24 * BOARD_CELLS]
+                .iter()
+                .all(|&v| (0.0..=1.0).contains(&v))
+        );
 
         // Merchant block: every merchant has exactly one buy-type code lit and
         // a binary beer flag. The game's tile mix only deals cotton /
         // manufacturer / pottery / any / blank, so codes 0..4 suffice.
         let merchant_base = 114;
         for i in 0..9 {
-            let one_hot_sum: f32 =
-                encoded.global[merchant_base + i * 5..merchant_base + i * 5 + 5]
-                    .iter()
-                    .sum();
+            let one_hot_sum: f32 = encoded.global[merchant_base + i * 5..merchant_base + i * 5 + 5]
+                .iter()
+                .sum();
             assert_eq!(one_hot_sum, 1.0, "merchant {i} buy-type one-hot");
-            assert!(encoded.global[merchant_base + 45 + i] == 0.0
-                || encoded.global[merchant_base + 45 + i] == 1.0);
+            assert!(
+                encoded.global[merchant_base + 45 + i] == 0.0
+                    || encoded.global[merchant_base + 45 + i] == 1.0
+            );
         }
     }
 }

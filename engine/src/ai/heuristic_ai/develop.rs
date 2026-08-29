@@ -128,9 +128,17 @@ pub(super) fn score_develop_plans(
     // industry, so search can pick between removal alternatives.
     let mut out = Vec::new();
     for primary_idx in 0..super::SOURCE_VARIANTS.min(scored.len()) {
-        if let Some(decision) =
-            develop_plan_for(state, ctx, plan, card_choices, w, pid, &iron, &scored, primary_idx)
-        {
+        if let Some(decision) = develop_plan_for(
+            state,
+            ctx,
+            plan,
+            card_choices,
+            w,
+            pid,
+            &iron,
+            &scored,
+            primary_idx,
+        ) {
             out.push(decision);
         }
     }
@@ -166,8 +174,7 @@ fn develop_plan_for(
             .filter(|(idx, _)| *idx != primary_idx)
             .map(|(_, s)| (s.0, s.1))
             .next();
-        let same_industry = state
-            .players[pid]
+        let same_industry = state.players[pid]
             .tile_after(first.0, 1)
             .filter(|tile| {
                 tile.can_develop
@@ -175,7 +182,12 @@ fn develop_plan_for(
                         && first.0 == IndustryType::IronWorks
                         && tile.level >= 2)
             })
-            .map(|tile| (first.0, develop_target_value(state, ctx, first.0, tile, 2, plan)));
+            .map(|tile| {
+                (
+                    first.0,
+                    develop_target_value(state, ctx, first.0, tile, 2, plan),
+                )
+            });
         [best_other, same_industry]
             .into_iter()
             .flatten()
@@ -191,8 +203,14 @@ fn develop_plan_for(
         .sum();
     // Iron is scarce and develop burns a full turn: charge a real
     // opportunity cost so develop isn't a free high-score default.
-    let iron_scarcity = if iron[0].free { 0.0 } else { w.iron_scarcity_cost };
-    let second_value = second.map(|(_, score)| score * w.second_target_scale).unwrap_or(0.0);
+    let iron_scarcity = if iron[0].free {
+        0.0
+    } else {
+        w.iron_scarcity_cost
+    };
+    let second_value = second
+        .map(|(_, score)| score * w.second_target_scale)
+        .unwrap_or(0.0);
 
     let mut parts = ScoreParts {
         vp: first.1 + second_value,
@@ -245,6 +263,9 @@ fn develop_plan_for(
             card_index,
         },
         score: parts.total(ctx),
-        card_score: card_choices.first().map(|(_, s)| *s).unwrap_or(f64::INFINITY),
+        card_score: card_choices
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(f64::INFINITY),
     })
 }

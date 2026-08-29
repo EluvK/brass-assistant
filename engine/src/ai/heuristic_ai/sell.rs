@@ -3,10 +3,10 @@
 use super::context::EvalContext;
 use super::value::ScoreParts;
 use super::{CardChoices, Decision};
-use crate::rules::ResolvedMove;
-use crate::map::{Loc, merchant_bonus_at};
-use crate::rules::{SellRoute, execute_sell, get_valid_sell_targets, plan_sell_beer_sources};
 use crate::gameplay::actions::SellTarget;
+use crate::map::{Loc, merchant_bonus_at};
+use crate::rules::ResolvedMove;
+use crate::rules::{SellRoute, execute_sell, get_valid_sell_targets, plan_sell_beer_sources};
 use crate::state::GameState;
 
 /// Value of the merchant bonus gained by selling with a merchant's own
@@ -51,8 +51,7 @@ fn sell_plan_executes_all(
     card_index: usize,
 ) -> bool {
     let mut sim = state.clone();
-    let Ok(beer_sources) =
-        plan_sell_beer_sources(state, pid, keys, merchant_indices, use_merchant)
+    let Ok(beer_sources) = plan_sell_beer_sources(state, pid, keys, merchant_indices, use_merchant)
     else {
         return false;
     };
@@ -160,8 +159,7 @@ fn sell_plan_for(
         };
         let mut routes = target.routes.clone();
         routes.sort_by(|a, b| {
-            sell_route_value(state, ctx, b)
-                .total_cmp(&sell_route_value(state, ctx, a))
+            sell_route_value(state, ctx, b).total_cmp(&sell_route_value(state, ctx, a))
         });
         let offset = if index == 0 { first_route_offset } else { 0 };
 
@@ -198,7 +196,11 @@ fn sell_plan_for(
             parts.income += tile.def.income as f64;
         }
         if uses_beer {
-            parts.add(&merchant_bonus_parts(state, ctx, state.merchants[merchant].loc));
+            parts.add(&merchant_bonus_parts(
+                state,
+                ctx,
+                state.merchants[merchant].loc,
+            ));
         }
     }
 
@@ -242,24 +244,25 @@ fn sell_plan_for(
     );
     let beer_sources =
         plan_sell_beer_sources(state, pid, &keys, &merchant_indices, &use_merchant).ok()?;
-    let free_develop = merchant_indices
-        .iter()
-        .zip(use_merchant.iter())
-        .find_map(|(&merchant, &uses_beer)| {
-            (uses_beer
-                && matches!(
-                    merchant_bonus_at(state.merchants[merchant].loc),
-                    crate::map::MerchantBonus::Develop(_)
-                ))
-            .then(|| {
-                state.players[pid]
-                    .developable_types()
-                    .into_iter()
-                    .max_by_key(|(_, tile)| tile.level)
-                    .map(|(ind, _)| ind)
-            })
-            .flatten()
-        });
+    let free_develop =
+        merchant_indices
+            .iter()
+            .zip(use_merchant.iter())
+            .find_map(|(&merchant, &uses_beer)| {
+                (uses_beer
+                    && matches!(
+                        merchant_bonus_at(state.merchants[merchant].loc),
+                        crate::map::MerchantBonus::Develop(_)
+                    ))
+                .then(|| {
+                    state.players[pid]
+                        .developable_types()
+                        .into_iter()
+                        .max_by_key(|(_, tile)| tile.level)
+                        .map(|(ind, _)| ind)
+                })
+                .flatten()
+            });
 
     Some(Decision {
         mv: ResolvedMove::Sell {

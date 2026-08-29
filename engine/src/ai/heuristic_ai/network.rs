@@ -13,11 +13,7 @@ use crate::rules::{
 use crate::state::GameState;
 
 fn coal_effective_price(src: &crate::graph::CoalSource) -> i32 {
-    if src.free {
-        0
-    } else {
-        src.price as i32
-    }
+    if src.free { 0 } else { src.price as i32 }
 }
 
 fn cheapest_connection_coal_source(
@@ -56,8 +52,8 @@ fn score_network_candidate(
 
     // Hand cards that become playable once these cities join the network.
     let (loc_cards, ind_cards) = hand_access_gain(state, ctx.pid, cities);
-    let flex =
-        loc_cards as f64 * w.access_per_location_card + ind_cards as f64 * w.access_per_industry_card;
+    let flex = loc_cards as f64 * w.access_per_location_card
+        + ind_cards as f64 * w.access_per_industry_card;
 
     let (current_link_vp, future_link_vp) = link_current_and_potential_vps(state, conn_id, cities);
     // Network-era weighting: Rail-Early builds the net everything scores
@@ -89,10 +85,11 @@ fn score_network_candidate(
                     continue;
                 }
                 if let Some(k) = state.city_slot_key(*loc, slot_idx)
-                    && state.city_tiles[k].is_none() {
-                        plan_bonus = w.plan_bonus;
-                        break 'outer;
-                    }
+                    && state.city_tiles[k].is_none()
+                {
+                    plan_bonus = w.plan_bonus;
+                    break 'outer;
+                }
             }
         }
     }
@@ -101,14 +98,8 @@ fn score_network_candidate(
     // beer supply (double-rails and late-game sells depend on it).
     let beer_lock = if ctx.phase == Phase::RailEarly {
         let touches_farm = cities.iter().any(|l| l.is_farm())
-            || connections()[conn_id]
-                .via_farm
-                .is_some_and(|f| f.is_farm());
-        if touches_farm {
-            w.beer_lock_bonus
-        } else {
-            0.0
-        }
+            || connections()[conn_id].via_farm.is_some_and(|f| f.is_farm());
+        if touches_farm { w.beer_lock_bonus } else { 0.0 }
     } else {
         0.0
     };
@@ -158,14 +149,7 @@ pub(crate) fn score_top_networks(
             // supply actions.
             cost += estimated_connection_coal_cost(state, conn_id);
         }
-        let parts = score_network_candidate(
-            state,
-            ctx,
-            conn_id,
-            cost,
-            &[conn.a, conn.b],
-            plan,
-        );
+        let parts = score_network_candidate(state, ctx, conn_id, cost, &[conn.a, conn.b], plan);
         scored.push((conn_id, parts));
     }
     scored.sort_by(|a, b| {
@@ -263,20 +247,14 @@ pub(crate) fn score_top_network_doubles(
             // while saving tempo.
             let touches_farm = [&connections()[conn1], &connections()[conn2]]
                 .iter()
-                .any(|c| {
-                    c.a.is_farm() || c.b.is_farm() || c.via_farm.is_some_and(|f| f.is_farm())
-                });
+                .any(|c| c.a.is_farm() || c.b.is_farm() || c.via_farm.is_some_and(|f| f.is_farm()));
             if touches_farm {
                 total += w.double_farm_lock_bonus;
             }
             scored.push((conn1, conn2, total));
         }
     }
-    scored.sort_by(|a, b| {
-        b.2.total_cmp(&a.2)
-            .then(a.0.cmp(&b.0))
-            .then(a.1.cmp(&b.1))
-    });
+    scored.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
     let Some(card_index) = card_choices.first().map(|(index, _)| *index) else {
         return Vec::new();
     };
