@@ -85,3 +85,50 @@ def pad_candidate_features(rows: list[torch.Tensor], device=None) -> tuple[torch
         features[i, :n] = row if device is None else row.to(device)
         mask[i, :n] = True
     return features, mask
+
+
+def coalesce_equivalent_policy(features: np.ndarray, policy: np.ndarray) -> np.ndarray:
+    """Spread each concrete-policy mass uniformly across equal feature rows."""
+    array = np.asarray(features, dtype=np.float32)
+    target = np.asarray(policy, dtype=np.float32)
+    if array.ndim != 2 or array.shape[1] != _feature_width():
+        raise ValueError("invalid candidate features for policy target")
+    if target.shape != (len(array),) or not np.isfinite(target).all() or (target < 0).any():
+        raise ValueError("invalid policy target")
+    total = float(target.sum())
+    if total <= 0:
+        raise ValueError("policy target must contain positive mass")
+    out = np.zeros(len(array), dtype=np.float32)
+    pending = np.flatnonzero(target > 0.0)
+    # MCTS visit targets have at most `sims` non-zero rows and shortlist
+    # targets are small. Work only on those classes instead of constructing a
+    # structured np.unique key for every full-legal candidate.
+    while len(pending):
+        index = pending[0]
+        equivalent = np.all(array == array[index], axis=1)
+        out[equivalent] = target[equivalent].sum() / equivalent.sum() / total
+        pending = pending[~equivalent[pending]]
+    return out
+
+
+def teacher_equivalence_policy(features: np.ndarray, teacher_index: int) -> np.ndarray:
+    """Target the complete v4-observable equivalence class of a teacher move.
+
+    v4 intentionally omits execution-only identities such as the index of an
+    otherwise identical card.  Several concrete legal moves can therefore
+    share one exact feature row.  A one-hot target for one arbitrary canonical
+    move is contradictory: the candidate scorer receives identical inputs and
+    must emit identical logits.  The teacher mass is consequently distributed
+    uniformly across that equivalence class.
+    """
+    array = np.asarray(features, dtype=np.float32)
+    if array.ndim != 2 or array.shape[1] != _feature_width():
+        raise ValueError("invalid candidate features for teacher target")
+    if not 0 <= teacher_index < len(array):
+        raise ValueError("teacher index is outside candidate features")
+    # This is intentionally not routed through `coalesce_equivalent_policy`:
+    # teacher imitation has one non-zero source, so sorting every candidate row
+    # with np.unique only creates large temporary structured arrays.
+    equivalent = np.all(array == array[teacher_index], axis=1)
+    policy = equivalent.astype(np.float32)
+    return policy / policy.sum()

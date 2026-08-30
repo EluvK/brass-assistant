@@ -28,7 +28,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from brass_ai.selfplay import generate_imitation_sample_shards, materialize_samples
+from brass_ai.selfplay import generate_imitation_sample_shards
 
 
 def main():
@@ -178,13 +178,13 @@ def main():
         if args.enable_policy_eval:
             metrics = {}
             metric_weight = 0
-            for shard in shards:
+            for shard_index, shard in enumerate(shards, start=1):
                 with open(shard, "rb") as f:
                     shard_samples = pickle.load(f)
-                shard_samples = materialize_samples(shard_samples)
                 shard_metrics = evaluate_policy(
                     net, shard_samples, device,
                     max_candidate_batch=args.max_candidate_batch,
+                    progress_label=f"eval e{trainer.epoch_count} s{shard_index}/{len(shards)}",
                 )
                 weight = len(shard_samples)
                 metric_weight += weight

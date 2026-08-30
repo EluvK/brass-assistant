@@ -2,10 +2,9 @@
 training samples (state -> visit-distribution policy target, per-seat final
 RANK targets + winner distribution).
 
-Value target (v4): rank_p = final_rank_p / n_players (ties share the average
-rank), as the FULL 4-seat vector; each sample carries the same 4-vector plus
-the winner distribution (uniform over co-winners). The search value for a seat
-is 1 - rank; see docs/archived/ai-encoding-v4-design.md §4.2.
+Value target: rank_p = final_rank_p / n_players, using the engine's official
+VP -> income -> cash final ranking. Each sample carries the same 4-vector plus
+a one-hot winner target. The search value for a seat is 1 - rank.
 """
 
 from __future__ import annotations
@@ -24,7 +23,12 @@ from . import _engine as be
 
 from typing import Callable, Protocol
 
-from .hierarchical_policy import encode_legal_candidates, encode_teacher_candidates
+from .hierarchical_policy import (
+    encode_legal_candidates,
+    encode_teacher_candidates,
+    coalesce_equivalent_policy,
+    teacher_equivalence_policy,
+)
 
 
 class SearchResultLike(Protocol):
@@ -48,34 +52,23 @@ class Sample:
     candidates: np.ndarray | None = None  # (N,301), materialized on demand
     policy: np.ndarray | None = None  # (N,) aligned to candidates
     rank: np.ndarray | float = 0.0  # (4,) per-seat final-rank/n target
-    winner: np.ndarray | float = 0.0  # (4,) uniform over co-winners
+    winner: np.ndarray | float = 0.0  # (4,) one-hot official winner
     era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)
     econ: np.ndarray = None  # (2,) = (income_level, money) target for this sample
     snapshot: bytes | None = None  # independent full GameState snapshot
     teacher_canonical: str | None = None
 
 
-def _rank_targets(vps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Per-seat normalized rank (rank/n, ties averaged) and winner distribution."""
-    vps = np.asarray(vps, dtype=np.float64)
-    n = len(vps)
-    # Rank 1 belongs to the most VP (the winner), so 1 - rank/n is highest for
-    # the best seat and stays aligned with the winner distribution.
-    order = np.argsort(-vps)
-    rank = np.empty(n, dtype=np.float64)
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and vps[order[j + 1]] == vps[order[i]]:
-            j += 1
-        avg_rank = (i + j) / 2.0 + 1.0  # average 1-based rank of the tie group
-        for idx in order[i:j + 1]:
-            rank[idx] = avg_rank
-        i = j + 1
-    winner = np.zeros(n, dtype=np.float64)
-    top = np.flatnonzero(vps == vps.max())
-    winner[top] = 1.0 / len(top)
-    return rank / n, winner
+def _rank_targets(ranking: list[int], n_players: int) -> tuple[np.ndarray, np.ndarray]:
+    """Targets from the engine's official VP -> income -> cash ranking."""
+    if len(ranking) != n_players or set(ranking) != set(range(n_players)):
+        raise ValueError("engine returned an invalid final ranking")
+    rank = np.empty(n_players, dtype=np.float32)
+    for place, pid in enumerate(ranking, start=1):
+        rank[pid] = place / n_players
+    winner = np.zeros(n_players, dtype=np.float32)
+    winner[ranking[0]] = 1.0
+    return rank, winner
 
 
 def materialize_sample(sample: Sample) -> Sample:
@@ -89,8 +82,8 @@ def materialize_sample(sample: Sample) -> Sample:
     if sample.teacher_canonical not in canonicals:
         raise ValueError("replay teacher action is not legal in its restored GameState")
     board, links, global_vec, own_hand, opp_hands = state.state_to_tensor()
-    policy = np.zeros(len(canonicals), dtype=np.float32)
-    policy[canonicals.index(sample.teacher_canonical)] = 1.0
+    teacher_index = canonicals.index(sample.teacher_canonical)
+    policy = teacher_equivalence_policy(candidates.numpy(), teacher_index)
     return Sample(
         pid=sample.pid, era=sample.era, board=board, links=links,
         global_vec=global_vec, own_hand=own_hand, opp_hands=opp_hands,
@@ -189,7 +182,9 @@ def play_game_with_roles(
             break
         if pid in collect:
             board, links, g, oh, op = state.state_to_tensor()
-            policy = _candidate_policy(canonical_candidates, result)
+            policy = coalesce_equivalent_policy(
+                candidate_tensor.numpy(), _candidate_policy(canonical_candidates, result)
+            )
             s = Sample(pid=pid, board=board, links=links, global_vec=g,
                        own_hand=oh, opp_hands=op, policy=policy, rank=0.0,
                        winner=0.0, candidates=candidate_tensor.numpy(), era=state.era)
@@ -236,7 +231,7 @@ def play_game_with_roles(
         )
 
     vps = state.player_vps()
-    rank, winner = _rank_targets(np.asarray(vps, dtype=np.float64))
+    rank, winner = _rank_targets(state.final_ranking(), state.player_count)
     # Rail-era samples (and any canal samples that never got a canal-econ stamp,
     # e.g. a game that ended in the canal era) take the FINAL economy.
     final_econ = {p: e for p, e in enumerate(state.final_econ())}
@@ -254,6 +249,7 @@ def _generate_imitation_game(args):
 
     state = be.GameState(seed=seed, players=players)
     local = []
+    canal_samples: list[Sample] = []
     moves = 0
     while not state.game_over and moves < max_moves:
         moves += 1
@@ -275,7 +271,9 @@ def _generate_imitation_game(args):
             candidate_tensor, teacher_scores, _card_scores, canon, _chosen_index, _score, _card_score = encode_teacher_candidates(state)
             score_values = teacher_scores.numpy().astype(np.float64)
             weights = np.exp((score_values - score_values.max()) / 1.0)
-            policy = (weights / weights.sum()).astype(np.float32)
+            policy = coalesce_equivalent_policy(
+                candidate_tensor.numpy(), (weights / weights.sum()).astype(np.float32)
+            )
         if full_legal_candidates:
             # Complete candidate rows are a deterministic derivative of the
             # state. Persisting only this snapshot and Rust's canonical action
@@ -291,10 +289,20 @@ def _generate_imitation_game(args):
                        own_hand=oh, opp_hands=op, policy=policy, rank=0.0,
                        winner=0.0, candidates=candidate_tensor.numpy(), era=state.era)
             )
+        if state.era == 0:
+            canal_samples.append(local[-1])
         try:
+            prev_era = state.era
             state.apply_move(canon)
         except ValueError:
             break
+        if prev_era == 0 and state.era == 1:
+            # `apply_move` performs the complete era transition. Era-end
+            # scoring does not alter money/income, so this is the canal-end
+            # economic state for every canal-era decision.
+            econ = {p: e for p, e in enumerate(state.canal_econ())}
+            for sample in canal_samples:
+                sample.econ = np.asarray(econ[sample.pid], dtype=np.float32)
 
     if not state.game_over:
         raise RuntimeError(
@@ -302,12 +310,13 @@ def _generate_imitation_game(args):
         )
 
     vps = np.asarray(state.player_vps(), dtype=np.float64)
-    rank, winner = _rank_targets(vps)
+    rank, winner = _rank_targets(state.final_ranking(), state.player_count)
     final_econ = {p: e for p, e in enumerate(state.final_econ())}
     for sample in local:
         sample.rank = rank
         sample.winner = winner
-        sample.econ = np.asarray(final_econ[sample.pid], dtype=np.float32)
+        if sample.econ is None:
+            sample.econ = np.asarray(final_econ[sample.pid], dtype=np.float32)
     # Keep unnormalised scores until the parent process has decided whether
     # this game belongs in a quality-filtered imitation batch.
     return local, vps

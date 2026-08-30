@@ -4,8 +4,10 @@ import torch
 
 from brass_ai.net import PolicyValueNet
 from brass_ai import selfplay
-from brass_ai.selfplay import generate_imitation_samples
-from brass_ai.train import TrainConfig, Trainer, _to_batch, compute_loss
+from brass_ai.selfplay import Sample, _rank_targets, generate_imitation_samples
+from brass_ai.hierarchical_policy import encode_legal_candidates
+from brass_ai import _engine as be
+from brass_ai.train import TrainConfig, Trainer, _to_batch, compute_loss, evaluate_policy
 
 
 def test_trainer_reduces_loss_and_is_persistent():
@@ -62,6 +64,27 @@ def test_trainer_rejects_old_state_feature_schema():
     checkpoint.pop("state_feature_shapes")
     with pytest.raises(ValueError, match="state-feature schema"):
         trainer.load_state_dict(checkpoint)
+
+
+def test_rank_target_uses_official_tiebreak_order():
+    # Players 0 and 1 may have tied VP, but the engine's final ranking has
+    # already resolved it by income then cash.
+    rank, winner = _rank_targets([1, 0, 3, 2], 4)
+    np.testing.assert_array_equal(rank, np.asarray([0.5, 0.25, 1.0, 0.75], dtype=np.float32))
+    np.testing.assert_array_equal(winner, np.asarray([0.0, 1.0, 0.0, 0.0], dtype=np.float32))
+
+
+def test_policy_evaluation_materializes_snapshot_batches():
+    state = be.GameState(seed=73, players=4)
+    teacher, _, _ = state.choose_heuristic()
+    sample = Sample(
+        pid=state.current_player_id, era=state.era,
+        rank=np.zeros(4, dtype=np.float32), winner=np.zeros(4, dtype=np.float32),
+        econ=np.zeros(2, dtype=np.float32), snapshot=bytes(state.snapshot()),
+        teacher_canonical=teacher,
+    )
+    metrics = evaluate_policy(PolicyValueNet(), [sample], "cpu", batch_size=1)
+    assert metrics["candidate_count_mean"] == len(encode_legal_candidates(state)[0])
 
 
 def test_imitation_quality_filter_retries_until_it_has_requested_games(monkeypatch):

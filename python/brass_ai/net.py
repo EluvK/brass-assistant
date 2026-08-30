@@ -8,8 +8,8 @@ Head set (v4, see docs/archived/ai-encoding-v4-design.md §4):
   scored per candidate (O(N), no candidate self-attention).
 * rank head: per-seat normalized final rank (rank/n, MSE) — comparable across
   games and order-preserving within one game; replaces the per-game VP z-score.
-* winner head: per-seat winner distribution (softmax CE); the search value for
-  a seat is `1 - rank` (higher = better), matching the Rust terminal backup.
+* winner head: official winner one-hot (softmax CE); the search value for a
+  seat is `1 - rank` (higher = better), matching the Rust terminal backup.
 * econ: era-split heads (canal / rail), 2 outputs each.
 """
 

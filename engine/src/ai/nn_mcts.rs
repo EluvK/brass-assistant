@@ -136,7 +136,7 @@ struct Request {
 enum ParkedOutcome {
     Terminal {
         path: Vec<usize>,
-        vps: Vec<i32>,
+        ranking: Vec<usize>,
     },
     Net {
         path: Vec<usize>,
@@ -233,8 +233,8 @@ pub fn search_net(
                 &mut request_by_node,
                 true,
             ) {
-                ParkedOutcome::Terminal { path, vps } => {
-                    let value = terminal_value(vps, n_players);
+                ParkedOutcome::Terminal { path, ranking } => {
+                    let value = terminal_value(ranking, n_players);
                     add_value(&mut arena, &path, &value);
                 }
                 park @ ParkedOutcome::Net { .. } => parked.push(park),
@@ -329,7 +329,7 @@ fn descend(
         if work.game_over {
             return ParkedOutcome::Terminal {
                 path,
-                vps: work.players.iter().map(|p| p.vp as i32).collect(),
+                ranking: crate::scoring::final_ranking(work),
             };
         }
         if depth >= cfg.max_depth {
@@ -477,29 +477,18 @@ fn add_value(arena: &mut Vec<Node>, path: &[usize], value: &[f64]) {
     }
 }
 
-/// Per-seat terminal search value: `1 - normalized final rank` (ties share the
-/// average rank), matching the Python rank-head target scale (rank/n, MSE) so
-/// network leaf values and terminal backups stay in one unit system.
-fn terminal_value(vps: Vec<i32>, n_players: usize) -> Vec<f64> {
-    let n = vps.len().max(1);
-    let mut order: Vec<usize> = (0..n).collect();
-    // Rank 1 belongs to the most VP (the winner), so `1 - rank/n` is highest
-    // for the best seat and stays aligned with the winner head.
-    order.sort_by_key(|&i| std::cmp::Reverse(vps[i]));
-    let mut rank = vec![0.0f64; n];
-    let mut i = 0;
-    while i < n {
-        let mut j = i;
-        while j + 1 < n && vps[order[j + 1]] == vps[order[i]] {
-            j += 1;
+/// Per-seat terminal search value: `1 - normalized official final rank`,
+/// matching Python's rank target and `scoring::final_ranking` (VP, income,
+/// then cash).
+fn terminal_value(ranking: Vec<usize>, n_players: usize) -> Vec<f64> {
+    let n = n_players.max(1);
+    let mut rank = vec![n as f64; n];
+    for (place, pid) in ranking.into_iter().enumerate() {
+        if pid < n {
+            rank[pid] = (place + 1) as f64;
         }
-        let avg = (i + j) as f64 / 2.0 + 1.0; // average 1-based rank of the tie group
-        for &idx in &order[i..=j] {
-            rank[idx] = avg;
-        }
-        i = j + 1;
     }
-    (0..n_players).map(|p| 1.0 - rank[p] / n as f64).collect()
+    (0..n).map(|p| 1.0 - rank[p] / n as f64).collect()
 }
 
 fn apply_dirichlet_noise(
@@ -651,4 +640,16 @@ fn softmax(logits: &[f32]) -> Vec<f64> {
     }
     let denom = if sum <= 0.0 { 1.0 } else { sum };
     exps.iter().map(|e| (*e / denom) as f64).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terminal_value;
+
+    #[test]
+    fn terminal_value_uses_official_tiebreak_order() {
+        // The caller has already resolved equal VP through income then cash.
+        let value = terminal_value(vec![1, 0, 3, 2], 4);
+        assert_eq!(value, vec![0.5, 0.75, 0.0, 0.25]);
+    }
 }

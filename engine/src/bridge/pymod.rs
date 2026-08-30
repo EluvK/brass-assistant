@@ -469,7 +469,7 @@ impl PyGame {
     }
 
     /// Encode the state into numpy arrays:
-    /// board (17,49), links (7,39), global (114,), own_hand (35,), opp_hands (105,).
+    /// board (24,49), links (7,39), global (168,), own_hand (35,), opp_hands (105,).
     /// `perspective` defaults to the current player; pass another player id to
     /// encode from that player's viewpoint (used for MaxN value evaluation).
     #[pyo3(signature = (perspective=None))]

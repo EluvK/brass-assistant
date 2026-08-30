@@ -5,7 +5,7 @@ Loss (per sample, head set v4):
       Engine-generated legal candidates; padding is masked only for batching)
     + ||rank_4 - target_4||^2                     (MSE on per-seat normalized
       final rank; the search value for a seat is 1 - rank)
-    + 0.5 * winner_CE                             (per-seat winner distribution)
+    + 0.5 * winner_CE                             (official winner one-hot CE)
     + 0.2 * econ_MSE                              (era-split auxiliary heads)
     + l2 * ||theta||^2
 
@@ -50,6 +50,7 @@ class TrainConfig:
     t_max: int = 100         # CosineAnnealingLR period, in total epochs
     min_lr: float = 1e-5
     amp: bool = True         # fp16 autocast (no-op on CPU)
+    grad_clip_norm: float = 5.0
     econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
     econ_neg_weight: float = 1.0  # extra weight on samples with negative income (1.0 = off, kept for ablation)
     # Bound the largest padded candidate matrix in one GPU batch. Full-legal
@@ -71,6 +72,8 @@ class Trainer:
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=max(self.cfg.t_max, 1), eta_min=self.cfg.min_lr
         )
+        self.amp_enabled = self.cfg.amp and self.cfg.device != "cpu"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
         self.epoch_count = 0
 
     # ------------------------------------------------------------ training
@@ -130,7 +133,9 @@ class Trainer:
                 max_n = max(len(s.candidates) for s in raw[chunk_start:])
                 cap = max(1, self.cfg.max_candidate_batch // max_n)
                 chunk = raw[chunk_start:chunk_start + min(self.cfg.batch_size, cap)]
-                losses.append(train_on_batch(self.net, _to_batch(chunk), self.cfg, self.optimizer))
+                losses.append(train_on_batch(
+                    self.net, _to_batch(chunk), self.cfg, self.optimizer, self.scaler
+                ))
                 chunk_start += len(chunk)
                 completed += len(chunk)
                 prog.update(completed)
@@ -159,7 +164,7 @@ class Trainer:
             idx = np.random.randint(0, n, size=bs)
             chunk = [samples[i] for i in idx]
             batch = _to_batch(chunk)
-            losses.append(train_on_batch(self.net, batch, self.cfg, self.optimizer))
+            losses.append(train_on_batch(self.net, batch, self.cfg, self.optimizer, self.scaler))
             prog.update(s + 1)
         return _mean_losses(losses)
 
@@ -173,6 +178,7 @@ class Trainer:
             "model": self.net.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
+            "scaler": self.scaler.state_dict(),
             "epoch": self.epoch_count,
             "action_feature_dim": ACTION_FEATURE_DIM,
             "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
@@ -210,6 +216,7 @@ class Trainer:
         self.net.load_state_dict(sd["model"])
         self.optimizer.load_state_dict(sd["optimizer"])
         self.scheduler.load_state_dict(sd["scheduler"])
+        self.scaler.load_state_dict(sd["scaler"])
         self.epoch_count = sd.get("epoch", 0)
 
 
@@ -228,7 +235,7 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
     # z-score target of v3.
     rank_loss = F.mse_loss(out["rank"], tensors["rank"])
 
-    # Winner head: distribution over the winning seat(s); ties share mass.
+    # Winner head: one-hot official winner after VP/income/cash tie-breaks.
     winner_loss = -(tensors["winner"] * F.log_softmax(out["winner_logits"], dim=1)).sum(dim=1).mean()
 
     # Economic-supervision auxiliary loss, SPLIT BY ERA (each sample trains the
@@ -259,20 +266,44 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
     return total, policy_loss, rank_loss, winner_loss, econ_loss, l2_loss
 
 
-def train_on_batch(net, batch, cfg: TrainConfig, optimizer) -> dict:
+def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None) -> dict:
     net.train()
     optimizer.zero_grad(set_to_none=True)
     if cfg.amp and cfg.device != "cpu":
+        if scaler is None:
+            scaler = torch.amp.GradScaler("cuda")
         with torch.autocast(device_type=cfg.device):
             losses = compute_loss(
                 batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
         total = losses[0]
-        total.backward()
+        if not torch.isfinite(total):
+            raise FloatingPointError("non-finite loss before AMP backward")
+        scaler.scale(total).backward()
+        scaler.unscale_(optimizer)
+        gradients_finite = all(
+            torch.isfinite(p.grad).all().item()
+            for p in net.parameters() if p.grad is not None
+        )
+        if gradients_finite:
+            torch.nn.utils.clip_grad_norm_(net.parameters(), cfg.grad_clip_norm)
+        scaler.step(optimizer)
+        scaler.update()
     else:
         losses = compute_loss(
             batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
+        if not torch.isfinite(losses[0]):
+            raise FloatingPointError("non-finite loss before backward")
         losses[0].backward()
-    optimizer.step()
+        gradients_finite = all(
+            torch.isfinite(p.grad).all().item()
+            for p in net.parameters() if p.grad is not None
+        )
+        if not gradients_finite:
+            raise FloatingPointError("non-finite gradient without AMP")
+        torch.nn.utils.clip_grad_norm_(net.parameters(), cfg.grad_clip_norm)
+        optimizer.step()
+    if gradients_finite and not all(torch.isfinite(p).all().item() for p in net.parameters()):
+        raise FloatingPointError("optimizer produced non-finite parameters")
     _, pl, rl, wl, el, ll = losses
     return {
         "policy": pl.detach().item(),
@@ -280,6 +311,7 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer) -> dict:
         "winner": wl.detach().item(),
         "econ": el.detach().item(),
         "l2": ll.detach().item(),
+        "skipped": float(not gradients_finite),
     }
 
 
@@ -322,7 +354,8 @@ def _mean_losses(losses):
 
 
 def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "cpu",
-                    batch_size: int = 256, max_candidate_batch: int = 16384) -> dict:
+                    batch_size: int = 256, max_candidate_batch: int = 16384,
+                    progress_label: str | None = None) -> dict:
     """Measure candidate-policy quality on teacher targets.
 
     Metrics are candidate-level and remain meaningful when every state has a
@@ -338,9 +371,15 @@ def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "c
                   "policy_entropy": 0.0, "winner_top1": 0.0}
         candidate_counts = []
         seen = 0
+        progress = Progress(len(samples), progress_label, every_s=2.0) if progress_label else None
         with torch.no_grad():
             for start in range(0, len(samples), batch_size):
                 raw = samples[start:start + batch_size]
+                # Full-legal replay stores compact snapshots. Materialize only
+                # this evaluation window: retaining every expanded candidate
+                # matrix from a shard can consume multiple GB of RAM.
+                if raw and raw[0].candidates is None:
+                    raw = [materialize_sample(sample) for sample in raw]
                 raw.sort(key=lambda s: len(s.candidates))
                 for sub_start in range(0, len(raw), batch_size):
                     sub = raw[sub_start:sub_start + batch_size]
@@ -366,6 +405,10 @@ def evaluate_policy(net: PolicyValueNet, samples: list[Sample], device: str = "c
                                                   == tensors["winner"].argmax(dim=1)).sum().item()
                         candidate_counts.extend(mask.sum(dim=1).detach().cpu().tolist())
                         seen += n
+                if progress is not None:
+                    progress.update(min(start + len(raw), len(samples)))
+        if progress is not None:
+            progress.done()
         metrics = {key: value / seen for key, value in totals.items()}
         metrics["candidate_count_mean"] = float(np.mean(candidate_counts))
         metrics["candidate_count_p95"] = float(np.percentile(candidate_counts, 95))
