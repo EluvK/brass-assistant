@@ -158,6 +158,10 @@ fn main() {
         .get(3)
         .cloned()
         .unwrap_or_else(|| "heuristic".to_string());
+    if !matches!(policy.as_str(), "heuristic" | "mcts") {
+        eprintln!("unknown policy {policy:?}; use heuristic or mcts");
+        std::process::exit(2);
+    }
     let sims: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(200);
     let canal_only = matches!(args.get(5).map(String::as_str), Some("canal"));
     let players: usize = 4;

@@ -12,11 +12,11 @@
 
 `StrategyAdapter` 的输入是当前状态及完整规则合法集，输出实际动作和 `DecisionTrace`。原生 `heuristic`、`random` 和 `mcts` 均通过该契约接入。策略返回不在完整合法集中的 canonical 动作会终止会话并留下失败原因。
 
-启发式 evidence 记录其 shortlist 分数和所有卡牌保留分；完整合法表中不在 shortlist 的动作会明确标为“未被此策略评分”。随机策略只记录实际选择。当前 MCTS evidence 显示用于根候选筛选的启发式先验分，完整的根访问次数/价值统计仍应作为下一步扩展从 `mcts_ai` 导出，而不能伪造为搜索统计。
+启发式 evidence 记录其 shortlist 分数和所有卡牌保留分；完整合法表中不在 shortlist 的动作会明确标为“未被此策略评分”。随机策略不做评分，其完整合法表同样逐行列出并标注“未被此策略评分”。原生 mcts 座位的 evidence 来自 `mcts_ai::search_with_root_stats` 导出的真实根节点统计：score 列为根访问次数，note 给出该结构操作下的累计访问数与平均价值 q，未被搜索展开的动作标注“未被搜索展开”；`root_value` 为最优子节点对行动玩家的平均价值。
 
-`python:<worker-config>` 通过 `PythonWorkerStrategy` 实现：每个此类座位启动一个独立的 Python worker 子进程（`python -u -m brass_ai.replay_worker <worker-config>`，`PYTHONPATH` 指向仓库 `python/`），worker 持有一个网络 checkpoint 并通过 stdin/stdout 的逐行 JSON 协议应答：
+`python:<worker-config>` 通过 `PythonWorkerStrategy` 实现：每个此类座位启动一个独立的 Python worker 子进程（`python -u -m brass_ai.replay_worker <worker-config>`，`PYTHONPATH` 指向仓库 `python/`；worker-config 按空白切分，含空格的参数可用单/双引号包裹），worker 持有一个网络 checkpoint 并通过 stdin/stdout 的逐行 JSON 协议应答：
 
-- 启动握手：worker 加载 checkpoint 后输出 `{"type":"ready","name":...,"meta":{ckpt, mode, sims, device, schema 版本}}`；Rust 在会话创建时等待握手，坏 checkpoint 或解释器缺失会在 HTTP 服务启动前报错退出。
+- 启动握手：worker 加载 checkpoint 后输出 `{"type":"ready","name":...,"meta":{ckpt, mode, sims, device, action/state feature schema 版本}}`；Rust 在会话创建时等待握手，坏 checkpoint 或解释器缺失会在 HTTP 服务启动前报错退出。
 - 决策请求：Rust 发送 `{"type":"choose","request_id":N,"snapshot":"<base64>","legal":[...]}`。snapshot 采用与 pyo3 `GameState.snapshot()` 完全相同的字节格式（magic + version + `snapshot_bytes`），worker 用 `GameState.from_snapshot` 无损还原完整局面（含 RNG 与全部手牌）。
 - 决策响应：`{"type":"choice","request_id":N,"canonical":...,"evidence":{mode, policy, visits, root_value}}`；单次请求失败时返回 `{"type":"error",...}` 并保持存活。
 - 超时（`--worker-timeout`，默认 300 秒）、进程退出和返回不在合法集中的 canonical 均产生可诊断的会话失败。
@@ -33,7 +33,7 @@ worker 支持 `--mode mcts`（默认，Rust ISMCTS + 网络引导，按根访问
 
 - `GET /api/status`：会话元信息、当前状态、已生成步骤的轻量时间线摘要，以及 `busy`/`complete` 状态。
 - `GET /api/steps/:index`：按需读取一手的盘面前后快照、完整合法动作与策略证据。
-- `POST /api/step`：立即入队并返回 `202 Accepted`；若当前策略正在运行或会话已结束，返回 `409 Conflict`。结果通过状态轮询读取。
+- `POST /api/step`：立即入队并返回 `202 Accepted`；若当前策略正在运行、会话已结束或已失败，返回 `409 Conflict`。结果通过状态轮询读取。
 
 服务仅绑定 loopback。HTTP 连接各自在线程中处理；状态为独立读模型，策略/MCTS 执行不会持有它的锁，因此状态请求不会被长计算阻塞。当前使用轮询控制，而非 WebSocket；后续可将相同会话读模型推送到 WebSocket，不改变回放数据模型。
 

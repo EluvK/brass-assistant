@@ -10,7 +10,6 @@
 //!     .legal_candidates() -> list[(canonical:str, features: float32[301])]
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
 //!     .determinize() -> GameState            # opponent-hand sampling
-//!     .legal_candidates() -> list[(canonical:str, features: float32[301])]
 //!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
 //!     .choose_heuristic() -> (canonical, describe, score)
 //!   module: action/state feature schemas and state-graph topology constants
@@ -172,7 +171,8 @@ impl PyGame {
         Ok(move_codec::encode(&resolved))
     }
 
-    /// Concrete executable legal moves with structured v2 action features.
+    /// Concrete executable legal moves with structured action features
+    /// (schema version exposed at module level).
     /// Every returned row is a complete action the engine can apply.
     fn legal_candidates(&self) -> Vec<(String, Vec<f32>)> {
         let mut state = self.state.clone();

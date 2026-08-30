@@ -412,3 +412,69 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
     out[CONSEQUENCE + CONS_FLIPS_OPP] = flips_opp as f32 / 4.0;
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::legal_resolved_moves;
+    use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
+
+    /// Documented block offsets (docs/ai-action-encoding.md §2); the widths
+    /// are implied by the next offset, SUMMARY ends at the feature dim.
+    const DOCUMENTED_OFFSETS: [usize; 14] = [
+        ACTION,
+        CARD,
+        LOCATION,
+        CITY_SLOT,
+        INDUSTRY_1,
+        INDUSTRY_2,
+        CONNECTION_1,
+        CONNECTION_2,
+        SELL_KEY,
+        MERCHANT,
+        DRAIN,
+        MERCHANT_BEER,
+        CONSEQUENCE,
+        SUMMARY,
+    ];
+
+    #[test]
+    fn block_offsets_match_documented_layout() {
+        assert_eq!(
+            DOCUMENTED_OFFSETS,
+            [0, 7, 42, 69, 73, 79, 85, 124, 163, 210, 219, 268, 277, 289]
+        );
+        assert_eq!(ACTION_FEATURE_DIM, 301);
+        assert_eq!(ACTION_FEATURE_SCHEMA_VERSION, 4);
+    }
+
+    #[test]
+    fn encoded_candidates_satisfy_quarter_step_and_action_one_hot() {
+        for seed in [7u64, 21, 99] {
+            let mut state = GameState::new(ChaCha12Rng::seed_from_u64(seed), 4);
+            for _ in 0..10 {
+                let legal = legal_resolved_moves(&mut state);
+                for mv in &legal {
+                    let row = encode_move(&state, mv);
+                    assert_eq!(row.len(), ACTION_FEATURE_DIM);
+                    // uint8 compression invariant: x4 is an integer in 0..=255.
+                    for &v in &row {
+                        assert!(v >= 0.0 && v <= 63.75, "value out of range: {v}");
+                        assert!((v * 4.0).fract() == 0.0, "value is not quarter-step: {v}");
+                    }
+                    // ACTION block is a one-hot over 7 action types.
+                    assert_eq!(row[ACTION..ACTION + 7].iter().sum::<f32>(), 1.0);
+                }
+                let Some(mv) = legal.first() else { break };
+                apply_move_quiet(&mut state, mv);
+            }
+        }
+    }
+
+    /// Step the game forward so later iterations encode fresh midgame states.
+    fn apply_move_quiet(state: &mut GameState, mv: &ResolvedMove) {
+        let _ = crate::rules::apply_move(state, mv);
+        let tr = crate::engine::advance_turn(state);
+        crate::engine::handle_turn_result(state, tr);
+    }
+}

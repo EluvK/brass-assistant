@@ -22,7 +22,7 @@ Brass Assistant 是一个为桌游《工业革命：伯明翰》（Brass: Birmin
 
 ## 3. 游戏规则速览
 
-需要参阅完整规则时，参考见 `docs/rules/brass-birmingham-rules.md`。
+需要参阅完整规则时，参考见 `docs/brass-birmingham-rules.md`。
 
 ## 4. 阶段规划
 

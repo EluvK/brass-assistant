@@ -71,7 +71,8 @@ pub struct DecisionTrace {
     pub evidence_kind: String,
     pub candidates: Vec<ActionDto>,
     pub card_keep_scores: Vec<CardKeepDto>,
-    /// Network value estimate for the acting player (python worker seats only).
+    /// Value estimate for the acting player: network estimate (python worker
+    /// seats) or best root child's mean search value (native mcts seats).
     pub root_value: Option<f64>,
 }
 
@@ -177,6 +178,70 @@ fn trace_for(
     }
 }
 
+/// Trace for native MCTS seats: rows carry REAL root search statistics
+/// (visit counts and child mean values exported by
+/// `mcts_ai::search_with_root_stats`), not heuristic priors.
+fn trace_for_mcts(
+    state: &GameState,
+    legal: &[ResolvedMove],
+    selected: &ResolvedMove,
+    strategy: String,
+    root: Vec<mcts_ai::RootChildStat>,
+    root_value: Option<f64>,
+) -> DecisionTrace {
+    let selected_key = move_codec::encode(selected);
+    let selected_op = heuristic_ai::operation_key(selected);
+    // Root children are unique by search identity; aggregate by structural
+    // operation (visits sum, visit-weighted mean value) so rows match the
+    // legal-table grouping even when one operation holds several variants.
+    let mut stats: HashMap<String, (u64, f64)> = HashMap::new();
+    for s in root {
+        let entry = stats
+            .entry(heuristic_ai::operation_key(&s.mv))
+            .or_insert((0, 0.0));
+        entry.0 += s.visits as u64;
+        entry.1 += s.mean_value * s.visits as f64;
+    }
+    let mut grouped: HashMap<String, &ResolvedMove> = HashMap::new();
+    for mv in legal {
+        grouped.entry(heuristic_ai::operation_key(mv)).or_insert(mv);
+    }
+    // Prefer the actually selected card as the representative row while
+    // retaining one row per structural operation.
+    grouped.insert(selected_op.clone(), selected);
+    let candidates = grouped
+        .into_iter()
+        .map(|(op_key, mv)| {
+            let stat = stats.get(&op_key).copied();
+            ActionDto {
+                description: mv.describe(state),
+                action: mv.action().to_string(),
+                selected: op_key == selected_op,
+                evaluated: stat.is_some(),
+                score: stat.map(|(visits, _)| visits as f64),
+                card_score: None,
+                card: move_card_name(state, mv),
+                note: match stat {
+                    None => Some("未被搜索展开".into()),
+                    Some((visits, value_sum)) => Some(format!(
+                        "访问 {visits} · q={:.2}",
+                        value_sum / visits.max(1) as f64
+                    )),
+                },
+                canonical: move_codec::encode(mv),
+            }
+        })
+        .collect();
+    DecisionTrace {
+        strategy,
+        selected: selected_key,
+        evidence_kind: "mcts-root-visits".into(),
+        candidates,
+        card_keep_scores: card_scores(state),
+        root_value,
+    }
+}
+
 pub(crate) fn move_card_name(state: &GameState, mv: &ResolvedMove) -> Option<String> {
     let index = match mv {
         ResolvedMove::Scout { .. } => return None,
@@ -231,15 +296,14 @@ impl StrategyAdapter for NativeStrategy {
                     simulations,
                     ..Default::default()
                 };
-                let scored = heuristic_ai::candidate_actions_k(state, cfg.k_candidates);
-                let decision = mcts_ai::choose_action_mcts(state, &cfg);
-                let trace = trace_for(
+                let (decision, root) = mcts_ai::search_with_root_stats(state, &cfg);
+                let trace = trace_for_mcts(
                     state,
                     legal,
-                    decision.mv.clone(),
+                    &decision.mv,
                     self.name(),
-                    "mcts-root-prior",
-                    scored,
+                    root,
+                    Some(decision.score),
                 );
                 Ok((decision.mv, trace))
             }
@@ -749,6 +813,36 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn mcts_seat_exports_real_root_statistics() {
+        let mut s = ReplaySession::new(
+            7,
+            2,
+            vec![StrategySpec::Mcts { simulations: 30 }, StrategySpec::Random],
+        )
+        .unwrap();
+        for _ in 0..2 {
+            s.step().unwrap();
+        }
+        let step = s
+            .steps
+            .iter()
+            .find(|step| step.trace.evidence_kind == "mcts-root-visits")
+            .expect("mcts seat must produce root-stat evidence");
+        assert!(step.trace.root_value.is_some());
+        assert!(step.trace.candidates.iter().any(|c| c.selected));
+        // Expanded rows carry visit counts; their sum equals the simulation
+        // budget (rows aggregate structural operations, incl. source variants).
+        let visits: f64 = step.trace.candidates.iter().filter_map(|c| c.score).sum();
+        assert_eq!(visits, 30.0);
+        assert!(
+            step.trace
+                .candidates
+                .iter()
+                .all(|c| { c.evaluated || c.note.as_deref() == Some("未被搜索展开") })
+        );
     }
 
     #[test]

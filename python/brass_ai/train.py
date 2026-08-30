@@ -230,9 +230,8 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
         ~out["candidate_mask"], 0.0
     )).sum(dim=1).mean()
 
-    # Rank head: per-seat normalized final rank (rank/n). Comparable across
-    # games and order-preserving within one game — replaces the per-game VP
-    # z-score target of v3.
+    # Rank head: per-seat normalized final rank (rank/n), comparable across
+    # games and order-preserving within one game.
     rank_loss = F.mse_loss(out["rank"], tensors["rank"])
 
     # Winner head: one-hot official winner after VP/income/cash tie-breaks.

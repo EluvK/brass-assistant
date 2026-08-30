@@ -44,8 +44,8 @@ Rust heuristic self-play
 | opp_hands | `float32 (105,)`，三名对手手牌 |
 | candidate features | `float32 (N, 301)` |
 | policy target | 对这 `N` 个候选归一化的分布 |
-| rank target | 每座位终局名次 / n（并列取平均名次） `(4,)` |
-| winner target | 并列冠军的均匀分布 `(4,)` |
+| rank target | 每座位终局名次 / n（VP → 收入 → 现金确定性破平局） `(4,)` |
+| winner target | 唯一冠军（破平局后第一名）的 one-hot `(4,)` |
 | econ target | `(income_level, money)`，按时代拆分的辅助监督 |
 
 动作特征 schema 当前为 `ACTION_FEATURE_SCHEMA_VERSION = 4`，状态特征 schema 为 `STATE_FEATURE_SCHEMA_VERSION = 4`。Python adapter 和 checkpoint 会拒绝未知 schema；Rust 修改编码时必须同步更新这些位置和测试。动作特征 301 维的具体布局见 [ai-action-encoding.md](./ai-action-encoding.md)。
@@ -63,6 +63,7 @@ python/
 |  |- train.py                Trainer、loss、训练指标
 |  |- evaluate.py             MCTS 对 heuristic 的评测
 |  |- mp_selfplay.py          多进程 self-play worker pool
+|  |- replay_worker.py        replay-web 网络座位子进程（stdin/stdout JSON 协议）
 |  |- progress.py             长任务进度输出
 |  `- __init__.py             包定义
 `- tests/                     当前回归测试
@@ -70,7 +71,7 @@ python/
 
 ## 环境与回归
 
-虚拟环境需要 Python 3.12，初次安装虚拟环境命令如下：
+虚拟环境支持 Python 3.9–3.12（pyproject `requires-python = ">=3.9,<3.13"`），推荐使用 3.12。初次安装虚拟环境命令如下：
 
 ```powershell
 uv venv --python 3.12 .venv
@@ -111,14 +112,16 @@ python python/bootstrap_imitation.py `
 
 | 参数 | 用途 |
 | --- | --- |
+| `--ckpt` | checkpoint 输出路径（默认 `checkpoints/bootstrap.pt`） |
 | `--games` | heuristic 对局数（默认 1000） |
 | `--epochs` | 每个 replay shard 的训练轮数 |
 | `--workers` / `--materialize-workers` | imitation 生成进程数 / 训练时 snapshot 候选物化进程数；`1` 为串行 |
 | `--batch` / `--max-candidate-batch` | 每次读取的样本数 / 一个训练 micro-batch 的候选行预算（限制 padding 造成的显存峰值） |
 | `--lr` | AdamW 学习率 |
+| `--eval-games` / `--eval-sims` | 结尾 benchmark 的对局数（默认 20）/ 每步模拟数（默认 60） |
 | `--min-avg-vp` / `--min-vp` / `--max-attempts` | 样本质量门槛：整局平均 VP / 最差座位 VP 下限，及启用门槛后的对局尝试上限 |
 | `--shortlist-candidates` | 改用 heuristic shortlist 候选训练；**默认 full-legal**（完整合法候选 + one-hot teacher，样本存 Rust snapshot，训练前实时物化候选集），会显著增加 CPU/内存压力 |
-| `--resume` | 从 `--ckpt` 恢复模型、optimizer 和 scheduler |
+| `--resume` | 从 `--ckpt` 恢复完整 Trainer 状态（模型/optimizer/scheduler/scaler） |
 | `--sample-dir` | 复用已有 `imitation-*.pkl`，跳过重新生成 |
 | `--delete-samples-on-success` | 成功结束后删除默认的 `<ckpt>.imitation` 样本目录 |
 | `--enable-policy-eval` | 训练后统计全部 shard 上的 top-k policy 指标 |
@@ -132,7 +135,7 @@ python python/bootstrap_imitation.py `
 
 ## 样本与 checkpoint
 
-`Sample` 代表一个决策点。默认 full-legal 模式下，样本保存 state tensor 与 Rust state snapshot + teacher canonical action，候选集在训练前从 snapshot 实时物化；`--shortlist-candidates` 模式则直接保存 shortlist 候选特征。候选上的监督包括 policy 分布、rank/winner 终局目标与 econ 目标。
+`Sample` 代表一个决策点。默认 full-legal 模式下，样本只保存 Rust state snapshot + teacher canonical action（不保存状态张量），候选集与状态张量在训练前从 snapshot 实时物化；`--shortlist-candidates` 模式则直接保存状态张量与 shortlist 候选特征。候选上的监督包括 policy 分布、rank/winner 终局目标与 econ 目标。
 
 Trainer checkpoint 包含：
 
@@ -140,6 +143,7 @@ Trainer checkpoint 包含：
 model
 optimizer
 scheduler
+scaler
 epoch
 action_feature_dim
 action_feature_schema_version

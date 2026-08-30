@@ -21,6 +21,39 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Split a `python:` seat's worker config into argv tokens. Whitespace
+/// separates tokens unless inside single or double quotes, so arguments like
+/// checkpoint paths may contain spaces.
+fn split_worker_config(config: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quote: Option<char> = None;
+    for c in config.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    token.push(c);
+                }
+            }
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                c if c.is_whitespace() => {
+                    if !token.is_empty() {
+                        tokens.push(std::mem::take(&mut token));
+                    }
+                }
+                c => token.push(c),
+            },
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    tokens
+}
+
 pub struct PythonWorkerStrategy {
     name: String,
     child: Option<Child>,
@@ -40,7 +73,7 @@ impl PythonWorkerStrategy {
             .join("python");
         let mut child = Command::new(python_bin)
             .args(["-u", "-m", "brass_ai.replay_worker"])
-            .args(worker_config.split_whitespace())
+            .args(split_worker_config(worker_config))
             .env("PYTHONPATH", &python_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -346,5 +379,18 @@ mod tests {
                 .iter()
                 .all(|c| c.evaluated && c.score.is_some())
         );
+    }
+
+    #[test]
+    fn worker_config_tokenizer_honors_quotes() {
+        assert_eq!(
+            split_worker_config("--ckpt checkpoints/a.pt --sims 200"),
+            vec!["--ckpt", "checkpoints/a.pt", "--sims", "200"]
+        );
+        assert_eq!(
+            split_worker_config("--ckpt \"checkpoints/my run.pt\" --device 'cpu'"),
+            vec!["--ckpt", "checkpoints/my run.pt", "--device", "cpu"]
+        );
+        assert!(split_worker_config("   ").is_empty());
     }
 }

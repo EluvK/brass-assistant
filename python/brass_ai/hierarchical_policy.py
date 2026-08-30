@@ -1,7 +1,8 @@
-"""Candidate-policy helpers.
+"""Engine-candidate adapter.
 
-The implementation lives in :mod:`brass_ai.net`; this module owns conversion
-of Engine-produced legal candidates to a padded batch.
+Owns conversion of Engine-produced legal candidates into network inputs:
+schema validation, equivalence-class policy targets, uint8 compression and
+padded batching.
 """
 
 from __future__ import annotations

@@ -8,7 +8,8 @@
 //!
 //! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary] [trace] [candidate-k] [max-moves]
 //!   canal-only: "1"/"true" stops after the canal era (no rail era played).
-//!   trace: "trace" prints scored heuristic candidates before each heuristic decision.
+//!   trace: "1"/"true"/"trace" enables scored heuristic candidates before each
+//!     heuristic decision (off by default).
 
 use _engine::data::Era;
 use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
@@ -119,9 +120,11 @@ fn main() {
         .map(|s| matches!(s.as_str(), "1" | "true" | "canal"))
         .unwrap_or(false);
     // `summary` retains the era-end diagnostics without printing every move.
-    // It supersedes the former `stat_game` binary.
     let verbose = args.get(6).map(|s| s.as_str()).unwrap_or("full") == "full";
-    let trace_enabled = args.get(7).map(|s| s.as_str()).unwrap_or("trace") == "trace";
+    let trace_enabled = args
+        .get(7)
+        .map(|s| matches!(s.as_str(), "1" | "true" | "trace"))
+        .unwrap_or(false);
     let candidate_k: usize = args.get(8).and_then(|s| s.parse().ok()).unwrap_or(30);
     let max_moves: usize = args.get(9).and_then(|s| s.parse().ok()).unwrap_or(200_000);
 

@@ -24,13 +24,15 @@ bootstrap_imitation.py
 
 ### `brass_ai/hierarchical_policy.py`
 
-1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验动作特征 schema，并将不同长度的候选集 padding 为网络 batch。
+1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验动作特征 schema，将候选集 padding 为网络 batch，并处理"执行不同但特征相同"的等价类 policy 目标。
 2. 主要函数：
    - `_feature_width()`：检查 Rust action feature schema version，返回动作特征维度。
    - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, 301)` tensor。
-   - `encode_teacher_candidates(state)`：返回 heuristic shortlist 的特征、分数、最终动作及其索引。
+   - `encode_teacher_candidates(state)`：返回 heuristic shortlist 的特征、teacher 分数、卡牌保留分、最终动作及其索引。
    - `compress_candidate_features(features)`：将以 0.25 为步长的特征无损压缩为 `uint8`。
    - `pad_candidate_features(rows, device)`：把变长候选行变为 `(B, max_N, D)` 和 boolean mask。
+   - `coalesce_equivalent_policy(features, policy)`：把特征完全相同的候选视为等价类，将 policy 质量均摊到类内（MCTS visit 目标使用）。
+   - `teacher_equivalence_policy(features, teacher_index)`：把 teacher one-hot 展开为其特征等价类上的均匀分布（full-legal imitation 目标使用）。
 
 ### `brass_ai/net.py`
 
@@ -102,6 +104,16 @@ bootstrap_imitation.py
    - `SelfPlayPool.__init__()`：启动常驻 worker。
    - `SelfPlayPool.generate(...)`：广播权重、收集结果和进度。
    - `SelfPlayPool.close()`：通知 worker 退出并等待回收。
+
+### `brass_ai/replay_worker.py`
+
+1. 作用：replay-web 网络座位的子进程 worker。加载网络 checkpoint 后通过 stdin/stdout 逐行 JSON 协议应答 Rust 的决策请求；协议与会话模型见 [replay-design.md](replay-design.md)。
+2. 主要类/函数：
+   - `WorkerConfig`：解析 `--ckpt / --mode / --sims / --device` 等 worker 参数。
+   - `load_net(...)`：加载 checkpoint 并校验 action/state feature schema。
+   - `root_forward(state)`：对全部合法候选做一次网络前向，返回覆盖全合法集的 policy 概率与当前玩家 value 头估计。
+   - `handle_request(...)`：处理单次 `choose` 请求，mcts 模式经 `RustISMCTS` 搜索、policy 模式直接对全候选 argmax，返回 canonical 动作与 evidence。
+   - `main()`：加载 checkpoint 后输出 ready 握手并进入请求循环；单次请求失败返回 `{"type":"error",...}` 并保持存活。
 
 ### `brass_ai/progress.py`
 

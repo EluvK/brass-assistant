@@ -1,13 +1,13 @@
-"""Candidate-scoring Policy-Value network for Brass: Birmingham (head set v4).
+"""Candidate-scoring Policy-Value network for Brass: Birmingham.
 
 The engine supplies a variable-size set of concrete legal moves. The policy
 scores those candidates conditional on the state and never learns legality.
 
-Head set (v4, see docs/archived/ai-encoding-v4-design.md §4):
+Head set (see docs/ai-action-encoding.md §5):
 * policy: FiLM-modulated action embedding + masked-mean candidate-set context,
   scored per candidate (O(N), no candidate self-attention).
 * rank head: per-seat normalized final rank (rank/n, MSE) — comparable across
-  games and order-preserving within one game; replaces the per-game VP z-score.
+  games and order-preserving within one game.
 * winner head: official winner one-hot (softmax CE); the search value for a
   seat is `1 - rank` (higher = better), matching the Rust terminal backup.
 * econ: era-split heads (canal / rail), 2 outputs each.

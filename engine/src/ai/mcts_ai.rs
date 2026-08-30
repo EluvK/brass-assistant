@@ -320,6 +320,23 @@ struct Child {
 
 /// Choose the current player's action by ISMCTS (determinized MCTS, MaxN).
 pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
+    search_with_root_stats(state, cfg).0
+}
+
+/// Root-child search statistics, exported for replay evidence.
+#[derive(Debug, Clone)]
+pub struct RootChildStat {
+    pub mv: ResolvedMove,
+    pub visits: u32,
+    /// Mean value for the root player across visits (MaxN Q).
+    pub mean_value: f64,
+}
+
+/// ISMCTS decision plus per-root-child visit/value statistics for diagnostics.
+pub fn search_with_root_stats(
+    state: &mut GameState,
+    cfg: &MctsConfig,
+) -> (Decision, Vec<RootChildStat>) {
     let root_pid = state.current_player_id();
     let n_players = state.player_count();
 
@@ -481,7 +498,7 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
     // Pick the root child with the most visits.
     let root_node = &arena[0];
     if root_node.children.is_empty() {
-        return heuristic_ai::pass_decision(state);
+        return (heuristic_ai::pass_decision(state), Vec::new());
     }
     let best = root_node
         .children
@@ -504,14 +521,26 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
         .collect();
     ordered_root.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.partial_cmp(&a.2).unwrap()));
 
+    let root_stats: Vec<RootChildStat> = ordered_root
+        .iter()
+        .map(|(ch, visits, q)| RootChildStat {
+            mv: ch.mv.clone(),
+            visits: *visits,
+            mean_value: *q,
+        })
+        .collect();
+
     for (ch, _visits, child_score) in ordered_root {
         let mut sim = state.clone();
         if apply_move(&mut sim, &ch.mv).is_ok() {
-            return Decision {
-                mv: ch.mv.clone(),
-                score: child_score,
-                card_score: heuristic_ai::move_card_score(state, &ch.mv),
-            };
+            return (
+                Decision {
+                    mv: ch.mv.clone(),
+                    score: child_score,
+                    card_score: heuristic_ai::move_card_score(state, &ch.mv),
+                },
+                root_stats,
+            );
         }
     }
 
@@ -534,9 +563,46 @@ pub fn choose_action_mcts(state: &mut GameState, cfg: &MctsConfig) -> Decision {
             );
         }
     }
-    Decision {
-        mv: best.mv.clone(),
-        score,
-        card_score: heuristic_ai::move_card_score(state, &best.mv),
+    (
+        Decision {
+            mv: best.mv.clone(),
+            score,
+            card_score: heuristic_ai::move_card_score(state, &best.mv),
+        },
+        root_stats,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::move_codec;
+    use crate::rules::apply_move;
+
+    #[test]
+    fn root_stats_cover_every_root_child_with_positive_visits() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(7), 4);
+        for _ in 0..60 {
+            // The game driver skips states whose full legal set is empty
+            // (`choose -> None`), so search is only invoked on movable states.
+            if crate::rules::legal_resolved_moves(&mut state).is_empty() {
+                break;
+            }
+            let cfg = MctsConfig {
+                simulations: 40,
+                ..Default::default()
+            };
+            let (decision, root) = search_with_root_stats(&mut state, &cfg);
+            assert!(!root.is_empty());
+            let total: u32 = root.iter().map(|s| s.visits).sum();
+            assert_eq!(total, cfg.simulations as u32);
+            assert!(root.iter().all(|s| s.visits >= 1));
+            let chosen = move_codec::encode(&decision.mv);
+            assert!(root.iter().any(|s| move_codec::encode(&s.mv) == chosen));
+            apply_move(&mut state, &decision.mv).unwrap();
+            if state.game_over {
+                break;
+            }
+        }
     }
 }

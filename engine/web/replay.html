@@ -886,7 +886,7 @@ function renderActions() {
 
   const evidenceKind = detail?.trace?.evidence_kind || '';
   const scoreHeader =
-    evidenceKind === 'net-mcts' ? 'Root visits'
+    evidenceKind === 'net-mcts' || evidenceKind === 'mcts-root-visits' ? 'Root visits'
     : evidenceKind === 'net-policy' ? 'Policy prob'
     : 'Strategy score';
 

@@ -1,6 +1,6 @@
 # 动作特征编码与网络头设计
 
-本文描述当前 candidate-scoring 方案中**动作特征（301 维，schema v4）的具体布局**与 **Python 网络各输出头（policy / rank / winner / econ）的设计**，并给出每类动作的实测编码示例。v4 的设计动机与 v3→v4 迁移记录见 `archived/ai-encoding-v4-design.md`。
+本文描述当前 candidate-scoring 方案中**动作特征（301 维，schema v4）的具体布局**与 **Python 网络各输出头（policy / rank / winner / econ）的设计**，并给出每类动作的实测编码示例。
 
 对应实现：`engine/src/bridge/action_features.rs`（编码）、`python/brass_ai/net.py`（网络）、`python/brass_ai/train.py`（损失）。
 当前版本：`ACTION_FEATURE_SCHEMA_VERSION = 4`，`STATE_FEATURE_SCHEMA_VERSION = 4`。状态张量（board 24 平面 / links / global 168 / 手牌）的布局见 `engine/src/bridge/encode.rs` 模块注释与 `docs/architecture.md`。
@@ -166,10 +166,10 @@ candidate_log_probs = log_softmax(masked_fill(padding, -inf))
 
 ### 5.2 Rank head + Winner head
 
-- **rank head**：`Linear(trunk -> 4)`，目标 = 每座位终局名次 / n（并列取平均名次），MSE。**跨局可比、局内保序**。
-- **winner head**：`Linear(trunk -> 4)`，softmax + CE，目标 = 并列冠军的均匀分布。
-- 搜索尺度：网络叶子值与终局 backup（`nn_mcts.rs terminal_value`）都用 `score_p = 1 − rank_p/n`（并列同秩），MaxN 按行动方取自己的分量最大化。
-- 设计权衡：z-score 类逐局价值跨局只保序不保距、margin 信息丢失；rank/winner 直接对齐"第一名概率"这一最终目标（迁移记录见 `archived/ai-encoding-v4-design.md`）。
+- **rank head**：`Linear(trunk -> 4)`，目标 = 每座位终局名次 / n，MSE。终局名次由 `scoring.rs::final_ranking` 按 VP → 收入等级 → 现金**确定性破平局**（无并列）。**跨局可比、局内保序**。
+- **winner head**：`Linear(trunk -> 4)`，softmax + CE，目标 = 唯一冠军（破平局后第一名）的 one-hot。
+- 搜索尺度：网络叶子值与终局 backup（`nn_mcts.rs terminal_value`）都用 `score_p = 1 − rank_p/n`，MaxN 按行动方取自己的分量最大化。
+- 设计权衡：z-score 类逐局价值跨局只保序不保距、margin 信息丢失；rank/winner 直接对齐"第一名概率"这一最终目标。
 
 ### 5.3 Econ head（经济辅助头，按时代拆分）
 
@@ -209,7 +209,7 @@ L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split) + 1e-4 * 
 - MCTS（`nn_mcts.rs`，`candidate_k=4`）与 shortlist imitation（`heuristic_candidates`）调用**同一个** `candidate_actions_k(state, 4)`——两者候选分布一致。plain MCTS（`mcts_ai.rs`）也用同一生成器（默认 k=3）。
 - 生成器 v4（`SOURCE_VARIANTS=2`）：同一几何体（连接/建造位）下来源身份不同的变体**成对进入候选集**，"抽谁的矿/酒馆"由搜索而非生成器决定。
 - 整个管线没有默认越过生成器的路径；NN-MCTS 显式传 `candidate_k=0` 可全合法集展开。
-- **checkpoint 资产现状（2026-08-30）**：旧 schema（v2/v3 状态张量、235 维动作特征、z-score value 头）的 bootstrap checkpoint 已全部清理。当前 `checkpoints/bootstrap-0830.pt` 为首个 v4 checkpoint（full-legal imitation，schema 4/4、301 维），训练尚在早期；candidate recall 等指标待训练充分后测量（§7）。
+- **checkpoint 现状**：checkpoint 属本地不入库资产（`checkpoints/` 已被 gitignore），文档不引用具体训练产物文件名。首个 v4 full-legal imitation 训练 run 已产出样本分片（`<ckpt>.imitation/imitation-*.pkl`），正式训练尚在早期；candidate recall 等指标待训练充分后测量（§7）。
 
 ## 7. 编码碰撞与候选生成器现状（v4 复测，2026-08-29）
 
@@ -250,7 +250,7 @@ L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split) + 1e-4 * 
 
 ### 8.3 迭代原则
 
-后续升级先由错误案例证明当前 encoder 无法区分关键局面，再增量升级；升级必须 bump 对应 schema version；动作特征新增项必须满足 §4 的 0.25 步长与 63.75 上限。v3→v4 的破坏性迁移记录见 `archived/ai-encoding-v4-design.md`。
+后续升级先由错误案例证明当前 encoder 无法区分关键局面，再增量升级；升级必须 bump 对应 schema version；动作特征新增项必须满足 §4 的 0.25 步长与 63.75 上限。
 
 ## 9. 修改 schema 的维护清单
 
@@ -261,4 +261,4 @@ L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split) + 1e-4 * 
 3. `python/brass_ai/hierarchical_policy.py`：`ACTION_FEATURE_SCHEMA_VERSION` / `ACTION_FEATURE_DIM` 常量（运行时强校验）。
 4. `python/brass_ai/train.py`：`_to_batch` / `compute_loss` 的目标字段（rank/winner/econ）与头输出对齐；`/4.0` 还原（0.25 步长约定）。
 5. 保持所有动作特征值为 0.25 的倍数且 ≤63.75（uint8 压缩不变量，违规会运行时报错）。
-6. 相关测试：`python/tests/test_engine.py`（shape/schema 回归）、`test_hierarchical_policy.py`（schema 门禁、压缩无损、teacher 对齐）、`engine/src/bridge` 单元测试与 `engine/tests/engine_tests.rs`。
+6. 相关测试：`python/tests/test_engine.py`（shape/schema 回归）、`test_hierarchical_policy.py`（schema 门禁、压缩无损、teacher 对齐）、`engine/src/bridge` 单元测试（action_features 块布局与 uint8 不变量、move_codec、encode、replay_fmt）与 `engine/tests/engine_tests.rs`。

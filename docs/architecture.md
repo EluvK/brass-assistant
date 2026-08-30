@@ -84,6 +84,8 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   │   └─ scout_pass.rs Scout / Pass 评分
 │   ├─ mcts_ai.rs       启发式引导 ISMCTS（determinize + PUCT + MaxN 值向量）
 │   ├─ nn_mcts.rs       网络引导 ISMCTS（具体候选动作树、批量 Python 推理、4 玩家 value）
+│   ├─ replay.rs        replay-web 内存会话：快照/完整合法集/DecisionTrace 记录 + StrategyAdapter 策略契约
+│   ├─ python_worker.rs PythonWorkerStrategy：replay-web 网络座位（子进程 worker + stdin/stdout JSON 协议）
 │   └─ random_ai.rs     随机基线
 │
 └─ bridge/ 桥接 / 序列化层（Python/NN 相关；依赖全部上层）
@@ -96,6 +98,8 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 
 依赖方向大体单向：`model` → `game_state` → `gameplay` → AI / bridge。`gameplay` 只生成规则意义上的合法动作；候选动作特征编码属于 bridge，因此规则层不依赖 bridge。
 历史反向边 `bridge/encode.rs` → `ai/heuristic_ai::estimate_rounds_remaining` 已消除：该函数现已并入 `GameState::rounds_remaining`，桥接层直接调用状态方法。
+
+`main.rs` 为默认二进制入口，用于批量对局统计扫描；开发实验入口（`engine/src/bin/`）见 [engine-tools.md](./engine-tools.md)，replay-web 的会话模型与 Python worker 协议见 [replay-design.md](./replay-design.md)。
 
 为保持 Rust 调用方、二进制工具及 PyO3 绑定的兼容性，`lib.rs` 仍公开再导出 `_engine::rules`、`_engine::state` 等原有平铺路径；新代码应使用对应的职责层路径。
 
@@ -113,10 +117,11 @@ python/
 │  ├─ train.py        损失函数、Trainer、优化器和学习率调度器
 │  ├─ evaluate.py     固定种子、轮换座位的对局评测
 │  ├─ mp_selfplay.py  常驻 multiprocessing worker 池
+│  ├─ replay_worker.py replay-web 网络座位子进程：加载 checkpoint，stdin/stdout JSON 协议应答决策
 │  └─ progress.py     长任务进度与 ETA 输出
 ├─ bootstrap_imitation.py
 │                     用 Rust 启发式教师生成行为克隆预训练数据（当前唯一训练入口）
-└─ tests/             Rust bridge、搜索、自博弈、训练和 replay 分片测试
+└─ tests/             Rust bridge、搜索、自博弈、训练、replay 分片与 replay worker 测试
 ```
 
 #### Rust-Python 契约
@@ -150,4 +155,4 @@ teacher canonical action（候选集训练前实时物化），监督目标为�
 （`play_game` / `play_batch`）、`mp_selfplay.py`（worker 池）与 `train.py`
 （`run_loop`）保留了可复用的模块能力，重新设计自对弈入口时应基于它们构建。
 
-旧的纯 Python MCTS 已移除，不能作为训练或评测路径。任何新训练入口必须使用 `RustISMCTS`，任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。state-feature schema 或 action-feature schema 升级会拒绝旧 checkpoint/样本，必须重新采样训练。
+搜索树以 Rust `RustISMCTS` 为唯一实现，Python 侧不做搜索、不实现规则。任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。state-feature schema 或 action-feature schema 升级会拒绝旧 checkpoint/样本，必须重新采样训练。
