@@ -60,6 +60,7 @@ bootstrap_imitation.py
 2. 主要类/函数：
    - `Sample`：一个决策点的状态、候选、policy、rank/winner/econ 目标及可选 snapshot/教师动作。
    - `materialize_sample(sample)` / `materialize_samples(samples)`：从 snapshot 恢复 Rust 状态并重建全合法候选与 one-hot target。
+   - `materialize_chunk(samples)` / `stream_materialized_batches(pool, batches, rpc_chunk)`：池 worker 批量物化（候选按 quarter-step 压成 uint8 传输，省 4× IPC），并按批预取使物化与 GPU 训练重叠。
    - `SelfPlayConfig`：玩家数、模拟数、温度、最大步数与 seed。
    - `_candidate_policy(...)`：将 MCTS visit 对齐为 Rust 候选顺序上的 policy 分布。
    - `_sample_move(...)`：按 visit 分布和温度选择动作。
@@ -73,14 +74,14 @@ bootstrap_imitation.py
 
 1. 作用：持有 optimizer/scheduler；组装变长候选 batch；计算 policy、rank、winner、经济和 L2 损失；控制完整候选训练的 batch 内存。
 2. 主要类/函数：
-   - `TrainConfig`：训练超参数、设备、候选行预算和 snapshot materialize worker 数。
-   - `Trainer.__init__()`：创建 AdamW、CosineAnnealingLR 并绑定网络。
+   - `TrainConfig`：训练超参数、设备、候选行预算、snapshot materialize worker 数与 RPC 分块、周期性 inf/NaN 深检间隔。
+   - `Trainer.__init__()`：创建 AdamW、CosineAnnealingLR 并绑定网络；持有跨 shard 复用的常驻 materialize 进程池（`close()` 释放）。
    - `Trainer.train_on_samples(samples)`：按配置训练多 epoch，推进学习率并计算训练集指标。
-   - `Trainer.train_one_epoch(samples, progress_label)`：训练一遍样本；snapshot 模式即时物化，并按候选行预算拆分 micro-batch。
+   - `Trainer.train_one_epoch(samples, progress_label)`：训练一遍样本；snapshot 模式经常驻池预取物化（与 GPU 重叠），并按候选行预算贪心装箱 micro-batch（单个超大候选样本只影响其所在块，不再压缩整批）。
    - `Trainer.train_steps(...)`：有放回随机采样的固定步训练 API，供后续训练入口复用。
    - `Trainer.state_dict()` / `load_state_dict()`：保存/恢复训练状态并检查 feature schema。
    - `compute_loss(...)`：计算各监督目标与正则项。
-   - `train_on_batch(...)`：执行一批的前向、反向和参数更新。
+   - `train_on_batch(...)`：执行一批的前向、反向和参数更新；CUDA 上默认跳过逐步逐参数 inf/NaN 同步检查（GradScaler 已跳过坏步），由调用方每 N 步做一次深检。
    - `_to_batch(samples)`：堆叠状态、padding 候选和 policy。
    - `evaluate_policy(...)`：分批统计 top-k 命中率、winner 命中、熵与候选数。
    - `LoopConfig` / `run_loop(...)`：简化的单进程 self-play -> train 循环；当前没有顶层入口调用它。

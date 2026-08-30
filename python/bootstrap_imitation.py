@@ -48,7 +48,7 @@ def main():
                     help="resume model, optimizer and scheduler from --ckpt")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
                     help="heuristic-game worker processes (use 1 for serial)")
-    ap.add_argument("--materialize-workers", type=int, default=min(4, os.cpu_count() or 1),
+    ap.add_argument("--materialize-workers", type=int, default=min(8, os.cpu_count() or 1),
                     help="parallel workers restoring full-legal snapshots during training")
     ap.add_argument("--min-avg-vp", type=float, default=None,
                     help="only keep games whose mean final VP is strictly above this value")
@@ -87,6 +87,7 @@ def main():
     t0 = time.time()
     os.makedirs("checkpoints", exist_ok=True)
     owns_sample_dir = args.sample_dir is None
+    trainer = None
     # A deterministic directory means an interrupted default run can resume
     # without asking the user to recover a generated tempfile path.
     sample_dir = (
@@ -213,6 +214,8 @@ def main():
         print(f"checkpoint saved: {ckpt_path}")
         succeeded = True
     finally:
+        if trainer is not None:
+            trainer.close()
         if not owns_sample_dir:
             print(f"reused imitation shards preserved at: {sample_dir}")
         elif not succeeded:

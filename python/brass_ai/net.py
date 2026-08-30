@@ -21,6 +21,7 @@ import torch
 import torch.nn as nn
 
 from . import _engine as be
+from .hierarchical_policy import ACTION_FEATURE_SCALE
 
 N_ACTIONS = 7
 N_PLAYERS = 4
@@ -137,9 +138,16 @@ class PolicyValueNet(nn.Module):
 
     def forward(self, batch: dict, action_features: torch.Tensor,
                 candidate_mask: torch.Tensor | None = None) -> dict:
-        """Evaluate candidates shaped ``(B,N,D)`` with optional padding mask."""
+        """Evaluate candidates shaped ``(B,N,D)`` with optional padding mask.
+
+        uint8 quarter-step rows (the replay-transport encoding) are upconverted
+        to float on their arrival device, keeping the host->device copy 4x
+        smaller than float32.
+        """
         if action_features.ndim == 2:
             action_features = action_features.unsqueeze(0)
+        if action_features.dtype == torch.uint8:
+            action_features = action_features.float().div_(ACTION_FEATURE_SCALE)
         if action_features.ndim != 3 or action_features.shape[-1] != self.cfg.action_features:
             raise ValueError(
                 f"action_features must have shape (B,N,{self.cfg.action_features})"

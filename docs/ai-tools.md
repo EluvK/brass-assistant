@@ -115,7 +115,7 @@ python python/bootstrap_imitation.py `
 | `--ckpt` | checkpoint 输出路径（默认 `checkpoints/bootstrap.pt`） |
 | `--games` | heuristic 对局数（默认 1000） |
 | `--epochs` | 每个 replay shard 的训练轮数 |
-| `--workers` / `--materialize-workers` | imitation 生成进程数 / 训练时 snapshot 候选物化进程数；`1` 为串行 |
+| `--workers` / `--materialize-workers` | imitation 生成进程数 / 训练时 snapshot 候选物化进程数（默认 8，受系统可用内存约束，内存紧张时调低）；`1` 为串行 |
 | `--batch` / `--max-candidate-batch` | 每次读取的样本数 / 一个训练 micro-batch 的候选行预算（限制 padding 造成的显存峰值） |
 | `--lr` | AdamW 学习率 |
 | `--eval-games` / `--eval-sims` | 结尾 benchmark 的对局数（默认 20）/ 每步模拟数（默认 60） |

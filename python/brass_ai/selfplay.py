@@ -24,6 +24,7 @@ from . import _engine as be
 from typing import Callable, Protocol
 
 from .hierarchical_policy import (
+    compress_candidate_features,
     encode_legal_candidates,
     encode_teacher_candidates,
     coalesce_equivalent_policy,
@@ -95,6 +96,56 @@ def materialize_sample(sample: Sample) -> Sample:
 
 def materialize_samples(samples: list[Sample]) -> list[Sample]:
     return [materialize_sample(sample) for sample in samples]
+
+
+def materialize_chunk(samples: list[Sample]) -> list[Sample]:
+    """Worker-side bulk materialization for the replay pool.
+
+    Candidates are transported as lossless uint8 quarter-steps when the schema
+    allows (4x smaller cross-process payload); ``_to_batch`` converts them back
+    to float32.
+    """
+    out = []
+    for sample in samples:
+        materialized = materialize_sample(sample)
+        try:
+            materialized.candidates = compress_candidate_features(materialized.candidates)
+        except ValueError:
+            pass  # non-quarter-step row: keep the float32 row
+        out.append(materialized)
+    return out
+
+
+def stream_materialized_batches(pool, batches: list[list[Sample]], rpc_chunk: int = 32):
+    """Yield materialized batches in order, keeping one batch's tasks in flight
+    so pool workers materialize batch k while batch k-1 trains on the GPU.
+
+    ``pool=None`` materializes serially in-process. ``rpc_chunk`` bounds the
+    per-task pickle payload instead of shipping one message per sample.
+    """
+    if pool is None:
+        for raw in batches:
+            yield [materialize_sample(sample) for sample in raw]
+        return
+    step = max(1, rpc_chunk)
+    pending = None
+    for raw in batches:
+        futures = [
+            pool.submit(materialize_chunk, raw[i:i + step])
+            for i in range(0, len(raw), step)
+        ]
+        if pending is not None:
+            yield _collect_materialized(pending)
+        pending = futures
+    if pending is not None:
+        yield _collect_materialized(pending)
+
+
+def _collect_materialized(futures) -> list[Sample]:
+    out: list[Sample] = []
+    for future in futures:
+        out.extend(future.result())
+    return out
 
 
 @dataclass
@@ -255,18 +306,13 @@ def _generate_imitation_game(args):
         moves += 1
         pid = state.current_player_id
         if full_legal_candidates:
-            canonical_candidates, candidate_tensor = encode_legal_candidates(state)
-            # Reuse the same Rust teacher bridge as the shortlist path. The
-            # teacher canonical must be present in the complete legal set.
-            _short_features, _short_scores, _short_card_scores, canon, _short_index, _short_score, _short_card_score = (
+            # Only the teacher canonical is persisted. The full-legal candidate
+            # matrix is a deterministic derivative of the snapshot and is
+            # re-derived once at materialization time, so building it here
+            # (every move, only to validate the teacher) is discarded work.
+            _features, _scores, _card_scores, canon, _index, _score, _card_score = (
                 encode_teacher_candidates(state)
             )
-            try:
-                teacher_index = canonical_candidates.index(canon)
-            except ValueError as exc:
-                raise RuntimeError("heuristic action is missing from legal candidates") from exc
-            policy = np.zeros(len(canonical_candidates), dtype=np.float32)
-            policy[teacher_index] = 1.0
         else:
             candidate_tensor, teacher_scores, _card_scores, canon, _chosen_index, _score, _card_score = encode_teacher_candidates(state)
             score_values = teacher_scores.numpy().astype(np.float64)

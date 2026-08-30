@@ -135,7 +135,7 @@ Scout 的计数式 CARD 使 {A,A,B} 与 {A,B,B} 可分辨。
 
 ## 4. 数值约定与 uint8 压缩不变量
 
-**所有 301 维特征值都是 0.25 的整数倍**（0 / 0.25 / 0.5 / 1 / 1.5 / 2…）。这是候选行 uint8 无损压缩的前提：`hierarchical_policy.compress_candidate_features` 按 `×4` 打包，遇到非 0.25 步长的值直接报错（`hierarchical_policy.py:60-70`）；训练端 `_to_batch`（`train.py`）对 uint8 行按 `/4` 还原。
+**所有 301 维特征值都是 0.25 的整数倍**（0 / 0.25 / 0.5 / 1 / 1.5 / 2…）。这是候选行 uint8 无损压缩的前提：`hierarchical_policy.compress_candidate_features` 按 `×4` 打包，遇到非 0.25 步长的值直接报错（`hierarchical_policy.py:60-70`）；uint8 行按 `/4` 还原发生在 GPU 上（`net.py` 的 `forward`，H2D 拷贝因此只有 float32 的 1/4；CPU 路径由 `train.py` 的 `_to_batch` 兜底）。
 
 澄清两条容易误解的边界：
 
@@ -193,7 +193,9 @@ L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split) + 1e-4 * 
 | `l2` | 1e-4 | 显式 L2 |
 | 调度 | CosineAnnealingLR | `T_max=100`，`min_lr=1e-5`，跨迭代保持 optimizer 状态 |
 | `econ_lambda` / `econ_neg_weight` | 0.2 / 1.0 | 经济辅助权重 / 负收入加权（默认关闭，留 ablation 开关） |
-| `max_candidate_batch` | 65536 | 单个训练 micro-batch 的候选行预算（候选行可 uint8 存储再省 4×） |
+| `max_candidate_batch` | 65536 | 单个训练 micro-batch 的候选行预算；样本按候选数排序后贪心装箱（一个超大候选样本只影响其所在块） |
+| `materialize_rpc_chunk` | 32 | 每个跨进程物化任务携带的样本数（候选行以 uint8 传输并在 GPU 上转 float，省 4× IPC 与 H2D） |
+| `finiteness_check_interval` | 100 | CUDA 上逐参数 inf/NaN 深检的步数间隔（GradScaler 已跳过坏步；CPU 上每步都查） |
 | `amp` | True | GPU 上 fp16 autocast |
 
 ## 6. 训练目标来源
