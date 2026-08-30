@@ -36,15 +36,13 @@ Search: allocate lookahead among candidates
 
 ## Value And Objective
 
-当前 final normalized VP value 是 bootstrap 辅助目标，不是最终目标。后续应增加
-竞争结果 head，例如四名玩家的 winner distribution：
+policy 的最终优化目标是最大化最终第一名概率。v4 已把 value 目标切到竞争结果：
+rank 头（每座位终局名次 /n，MSE）与 winner 头（并列冠军的均匀分布，CE），搜索
+与终局 backup 统一使用 `1 - rank` 尺度，见
+[ai-action-encoding.md](ai-action-encoding.md) §5.2。
 
-```text
-P(winner = player_i | observation, history), sum_i P_i = 1
-```
-
-保留 final VP、income、era score 和 network score 等 auxiliary heads，以改善表征
-学习；但 policy 的最终优化目标应逐步转向 win/rank，而不是绝对现金、收入或 VP。
+保留 income、era score 等辅助头（当前为按时代拆分的 econ 头）以改善表征学习；
+但 policy 的最终优化目标保持 win/rank，而不是绝对现金、收入或 VP。
 
 如果引入 reward shaping，应使用 potential difference：
 
@@ -71,19 +69,19 @@ policy/value 利用公开历史形成 belief，而不是把未知手牌当作独
 
 1. 建立 held-out teacher validation 和 full-candidate benchmark。candidate
    recall 指标（已训练策略在全合法集上的 top-1/top-3 是否落在 shortlist 内）已定义于
-   [ai-action-encoding.md](ai-action-encoding.md) §7.4，待有 schema 兼容的
-   checkpoint 后即可测量（现有 0822/0823 checkpoint 均为 state-schema v2 产物，已被门禁拒绝）。
+   [ai-action-encoding.md](ai-action-encoding.md) §7；首个 v4 checkpoint
+   （`checkpoints/bootstrap-0830.pt`）已产出，待训练充分后测量。
 2. 为 imitation shortlist 加入有限 hard negatives，缩小训练与 MCTS 推理的候选
    分布差异。两条路径的候选集本身一致（同一 `candidate_actions_k(4)`），
-   真正的偏差来自候选生成器：实测被 shortlist 排除的 Develop 备选中 32% 的
-   终局 margin 反超 teacher 选择（同文档 §7.3）。
+   真正的偏差来自候选生成器：被 shortlist 排除的备选可能优于 teacher 选择，
+   生成器上限需以 candidate recall 等更强参照度量（同文档 §7）。
 3. 校准 policy/value，确认 candidate encoder 能泛化后，完成最小 self-play run。
-   v4 编码/网络头改造已落地（2026-08-29）：动作特征 301 维、状态张量 v4（含商家块）、
-   生成器来源变体、FiLM+集合上下文 policy、rank/winner 头，见
-   [ai-encoding-v4-design.md](ai-encoding-v4-design.md)；下一步是首次 v4 full-legal bootstrap。
+   v4 编码/网络头改造已落地（2026-08-29），首个 v4 full-legal bootstrap 已开始
+   （`checkpoints/bootstrap-0830.pt`）；下一步是训练迭代与 recall 测量，再过渡到
+   self-play。
 4. 用 MCTS visit distribution 逐步替换 heuristic teacher，并保留历史 checkpoint
    opponent pool。
-5. 增加 winner/rank value 和 history/belief 表示。
+5. 增加 history/belief 表示（winner/rank value 已于 v4 落地）。
 6. 仅在 self-play + search 已稳定后，评估 PPO/actor-critic 是否带来额外价值。
 
 PPO 不是当前阻塞点；candidate representation、验证集和 value 目标更基础。

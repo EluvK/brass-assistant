@@ -5,7 +5,7 @@ RANK targets + winner distribution).
 Value target (v4): rank_p = final_rank_p / n_players (ties share the average
 rank), as the FULL 4-seat vector; each sample carries the same 4-vector plus
 the winner distribution (uniform over co-winners). The search value for a seat
-is 1 - rank; see docs/ai-encoding-v4-design.md §4.2.
+is 1 - rank; see docs/archived/ai-encoding-v4-design.md §4.2.
 """
 
 from __future__ import annotations

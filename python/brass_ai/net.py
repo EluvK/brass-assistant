@@ -3,7 +3,7 @@
 The engine supplies a variable-size set of concrete legal moves. The policy
 scores those candidates conditional on the state and never learns legality.
 
-Head set (v4, see docs/ai-encoding-v4-design.md §4):
+Head set (v4, see docs/archived/ai-encoding-v4-design.md §4):
 * policy: FiLM-modulated action embedding + masked-mean candidate-set context,
   scored per candidate (O(N), no candidate self-attention).
 * rank head: per-seat normalized final rank (rank/n, MSE) — comparable across

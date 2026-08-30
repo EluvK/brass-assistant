@@ -59,7 +59,7 @@ def main():
     ap.add_argument("--shortlist-candidates", action="store_true",
                     help="train on the teacher shortlist instead of every legal candidate "
                          "(v4 default is full-legal: source-identity features removed the "
-                         "one-hot target conflicts, see docs/ai-encoding-v4-design.md §4.4)")
+                         "one-hot target conflicts, see docs/archived/ai-encoding-v4-design.md §4.4)")
     ap.add_argument("--sample-dir", type=Path,
                     help="reuse existing imitation-*.pkl shards; skips generation and never deletes this directory")
     ap.add_argument("--delete-samples-on-success", action="store_true",

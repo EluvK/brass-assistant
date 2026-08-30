@@ -27,19 +27,19 @@ bootstrap_imitation.py
 1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验动作特征 schema，并将不同长度的候选集 padding 为网络 batch。
 2. 主要函数：
    - `_feature_width()`：检查 Rust action feature schema version，返回动作特征维度。
-   - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, 235)` tensor。
+   - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, 301)` tensor。
    - `encode_teacher_candidates(state)`：返回 heuristic shortlist 的特征、分数、最终动作及其索引。
    - `compress_candidate_features(features)`：将以 0.25 为步长的特征无损压缩为 `uint8`。
    - `pad_candidate_features(rows, device)`：把变长候选行变为 `(B, max_N, D)` 和 boolean mask。
 
 ### `brass_ai/net.py`
 
-1. 作用：定义 `PolicyValueNet`：编码状态和 Rust 候选动作，为每个候选产生 logit，并预测四玩家 value 与经济辅助目标。
+1. 作用：定义 `PolicyValueNet`：编码状态和 Rust 候选动作，为每个候选产生 logit（FiLM 调制 + 候选集上下文），并预测四玩家终局名次/胜者分布与经济辅助目标。
 2. 主要类/函数：
    - `NetConfig`：网络宽度和输入维度配置。
-   - `PolicyValueNet.__init__()`：构建状态 encoder、共享 trunk、动作 encoder 和 policy/value/econ heads。
+   - `PolicyValueNet.__init__()`：构建状态 encoder、共享 trunk、动作 encoder 和 policy/rank/winner/econ heads。
    - `PolicyValueNet.encode_state(batch)`：编码 board、links、全局信息和手牌为 state embedding。
-   - `PolicyValueNet.forward(batch, action_features, candidate_mask)`：计算 masked candidate logits、类型 logits、value 和 econ。
+   - `PolicyValueNet.forward(batch, action_features, candidate_mask)`：计算 masked candidate logits、rank/winner 与 econ 输出。
    - `PolicyValueNet.policy_value(...)`：无梯度推理包装，供搜索调用。
 
 ### `brass_ai/rust_mcts.py`
@@ -56,20 +56,20 @@ bootstrap_imitation.py
 
 1. 作用：定义 `Sample`，生成 MCTS self-play 或 heuristic imitation 数据；完整合法候选模式可通过 Rust snapshot 延迟物化候选集。
 2. 主要类/函数：
-   - `Sample`：一个决策点的状态、候选、policy、value、econ 及可选 snapshot/教师动作。
+   - `Sample`：一个决策点的状态、候选、policy、rank/winner/econ 目标及可选 snapshot/教师动作。
    - `materialize_sample(sample)` / `materialize_samples(samples)`：从 snapshot 恢复 Rust 状态并重建全合法候选与 one-hot target。
    - `SelfPlayConfig`：玩家数、模拟数、温度、最大步数与 seed。
    - `_candidate_policy(...)`：将 MCTS visit 对齐为 Rust 候选顺序上的 policy 分布。
    - `_sample_move(...)`：按 visit 分布和温度选择动作。
    - `play_game(...)`：同一 MCTS 控制四席的一局 self-play。
    - `play_game_with_roles(...)`：允许不同座位使用不同搜索角色并收集样本。
-   - `generate_imitation_samples(...)`：并行生成并在内存中返回 heuristic imitation 样本，适合测试和小实验。
+   - `generate_imitation_samples(...)`：并行生成并在内存中返回 heuristic imitation 样本，支持按终局 VP 质量过滤对局，适合测试和小实验。
    - `generate_imitation_sample_shards(...)`：边生成边写 shard，供 bootstrap 使用。
    - `play_batch(...)`：顺序运行多局 self-play 并汇总结果。
 
 ### `brass_ai/train.py`
 
-1. 作用：持有 optimizer/scheduler；组装变长候选 batch；计算 policy、value、动作类型、经济和 L2 损失；控制完整候选训练的 batch 内存。
+1. 作用：持有 optimizer/scheduler；组装变长候选 batch；计算 policy、rank、winner、经济和 L2 损失；控制完整候选训练的 batch 内存。
 2. 主要类/函数：
    - `TrainConfig`：训练超参数、设备、候选行预算和 snapshot materialize worker 数。
    - `Trainer.__init__()`：创建 AdamW、CosineAnnealingLR 并绑定网络。
@@ -80,7 +80,7 @@ bootstrap_imitation.py
    - `compute_loss(...)`：计算各监督目标与正则项。
    - `train_on_batch(...)`：执行一批的前向、反向和参数更新。
    - `_to_batch(samples)`：堆叠状态、padding 候选和 policy。
-   - `evaluate_policy(...)`：分批统计 top-k、类型命中率、熵与候选数。
+   - `evaluate_policy(...)`：分批统计 top-k 命中率、winner 命中、熵与候选数。
    - `LoopConfig` / `run_loop(...)`：简化的单进程 self-play -> train 循环；当前没有顶层入口调用它。
 
 ### `brass_ai/evaluate.py`

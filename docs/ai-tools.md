@@ -37,17 +37,18 @@ Rust heuristic self-play
 
 | 数据 | 形状/含义 |
 | --- | --- |
-| board | `float32 (17, 49)` |
+| board | `float32 (24, 49)` |
 | links | `float32 (7, 39)` |
-| global | `float32 (114,)` |
+| global | `float32 (168,)` |
 | own_hand | `float32 (35,)` |
 | opp_hands | `float32 (105,)`，三名对手手牌 |
-| candidate features | `float32 (N, 235)` |
+| candidate features | `float32 (N, 301)` |
 | policy target | 对这 `N` 个候选归一化的分布 |
-| value target | 四名玩家终局 VP 标准化向量 `(vp - mean) / std`；平局为全零 |
-| econ target | `(income_level, money)`，辅助监督 |
+| rank target | 每座位终局名次 / n（并列取平均名次） `(4,)` |
+| winner target | 并列冠军的均匀分布 `(4,)` |
+| econ target | `(income_level, money)`，按时代拆分的辅助监督 |
 
-动作特征 schema 当前为 `ACTION_FEATURE_SCHEMA_VERSION = 3`。Python adapter 和 checkpoint 会拒绝未知 schema；Rust 修改动作编码时必须同步更新这些位置和测试。动作特征 235 维的具体布局见 [ai-action-encoding.md](./ai-action-encoding.md)。
+动作特征 schema 当前为 `ACTION_FEATURE_SCHEMA_VERSION = 4`，状态特征 schema 为 `STATE_FEATURE_SCHEMA_VERSION = 4`。Python adapter 和 checkpoint 会拒绝未知 schema；Rust 修改编码时必须同步更新这些位置和测试。动作特征 301 维的具体布局见 [ai-action-encoding.md](./ai-action-encoding.md)。
 
 ## 当前目录
 
@@ -110,14 +111,17 @@ python python/bootstrap_imitation.py `
 
 | 参数 | 用途 |
 | --- | --- |
-| `--games` | heuristic 对局数 |
+| `--games` | heuristic 对局数（默认 1000） |
 | `--epochs` | 每个 replay shard 的训练轮数 |
-| `--workers` | imitation 生成进程数；`1` 为串行 |
-| `--batch` | 每次读取的样本数 |
-| `--max-candidate-batch` | 一个训练 micro-batch 的候选行预算，限制 padding 造成的显存峰值 |
-| `--full-legal-candidates` | 用完整合法候选和 one-hot teacher target；会显著增加 CPU/内存压力 |
+| `--workers` / `--materialize-workers` | imitation 生成进程数 / 训练时 snapshot 候选物化进程数；`1` 为串行 |
+| `--batch` / `--max-candidate-batch` | 每次读取的样本数 / 一个训练 micro-batch 的候选行预算（限制 padding 造成的显存峰值） |
+| `--lr` | AdamW 学习率 |
+| `--min-avg-vp` / `--min-vp` / `--max-attempts` | 样本质量门槛：整局平均 VP / 最差座位 VP 下限，及启用门槛后的对局尝试上限 |
+| `--shortlist-candidates` | 改用 heuristic shortlist 候选训练；**默认 full-legal**（完整合法候选 + one-hot teacher，样本存 Rust snapshot，训练前实时物化候选集），会显著增加 CPU/内存压力 |
 | `--resume` | 从 `--ckpt` 恢复模型、optimizer 和 scheduler |
 | `--sample-dir` | 复用已有 `imitation-*.pkl`，跳过重新生成 |
+| `--delete-samples-on-success` | 成功结束后删除默认的 `<ckpt>.imitation` 样本目录 |
+| `--enable-policy-eval` | 训练后统计全部 shard 上的 top-k policy 指标 |
 | `--mcts-full-legal` | 仅让结尾 benchmark 使用全合法候选 |
 
 当前源码中 `--max-candidate-batch` 的默认值是 `131072`。GPU 显存有限时应显式设置更小值，例如 `16384`，并从小规模运行开始。
@@ -128,7 +132,7 @@ python python/bootstrap_imitation.py `
 
 ## 样本与 checkpoint
 
-`Sample` 代表一个决策点，可直接保存 state tensor、候选特征与 policy；完整合法候选模仿模式还可保存 Rust state snapshot 和 teacher canonical action，在训练前实时恢复候选集。
+`Sample` 代表一个决策点。默认 full-legal 模式下，样本保存 state tensor 与 Rust state snapshot + teacher canonical action，候选集在训练前从 snapshot 实时物化；`--shortlist-candidates` 模式则直接保存 shortlist 候选特征。候选上的监督包括 policy 分布、rank/winner 终局目标与 econ 目标。
 
 Trainer checkpoint 包含：
 

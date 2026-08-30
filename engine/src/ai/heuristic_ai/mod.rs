@@ -62,7 +62,7 @@ use sell::score_sell_plans;
 /// Candidate source-variant width (v4): for each Build/Network/NetDouble
 /// geometry (and Sell/Develop plan) the generator emits up to this many
 /// variants that differ in free-source identity, so search — not the
-/// generator — decides whose buildings flip. See docs/ai-encoding-v4-design.md §2.
+/// generator — decides whose buildings flip. See docs/archived/ai-encoding-v4-design.md §2.
 pub(crate) const SOURCE_VARIANTS: usize = 2;
 
 pub struct Decision {

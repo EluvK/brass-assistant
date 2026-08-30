@@ -1,7 +1,5 @@
 # 系统架构设计
 
-待补充
-
 ## 总体架构
 
 ```
@@ -108,18 +106,16 @@ Python 侧位于 `python/`，负责训练编排与模型推理，不重复实现
 ```
 python/
 ├─ brass_ai/
-│  ├─ net.py          Policy-Value 网络：具体候选动作打分 + 动作类型辅助头 + 4 玩家价值头
+│  ├─ hierarchical_policy.py  Rust 候选动作/teacher 适配、schema 校验与候选 batch padding
+│  ├─ net.py          Policy-Value 网络：候选动作打分（FiLM+集合上下文）+ rank/winner/econ 头
 │  ├─ rust_mcts.py    `GameState.search_net` 的 PyTorch 回调适配器
-│  ├─ selfplay.py     完整自博弈、访问次数策略目标和终局价值目标采集
-│  ├─ dataset.py      replay 样本的压缩 NPZ 分片读写
+│  ├─ selfplay.py     Sample、imitation 与 MCTS self-play 生成
 │  ├─ train.py        损失函数、Trainer、优化器和学习率调度器
-│  ├─ mp_selfplay.py  常驻 multiprocessing worker 池
 │  ├─ evaluate.py     固定种子、轮换座位的对局评测
+│  ├─ mp_selfplay.py  常驻 multiprocessing worker 池
 │  └─ progress.py     长任务进度与 ETA 输出
-├─ train_mp.py        正式多进程训练入口
 ├─ bootstrap_imitation.py
-│                     用 Rust 启发式教师生成行为克隆预训练数据
-├─ experiments/       benchmark、diagnose、replay_net 等诊断工具
+│                     用 Rust 启发式教师生成行为克隆预训练数据（当前唯一训练入口）
 └─ tests/             Rust bridge、搜索、自博弈、训练和 replay 分片测试
 ```
 
@@ -133,30 +129,25 @@ python/
 
 网络当前直接对每个具体候选动作输出 logit（FiLM 调制 + 候选集上下文）；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。301 维动作特征的逐块布局、每类动作的实测编码示例，以及 policy/rank/winner/econ 网络头的设计见 [ai-action-encoding.md](./ai-action-encoding.md)。
 
-#### 自博弈与训练循环
+#### 训练循环现状
 
-正式路径为：
+当前唯一保留的训练入口是 `bootstrap_imitation.py`（heuristic imitation bootstrap）：
 
 ```
-当前模型权重
-  -> RustISMCTS 自博弈（worker 进程）
-  -> 完整对局 Sample
-  -> replay/iter-xxxxx.npz
-  -> 有界 replay buffer
+Rust heuristic 完整对局
+  -> imitation 样本分片 <ckpt>.imitation/imitation-*.pkl
   -> Trainer (AdamW + CosineAnnealingLR)
-  -> checkpoint + metrics
-  -> 固定种子 benchmark / gate
+  -> checkpoint（含 model/optimizer/scheduler/schema 状态）
+  -> 网络引导 Rust MCTS vs heuristic benchmark
 ```
 
-每个 `Sample` 包含当前视角状态、合法槽掩码、根节点访问次数形成的策略分布、四位玩家的标准化终局 VP 向量，以及经济辅助监督目标。只有正常到达 `game_over` 的完整对局可以入库；达到 `max_moves` 的截断局会被丢弃，不能以当前盘面伪造终局价值。
+默认 full-legal 模式下，每个 `Sample` 保存当前视角状态、Rust state snapshot 与
+teacher canonical action（候选集训练前实时物化），监督目标为候选上的 policy
+分布、rank/winner 终局目标与经济辅助目标。只有正常到达 `game_over` 的完整
+对局可以入库；达到 `max_moves` 的截断局会被丢弃，不能以当前盘面伪造终局价值。
 
-`train_mp.py` 的 `--run_dir` 是一次训练的持久化边界：
+面向网络的长期 self-play 训练循环尚未重建顶层入口。`selfplay.py`
+（`play_game` / `play_batch`）、`mp_selfplay.py`（worker 池）与 `train.py`
+（`run_loop`）保留了可复用的模块能力，重新设计自对弈入口时应基于它们构建。
 
-- `manifest.json`：Rust 特征/策略空间契约和本次参数快照；
-- `replay/iter-xxxxx.npz`：逐轮压缩样本分片；
-- `metrics.jsonl`：每轮样本数、损失、学习率和可选 benchmark；
-- `checkpoints/latest.pt`：模型、AdamW、scheduler 和 epoch 状态。
-
-传入 `--resume` 时，入口从 `checkpoints/latest.pt` 恢复训练器状态，并从 replay 分片重建受 `--replay_size` 限制的缓冲区。worker 默认使用 CPU；主训练进程会在可用时使用 CUDA，避免多个 worker 争用单张 GPU。
-
-旧的纯 Python MCTS 已移除，不能作为训练或评测路径。任何新训练入口必须使用 `RustISMCTS`，任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。state-feature schema 或 action-feature schema 升级会拒绝旧 checkpoint/replay，必须重新采样训练。
+旧的纯 Python MCTS 已移除，不能作为训练或评测路径。任何新训练入口必须使用 `RustISMCTS`，任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。state-feature schema 或 action-feature schema 升级会拒绝旧 checkpoint/样本，必须重新采样训练。
