@@ -14,7 +14,18 @@
 
 启发式 evidence 记录其 shortlist 分数和所有卡牌保留分；完整合法表中不在 shortlist 的动作会明确标为“未被此策略评分”。随机策略只记录实际选择。当前 MCTS evidence 显示用于根候选筛选的启发式先验分，完整的根访问次数/价值统计仍应作为下一步扩展从 `mcts_ai` 导出，而不能伪造为搜索统计。
 
-`python:<worker-config>` 已在 CLI 解析和策略契约中保留，但本版本尚未启动 Python worker；该策略被选择时会明确中止会话。这防止没有定义稳定 stdin/stdout 协议时静默回退为其他策略。后续 worker 应采用逐行 JSON，返回 canonical 选择及网络/ISMCTS evidence，并对超时、进程退出和非法选择返回可诊断失败。
+`python:<worker-config>` 通过 `PythonWorkerStrategy` 实现：每个此类座位启动一个独立的 Python worker 子进程（`python -u -m brass_ai.replay_worker <worker-config>`，`PYTHONPATH` 指向仓库 `python/`），worker 持有一个网络 checkpoint 并通过 stdin/stdout 的逐行 JSON 协议应答：
+
+- 启动握手：worker 加载 checkpoint 后输出 `{"type":"ready","name":...,"meta":{ckpt, mode, sims, device, schema 版本}}`；Rust 在会话创建时等待握手，坏 checkpoint 或解释器缺失会在 HTTP 服务启动前报错退出。
+- 决策请求：Rust 发送 `{"type":"choose","request_id":N,"snapshot":"<base64>","legal":[...]}`。snapshot 采用与 pyo3 `GameState.snapshot()` 完全相同的字节格式（magic + version + `snapshot_bytes`），worker 用 `GameState.from_snapshot` 无损还原完整局面（含 RNG 与全部手牌）。
+- 决策响应：`{"type":"choice","request_id":N,"canonical":...,"evidence":{mode, policy, visits, root_value}}`；单次请求失败时返回 `{"type":"error",...}` 并保持存活。
+- 超时（`--worker-timeout`，默认 300 秒）、进程退出和返回不在合法集中的 canonical 均产生可诊断的会话失败。
+
+worker 支持 `--mode mcts`（默认，Rust ISMCTS + 网络引导，按根访问数 argmax 决策，等价 temperature=0）与 `--mode policy`（网络对全部合法候选一次前向后直接 argmax）。两种模式都会额外做一次全候选前向，返回覆盖全部合法动作的 policy 概率与当前玩家的 value 头估计。
+
+`DecisionTrace` 对网络座位使用 `evidence_kind` 为 `net-mcts` / `net-policy` 的 evidence：完整合法表按结构操作逐行给出，`score` 列在 mcts 模式下为根访问次数（未被搜索展开的动作明确标注），policy 概率始终出现在 note 中；`root_value` 为当前玩家的网络价值估计。原生策略的 `root_value` 为 `None`。
+
+网络座位不做确定性承诺（GPU/浮点非确定性）；"固定 seed 保持确定性"的回归约束仅覆盖原生策略。
 
 ## HTTP 界面
 

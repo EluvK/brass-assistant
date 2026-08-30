@@ -884,6 +884,12 @@ function renderActions() {
     return;
   }
 
+  const evidenceKind = detail?.trace?.evidence_kind || '';
+  const scoreHeader =
+    evidenceKind === 'net-mcts' ? 'Root visits'
+    : evidenceKind === 'net-policy' ? 'Policy prob'
+    : 'Strategy score';
+
   q('#actions-head').innerHTML = `
     <tr>
       <th class="sortable" onclick="sortActions('action')">
@@ -891,7 +897,7 @@ function renderActions() {
       </th>
       <th>Canonical</th>
       <th class="sortable" onclick="sortActions('score')">
-        Strategy score<span id="sort-score" class="sort-icon"></span>
+        ${scoreHeader}<span id="sort-score" class="sort-icon"></span>
       </th>
       <th>Card</th>
       <th>Card score</th>
@@ -2126,7 +2132,7 @@ function render() {
                 `P${i} ${p.vp}→${step.after.players[i]?.vp ?? p.vp}`
               )
               .join('，')}。`
-          : `${step.trace.evidence_kind} · ${step.result}`
+          : `${step.trace.evidence_kind}${typeof step.trace.root_value === 'number' ? ` · 根价值 ${step.trace.root_value.toFixed(3)}` : ''} · ${step.result}`
         : selected >= 0
           ? 'Loading step…'
           : 'Select a generated step.'

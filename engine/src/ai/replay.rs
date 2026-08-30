@@ -71,6 +71,8 @@ pub struct DecisionTrace {
     pub evidence_kind: String,
     pub candidates: Vec<ActionDto>,
     pub card_keep_scores: Vec<CardKeepDto>,
+    /// Network value estimate for the acting player (python worker seats only).
+    pub root_value: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,10 +173,11 @@ fn trace_for(
         evidence_kind: kind.into(),
         candidates,
         card_keep_scores: card_scores(state),
+        root_value: None,
     }
 }
 
-fn move_card_name(state: &GameState, mv: &ResolvedMove) -> Option<String> {
+pub(crate) fn move_card_name(state: &GameState, mv: &ResolvedMove) -> Option<String> {
     let index = match mv {
         ResolvedMove::Scout { .. } => return None,
         ResolvedMove::Build { card_index, .. }
@@ -241,7 +244,8 @@ impl StrategyAdapter for NativeStrategy {
                 Ok((decision.mv, trace))
             }
             StrategySpec::Python { worker_config } => Err(format!(
-                "python worker {worker_config:?} is not configured; this replay session stopped before executing a move"
+                "python seat {worker_config:?} was not routed to a worker process; \
+                 ReplaySession must build PythonWorkerStrategy for it"
             )),
         }
     }
@@ -501,6 +505,21 @@ pub struct ReplayStep {
     pub trace: DecisionTrace,
 }
 
+/// Settings for `python:` worker seats. Native seats ignore them.
+#[derive(Debug, Clone)]
+pub struct WorkerSettings {
+    pub python_bin: String,
+    pub timeout_secs: u64,
+}
+impl Default for WorkerSettings {
+    fn default() -> Self {
+        Self {
+            python_bin: "python".into(),
+            timeout_secs: 300,
+        }
+    }
+}
+
 pub struct ReplaySession {
     pub seed: u64,
     pub strategies: Vec<String>,
@@ -512,6 +531,14 @@ pub struct ReplaySession {
 }
 impl ReplaySession {
     pub fn new(seed: u64, players: usize, specs: Vec<StrategySpec>) -> Result<Self, String> {
+        Self::new_with_worker(seed, players, specs, WorkerSettings::default())
+    }
+    pub fn new_with_worker(
+        seed: u64,
+        players: usize,
+        specs: Vec<StrategySpec>,
+        worker: WorkerSettings,
+    ) -> Result<Self, String> {
         if !(2..=4).contains(&players) {
             return Err("players must be between 2 and 4".into());
         }
@@ -522,14 +549,22 @@ impl ReplaySession {
             ));
         }
         let strategies = specs.iter().map(StrategySpec::label).collect();
-        let adapters = specs
-            .into_iter()
-            .enumerate()
-            .map(|(seat, spec)| {
-                Box::new(NativeStrategy::new(spec, seed ^ (seat as u64 + 1)))
-                    as Box<dyn StrategyAdapter>
-            })
-            .collect();
+        let mut adapters: Vec<Box<dyn StrategyAdapter>> = Vec::with_capacity(specs.len());
+        for (seat, spec) in specs.into_iter().enumerate() {
+            match spec {
+                StrategySpec::Python { worker_config } => {
+                    adapters.push(Box::new(crate::python_worker::PythonWorkerStrategy::spawn(
+                        &worker.python_bin,
+                        &worker_config,
+                        std::time::Duration::from_secs(worker.timeout_secs),
+                    )?))
+                }
+                spec => adapters.push(Box::new(NativeStrategy::new(
+                    spec,
+                    seed ^ (seat as u64 + 1),
+                ))),
+            }
+        }
         let state = GameState::new(ChaCha12Rng::seed_from_u64(seed), players);
         let snapshots = vec![state.snapshot_bytes()?];
         Ok(Self {
@@ -624,6 +659,7 @@ impl ReplaySession {
                     evidence_kind: "era-end".into(),
                     candidates: Vec::new(),
                     card_keep_scores: Vec::new(),
+                    root_value: None,
                 },
             });
             self.snapshots.push(self.state.snapshot_bytes()?);

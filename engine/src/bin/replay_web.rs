@@ -2,7 +2,9 @@
 //!
 //! The HTTP accept loop never owns `ReplaySession`: a single worker thread
 //! serializes game advancement and publishes immutable status snapshots.
-use _engine::replay::{ReplaySession, ReplayStep, ReplayStepKind, StateDto, StrategySpec};
+use _engine::replay::{
+    ReplaySession, ReplayStep, ReplayStepKind, StateDto, StrategySpec, WorkerSettings,
+};
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -215,6 +217,8 @@ fn main() -> Result<(), String> {
     let mut players = 4usize;
     let mut port = 8787u16;
     let mut sims = 500usize;
+    let mut python_bin = "python".to_string();
+    let mut worker_timeout = 300u64;
     let mut policy_args = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -243,9 +247,15 @@ fn main() -> Result<(), String> {
                     .parse()
                     .map_err(|_| "bad --sims")?
             }
+            "--python-bin" => python_bin = value(&mut args, "--python-bin")?,
+            "--worker-timeout" => {
+                worker_timeout = value(&mut args, "--worker-timeout")?
+                    .parse()
+                    .map_err(|_| "bad --worker-timeout")?
+            }
             "--help" | "-h" => {
                 println!(
-                    "replay-web --seed 7 --players 4 --player heuristic [--player random ...] [--sims 500] [--port 8787]"
+                    "replay-web --seed 7 --players 4 --player heuristic [--player \"python:--ckpt net.pt --sims 200\" ...] [--sims 500] [--port 8787] [--python-bin python] [--worker-timeout 300]"
                 );
                 return Ok(());
             }
@@ -255,11 +265,20 @@ fn main() -> Result<(), String> {
     if policy_args.is_empty() {
         policy_args = vec!["heuristic".into(); players];
     }
+    if policy_args.len() < players {
+        policy_args.extend(vec!["heuristic".into(); players - policy_args.len()]);
+    }
     let specs = policy_args
         .iter()
         .map(|p| StrategySpec::parse(p, sims))
         .collect::<Result<Vec<_>, _>>()?;
-    let (tx, status, details) = start_session_worker(ReplaySession::new(seed, players, specs)?);
+    let worker = WorkerSettings {
+        python_bin,
+        timeout_secs: worker_timeout,
+    };
+    let (tx, status, details) = start_session_worker(ReplaySession::new_with_worker(
+        seed, players, specs, worker,
+    )?);
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|e| format!("cannot bind 127.0.0.1:{port}: {e}"))?;
     println!("Replay web session: http://127.0.0.1:{port}/ (Ctrl+C exits; session is memory-only)");

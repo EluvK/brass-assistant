@@ -10,7 +10,7 @@ pub mod game_state;
 pub mod gameplay;
 pub mod model;
 
-pub use ai::{heuristic_ai, mcts_ai, nn_mcts, random_ai, replay};
+pub use ai::{heuristic_ai, mcts_ai, nn_mcts, python_worker, random_ai, replay};
 pub use bridge::{encode, move_codec, pymod, replay_fmt};
 pub use game_state::{graph, income, state};
 pub use gameplay::{engine, game_loop, rules, scoring};

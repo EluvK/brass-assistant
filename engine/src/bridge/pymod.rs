@@ -35,8 +35,11 @@ pub struct PyGame {
     state: GameState,
 }
 
-const SNAPSHOT_MAGIC: &[u8; 4] = b"BASS";
-const SNAPSHOT_VERSION: u8 = 3;
+/// Wire format shared with the Python replay worker: `GameState.snapshot()`
+/// bytes are magic + version + `snapshot_bytes`, and `GameState.from_snapshot`
+/// is the only sanctioned restore path.
+pub(crate) const SNAPSHOT_MAGIC: &[u8; 4] = b"BASS";
+pub(crate) const SNAPSHOT_VERSION: u8 = 3;
 
 #[pymethods]
 impl PyGame {

@@ -51,7 +51,15 @@ cargo run --release -p brass-engine --bin replay_web -- --seed 7 --players 4 \
 
 命令启动后访问终端打印的 `http://127.0.0.1:8787/`。页面初始暂停，可单步、连续运行、暂停刷新和跳转已生成的时间线步骤。会话完全在 CLI 进程内存中，关闭浏览器或按 `Ctrl+C` 后不会留下回放文件。
 
-不传 `--player` 时，所有座位默认使用 heuristic。`--sims` 控制 MCTS 每步 simulation 数（默认 `500`）；`--port` 改变 loopback 端口。座位策略可为 `heuristic`、`random`、`mcts` 或预留的 `python:<worker-config>`。Python worker 协议尚未实现，使用该策略会以可见的诊断原因停止会话，而不会静默替换策略。
+不传 `--player` 时，所有座位默认使用 heuristic。`--sims` 控制 MCTS 每步 simulation 数（默认 `500`）；`--port` 改变 loopback 端口。座位策略可为 `heuristic`、`random`、`mcts` 或 `python:<worker-config>`（网络 checkpoint 座位）。
+
+网络座位示例（先确保 `.venv` 中已安装 `brass_ai._engine` 扩展）：
+
+```sh
+cargo run --release -p brass-engine --bin replay_web -- --seed 7 --player "python:--ckpt checkpoints/bootstrap-0830-smoke.pt --sims 200 --device cpu"
+```
+
+`python:` 之后的参数原样传给 `python -m brass_ai.replay_worker`：`--ckpt` 为训练 checkpoint（必填），`--mode mcts|policy`（默认 `mcts`，前者为 Rust ISMCTS + 网络引导并按根访问数 argmax，后者为网络对全部合法候选一次前向后直接 argmax），`--sims`（默认 `128`）、`--device`（默认 cuda 可用则 cuda）。会话启动时即加载 checkpoint 并等待 worker 握手，加载失败会直接报错退出；每步决策受 `--worker-timeout`（默认 `300` 秒）约束，`--python-bin` 可指定解释器（默认 `python`）。网络座位的动作表会展示根访问次数、策略概率与当前玩家价值估计（`net-mcts` 证据），网络座位不做确定性承诺。
 
 ## `sweep_scores`：批量评测
 
