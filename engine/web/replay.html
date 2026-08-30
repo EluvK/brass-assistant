@@ -958,7 +958,9 @@ function renderActions() {
       <td>${a.score ?? 'not evaluated'}</td>
       <td>${esc(a.card || 'scout/discard set')}</td>
       <td>${a.card_score ?? 'not evaluated'}</td>
-      <td>${a.selected ? 'selected' : esc(a.note || '')}</td>
+      <td>${a.selected
+        ? `selected${a.note ? ` · ${esc(a.note)}` : ''}`
+        : esc(a.note || '')}</td>
     </tr>
   `).join('');
 }
@@ -1136,6 +1138,17 @@ function getSlotLayout(count) {
   };
 }
 
+// 煤/铁/酒的资源耗尽即翻面，二者互斥；其余产业无资源概念，只标注翻面。
+function slotInfoText(slot) {
+  if (!slot) return '';
+
+  if (['煤矿', '铁厂', '啤酒厂'].includes(slot.industry)) {
+    return (slot.resources ?? 0) > 0 ? `资源 ${slot.resources}` : '已翻面';
+  }
+
+  return slot.flipped ? '已翻面' : '';
+}
+
 function slotMarkup(slot,index,layout) {
   const [x,y] = layout.positions[index];
 
@@ -1158,7 +1171,7 @@ function slotMarkup(slot,index,layout) {
 
   const resource =
     occupied
-      ? `资源 ${slot.resources ?? 0}`
+      ? slotInfoText(slot)
       : '';
 
   const allowed =
@@ -1802,7 +1815,7 @@ function drawBoard(
       if (info) {
         info.textContent =
           occupied
-            ? `资源 ${slot.resources ?? 0}`
+            ? slotInfoText(slot)
             : '';
       }
 
@@ -1887,7 +1900,7 @@ function drawBoard(
     if (info) {
       info.textContent =
         occupied
-          ? `资源 ${farmTile.resources ?? 0}`
+          ? slotInfoText(farmTile)
           : '';
     }
 
