@@ -204,8 +204,18 @@ fn new_network_reach(state: &GameState, pid: usize, conns: &[usize]) -> (u32, bo
 /// `card_index` is an execution reference only. Card semantics are read from
 /// the pre-move current player's hand so the network never learns hand order.
 pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
-    let mut out = vec![0.0; ACTION_FEATURE_DIM];
-    one_hot(&mut out, ACTION, 7, mv.action().index());
+    let mut out = Vec::with_capacity(ACTION_FEATURE_DIM);
+    encode_move_into(state, mv, &mut out);
+    out
+}
+
+/// Same as [`encode_move`], writing into a caller-owned buffer that is
+/// cleared and reused across calls (hot path: one row per legal candidate).
+pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>) {
+    out.clear();
+    out.resize(ACTION_FEATURE_DIM, 0.0);
+    let out = &mut out[..];
+    one_hot(out, ACTION, 7, mv.action().index());
 
     // Drains accumulate across every branch, then land in DRAIN / MERCHANT_BEER
     // and drive the flip-consequence features.
@@ -222,10 +232,10 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
             iron,
             card_index,
         } => {
-            add_card(&mut out, state, *card_index);
-            one_hot(&mut out, LOCATION, 27, *loc as usize);
-            one_hot(&mut out, CITY_SLOT, 4, *slot_index);
-            industry(&mut out, INDUSTRY_1, *ind);
+            add_card(out, state, *card_index);
+            one_hot(out, LOCATION, 27, *loc as usize);
+            one_hot(out, CITY_SLOT, 4, *slot_index);
+            industry(out, INDUSTRY_1, *ind);
             let mut market_coal = 0u32;
             let mut market_iron = 0u32;
             for source in coal {
@@ -290,8 +300,8 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
             coal,
             card_index,
         } => {
-            add_card(&mut out, state, *card_index);
-            one_hot(&mut out, CONNECTION_1, 39, *conn_id);
+            add_card(out, state, *card_index);
+            one_hot(out, CONNECTION_1, 39, *conn_id);
             out[SUMMARY + 7] = 1.0;
             let mut market_coal = 0u32;
             if let Some(source) = coal {
@@ -314,9 +324,9 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
             beer,
             card_index,
         } => {
-            add_card(&mut out, state, *card_index);
-            one_hot(&mut out, CONNECTION_1, 39, *conn1);
-            one_hot(&mut out, CONNECTION_2, 39, *conn2);
+            add_card(out, state, *card_index);
+            one_hot(out, CONNECTION_1, 39, *conn1);
+            one_hot(out, CONNECTION_2, 39, *conn2);
             out[SUMMARY] = 1.0;
             out[SUMMARY + 2] = 1.0;
             out[SUMMARY + 8] = 1.0;
@@ -339,10 +349,10 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
             iron,
             card_index,
         } => {
-            add_card(&mut out, state, *card_index);
-            industry(&mut out, INDUSTRY_1, *ind1);
+            add_card(out, state, *card_index);
+            industry(out, INDUSTRY_1, *ind1);
             if let Some(ind) = ind2 {
-                industry(&mut out, INDUSTRY_2, *ind);
+                industry(out, INDUSTRY_2, *ind);
             }
             let mut market_iron = 0u32;
             for source in iron {
@@ -361,14 +371,14 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
             free_develop,
             card_index,
         } => {
-            add_card(&mut out, state, *card_index);
+            add_card(out, state, *card_index);
             out[SUMMARY + 6] = keys.len() as f32 / 4.0;
             out[CONSEQUENCE + CONS_SELL_TILES] = keys.len() as f32 / 4.0;
             for &key in keys {
-                one_hot(&mut out, SELL_KEY, 47, key);
+                one_hot(out, SELL_KEY, 47, key);
             }
             for &merchant in merchant_indices {
-                one_hot(&mut out, MERCHANT, 9, merchant);
+                one_hot(out, MERCHANT, 9, merchant);
             }
             // The engine's deterministic beer payment plan is explicit input:
             // brewery beer drains cells, merchant beer drains merchants. The
@@ -379,17 +389,17 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
                 }
             }
             if let Some(ind) = free_develop {
-                industry(&mut out, INDUSTRY_1, *ind);
+                industry(out, INDUSTRY_1, *ind);
                 out[SUMMARY + 9] = 1.0;
                 out[CONSEQUENCE + CONS_FREE_DEVELOP] = 1.0;
             }
         }
         ResolvedMove::Loan { card_index } | ResolvedMove::Pass { card_index } => {
-            add_card(&mut out, state, *card_index)
+            add_card(out, state, *card_index)
         }
         ResolvedMove::Scout { card_indices } => {
             for &index in card_indices {
-                add_card(&mut out, state, index);
+                add_card(out, state, index);
             }
             out[SUMMARY + 10] = 1.0;
         }
@@ -410,7 +420,6 @@ pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
     let (flips_own, flips_opp) = count_flips(state, &drain, pid);
     out[CONSEQUENCE + CONS_FLIPS_OWN] = flips_own as f32 / 4.0;
     out[CONSEQUENCE + CONS_FLIPS_OPP] = flips_opp as f32 / 4.0;
-    out
 }
 
 #[cfg(test)]

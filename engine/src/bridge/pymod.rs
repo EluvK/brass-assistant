@@ -7,14 +7,24 @@
 //!     .round / .game_over / .current_player_money
 //!     .legal_moves() -> legacy fully resolved executable moves
 //!     .legal_operations() -> structural operations with card candidates
-//!     .legal_candidates() -> list[(canonical:str, features: float32[301])]
+//!     .legal_candidates() -> (canonicals: list[str], features: f32 (N,301))
+//!     .heuristic_candidates() -> (features f32 (K,301), scores, card_scores,
+//!                                 canonical, teacher_index, score, card_score,
+//!                                 count)  # numpy arrays at the boundary
+//!     .materialize_snapshot(snapshot, teacher_canonical) -> full training
+//!         sample arrays: state tensors + uint8 quarter-step candidates +
+//!         one-hot equivalence-class policy (see the method docs)
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
 //!     .determinize() -> GameState            # opponent-hand sampling
 //!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
 //!     .choose_heuristic() -> (canonical, describe, score)
 //!   module: action/state feature schemas and state-graph topology constants
+//!
+//! Bulk float payloads cross the boundary as numpy arrays, never as Python
+//! lists: boxing one f32 per PyFloat dominated the materialization profile
+//! (~100x the Rust compute for a full-legal candidate matrix).
 
-use numpy::{PyArray1, PyArray2};
+use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -115,6 +125,117 @@ impl PyGame {
         restore_snapshot(&snapshot)
     }
 
+    /// One-call materialization of a snapshot-backed training sample.
+    ///
+    /// Restores the snapshot, then computes everything
+    /// `selfplay.materialize_sample` needs in Rust:
+    ///   (pid, era, board, links, global, own_hand, opp_hands,
+    ///    candidates u8 (N,301), teacher_index, policy f32 (N,))
+    ///
+    /// * `candidates` rows are the v4 action features packed as lossless
+    ///   uint8 quarter-steps (x4), matching `hierarchical_policy.
+    ///   compress_candidate_features`; a non-quarter-step value raises.
+    /// * `policy` is the teacher one-hot spread uniformly over the complete
+    ///   v4-observable equivalence class (rows identical to the teacher row),
+    ///   mirroring `hierarchical_policy.teacher_equivalence_policy`.
+    /// * `teacher_index` is the position of `teacher_canonical`; ValueError
+    ///   when it is not a legal concrete move of the restored state.
+    #[allow(clippy::type_complexity)]
+    #[staticmethod]
+    fn materialize_snapshot<'py>(
+        py: Python<'py>,
+        snapshot: Vec<u8>,
+        teacher_canonical: &str,
+    ) -> PyResult<(
+        usize,
+        u8,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray1<f32>>,
+        Bound<'py, PyArray1<f32>>,
+        Bound<'py, PyArray1<f32>>,
+        Bound<'py, PyArray2<u8>>,
+        usize,
+        Bound<'py, PyArray1<f32>>,
+    )> {
+        let dim = crate::bridge::action_features::ACTION_FEATURE_DIM;
+        let PyGame { state } = restore_snapshot(&snapshot)?;
+        let pid = state.current_player_id();
+        let era = match state.era {
+            crate::data::Era::Canal => 0u8,
+            crate::data::Era::Rail => 1u8,
+        };
+        let mut work = state;
+        let legal = legal_resolved_moves(&mut work);
+        if legal.is_empty() {
+            return Err(PyValueError::new_err("state has no legal candidates"));
+        }
+        let n = legal.len();
+        // Decode the teacher canonical once and match moves structurally
+        // (string-encoding every candidate just for the lookup would dominate
+        // the whole materialization cost).
+        let teacher_mv = move_codec::decode(teacher_canonical)
+            .map_err(|e| PyValueError::new_err(format!("decode: {e}")))?;
+        let teacher_index = legal
+            .iter()
+            .position(|mv| *mv == teacher_mv)
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "replay teacher action is not legal in its restored GameState",
+                )
+            })?;
+
+        // Encode every candidate row and quantize to uint8 quarter-steps.
+        let mut packed = vec![0u8; n * dim];
+        let mut row = Vec::with_capacity(dim);
+        for (i, mv) in legal.iter().enumerate() {
+            crate::bridge::action_features::encode_move_into(&work, mv, &mut row);
+            let dst = &mut packed[i * dim..(i + 1) * dim];
+            for (o, &v) in dst.iter_mut().zip(row.iter()) {
+                let scaled = v * 4.0;
+                let r = scaled.round();
+                if !(0.0..=255.0).contains(&r) || (scaled - r).abs() > 1e-3 {
+                    return Err(PyValueError::new_err(format!(
+                        "action features contain values outside the quarter-step schema: {v}"
+                    )));
+                }
+                *o = r as u8;
+            }
+        }
+
+        // Teacher mass spread uniformly over the identical-feature class.
+        let teacher_row = &packed[teacher_index * dim..(teacher_index + 1) * dim];
+        let mut class_size = 0usize;
+        let mut policy = vec![0.0f32; n];
+        for (i, member) in policy.iter_mut().enumerate() {
+            if &packed[i * dim..(i + 1) * dim] == teacher_row {
+                *member = 1.0;
+                class_size += 1;
+            }
+        }
+        for member in policy.iter_mut() {
+            if *member > 0.0 {
+                *member /= class_size as f32;
+            }
+        }
+
+        let t = encode::state_to_tensor(&work, pid);
+        let board = PyArray1::from_vec(py, t.board).reshape((encode::BOARD_PLANES, encode::BOARD_CELLS))?;
+        let links = PyArray1::from_vec(py, t.links).reshape((encode::LINK_PLANES, encode::LINK_CELLS))?;
+        Ok((
+            pid,
+            era,
+            board,
+            links,
+            PyArray1::from_vec(py, t.global),
+            PyArray1::from_vec(py, t.own_hand),
+            PyArray1::from_vec(py, t.opp_hands),
+            PyArray1::from_vec(py, packed).reshape((n, dim))?,
+            teacher_index,
+            PyArray1::from_vec(py, policy),
+        ))
+    }
+
     /// List of concrete legal moves as (node-local action_id, canonical,
     /// describe) triples.
     fn legal_moves(&self) -> Vec<(usize, String, String)> {
@@ -174,70 +295,132 @@ impl PyGame {
     /// Concrete executable legal moves with structured action features
     /// (schema version exposed at module level).
     /// Every returned row is a complete action the engine can apply.
-    fn legal_candidates(&self) -> Vec<(String, Vec<f32>)> {
+    /// Returns `(canonicals, features)` with `features` an f32 ndarray of
+    /// shape `(N, ACTION_FEATURE_DIM)`, row i aligned to `canonicals[i]`.
+    fn legal_candidates<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Vec<String>, Bound<'py, PyArray2<f32>>)> {
         let mut state = self.state.clone();
-        legal_resolved_moves(&mut state)
-            .into_iter()
-            .map(|mv| {
-                let canonical = move_codec::encode(&mv);
-                let features = crate::bridge::action_features::encode_move(&state, &mv);
-                (canonical, features)
-            })
-            .collect()
+        let legal = legal_resolved_moves(&mut state);
+        let dim = crate::bridge::action_features::ACTION_FEATURE_DIM;
+        let mut canonicals = Vec::with_capacity(legal.len());
+        let mut flat = vec![0.0f32; legal.len() * dim];
+        let mut row = Vec::with_capacity(dim);
+        for (i, mv) in legal.iter().enumerate() {
+            canonicals.push(move_codec::encode(mv));
+            crate::bridge::action_features::encode_move_into(&state, mv, &mut row);
+            flat[i * dim..(i + 1) * dim].copy_from_slice(&row);
+        }
+        let features = PyArray1::from_vec(py, flat).reshape((legal.len(), dim))?;
+        Ok((canonicals, features))
     }
 
     /// Return a bounded, scored teacher shortlist and the 2-ply selected move.
     /// Training does not retain every legal concrete action: that would make a
     /// large replay buffer grow with the full combinatorial action space. The
     /// MCTS inference path still evaluates every legal candidate.
-    fn heuristic_candidates(
+    ///
+    /// Returns `(features (K,301), scores (K,), card_scores (K,), canonical,
+    /// teacher_index, score, card_score, count)`; the first three are numpy
+    /// arrays (row i aligned with candidate i, `count == features.shape[0]`).
+    #[allow(clippy::type_complexity)]
+    fn heuristic_candidates<'py>(
         &self,
-    ) -> (Vec<f32>, Vec<f32>, Vec<f32>, String, usize, f64, f64, usize) {
-        let mut heuristic_state = self.state.clone();
-        let decision = heuristic_ai::choose_action(&mut heuristic_state);
+        py: Python<'py>,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray1<f32>>,
+        Bound<'py, PyArray1<f32>>,
+        String,
+        usize,
+        f64,
+        f64,
+        usize,
+    )> {
+        let dim = crate::bridge::action_features::ACTION_FEATURE_DIM;
+        // `choose_action` and `candidate_actions_k` only mutate interior
+        // caches, so one scratch clone serves both calls.
+        let mut work = self.state.clone();
+        let decision = heuristic_ai::choose_action(&mut work);
         let teacher_canonical = move_codec::encode(&decision.mv);
-        let mut scoring_state = self.state.clone();
-        let scored = heuristic_ai::candidate_actions_k(&mut scoring_state, 4);
-        let mut features = Vec::new();
-        let mut scores = Vec::new();
-        let mut card_scores = Vec::new();
-        let mut canonical_candidates = Vec::new();
+        let scored = heuristic_ai::candidate_actions_k(&mut work, 4);
+        let mut canonical_candidates: Vec<String> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for scored_move in scored {
+        // When the deduped shortlist misses the teacher move, append it with
+        // the 2-ply decision's own scores (distinct from the shortlist's).
+        let mut teacher_appended = true;
+        for scored_move in &scored {
             let canonical = move_codec::encode(&scored_move.mv);
+            if canonical == teacher_canonical {
+                teacher_appended = false;
+            }
             if seen.insert(canonical.clone()) {
-                features.extend(crate::bridge::action_features::encode_move(
-                    &scoring_state,
-                    &scored_move.mv,
-                ));
-                scores.push(scored_move.score as f32);
-                card_scores.push(scored_move.card_score as f32);
                 canonical_candidates.push(canonical);
             }
+        }
+        if teacher_appended {
+            canonical_candidates.push(teacher_canonical.clone());
         }
         let teacher_index = canonical_candidates
             .iter()
             .position(|canonical| canonical == &teacher_canonical)
-            .unwrap_or_else(|| {
-                features.extend(crate::bridge::action_features::encode_move(
-                    &heuristic_state,
+            .unwrap_or(0);
+        let count = canonical_candidates.len();
+
+        // One encode pass over the deduped candidate order, matching the
+        // scores of the first scored move behind each canonical.
+        let mut flat = vec![0.0f32; count * dim];
+        let mut scores = vec![0.0f32; count];
+        let mut card_scores = vec![0.0f32; count];
+        let mut row = Vec::with_capacity(dim);
+        {
+            let mut fill = |slot: usize,
+                            mv: &crate::rules::ResolvedMove,
+                            score: f64,
+                            card_score: f64,
+                            state: &GameState| {
+                crate::bridge::action_features::encode_move_into(state, mv, &mut row);
+                flat[slot * dim..(slot + 1) * dim].copy_from_slice(&row);
+                scores[slot] = score as f32;
+                card_scores[slot] = card_score as f32;
+            };
+            let mut slot = 0usize;
+            for scored_move in &scored {
+                let canonical = move_codec::encode(&scored_move.mv);
+                if seen.remove(&canonical) {
+                    fill(
+                        slot,
+                        &scored_move.mv,
+                        scored_move.score,
+                        scored_move.card_score,
+                        &work,
+                    );
+                    slot += 1;
+                }
+            }
+            if teacher_appended {
+                fill(
+                    count - 1,
                     &decision.mv,
-                ));
-                scores.push(decision.score as f32);
-                card_scores.push(decision.card_score as f32);
-                canonical_candidates.push(teacher_canonical.clone());
-                canonical_candidates.len() - 1
-            });
-        (
+                    decision.score,
+                    decision.card_score,
+                    &work,
+                );
+            }
+        }
+
+        let features = PyArray1::from_vec(py, flat).reshape((count, dim))?;
+        Ok((
             features,
-            scores,
-            card_scores,
+            PyArray1::from_vec(py, scores),
+            PyArray1::from_vec(py, card_scores),
             teacher_canonical,
             teacher_index,
             decision.score,
             decision.card_score,
-            canonical_candidates.len(),
-        )
+            count,
+        ))
     }
 
     /// Network-guided ISMCTS search with the tree in Rust (`nn_mcts`).
@@ -556,13 +739,69 @@ fn reshape2<'py>(
     cols: usize,
 ) -> PyResult<Bound<'py, PyArray2<f32>>> {
     debug_assert_eq!(data.len(), rows * cols);
-    let vv: Vec<Vec<f32>> = data.chunks_exact(cols).map(|c| c.to_vec()).collect();
-    Ok(PyArray2::from_vec2(py, &vv)?)
+    PyArray1::from_vec(py, data.to_vec()).reshape((rows, cols))
+}
+
+/// Rust port of `hierarchical_policy.coalesce_equivalent_policy`: spread each
+/// concrete-policy mass uniformly across rows with identical features. The
+/// hot self-play path coalesces a full-legal candidate matrix every move; the
+/// numpy twin allocates a boolean class mask per non-zero class.
+#[pyfunction]
+fn coalesce_equivalent_policy<'py>(
+    py: Python<'py>,
+    features: &Bound<'py, PyArray2<f32>>,
+    policy: &Bound<'py, PyArray1<f32>>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let dim = crate::bridge::action_features::ACTION_FEATURE_DIM;
+    let feats = features.readonly();
+    let array = feats.as_slice().map_err(|_| {
+        PyValueError::new_err("candidate features must be contiguous")
+    })?;
+    let target = policy.readonly();
+    let target = target
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("policy target must be contiguous"))?;
+    let n = array.len() / dim;
+    if array.len() != n * dim || target.len() != n {
+        return Err(PyValueError::new_err(
+            "invalid candidate features for policy target",
+        ));
+    }
+    if target.iter().any(|&v| !v.is_finite() || v < 0.0) {
+        return Err(PyValueError::new_err("invalid policy target"));
+    }
+    let total: f32 = target.iter().sum();
+    if total <= 0.0 {
+        return Err(PyValueError::new_err(
+            "policy target must contain positive mass",
+        ));
+    }
+    let mut out = vec![0.0f32; n];
+    let mut pending: Vec<usize> = (0..n).filter(|&i| target[i] > 0.0).collect();
+    let mut members: Vec<usize> = Vec::new();
+    while let Some(&index) = pending.first() {
+        let class_row = &array[index * dim..(index + 1) * dim];
+        members.clear();
+        let mut mass = 0.0f32;
+        for i in 0..n {
+            if &array[i * dim..(i + 1) * dim] == class_row {
+                mass += target[i];
+                members.push(i);
+            }
+        }
+        let share = mass / members.len() as f32 / total;
+        for &i in &members {
+            out[i] = share;
+        }
+        pending.retain(|i| !members.contains(i));
+    }
+    Ok(PyArray1::from_vec(py, out))
 }
 
 #[pymodule(name = "_engine")]
 fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
+    m.add_function(wrap_pyfunction!(coalesce_equivalent_policy, m)?)?;
     m.add(
         "ACTION_FEATURE_DIM",
         crate::bridge::action_features::ACTION_FEATURE_DIM,

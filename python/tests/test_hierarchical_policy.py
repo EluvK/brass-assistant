@@ -56,8 +56,11 @@ def test_snapshot_replay_materializes_current_full_legal_candidates():
     )
     restored = materialize_sample(sample)
     canonical, features = encode_legal_candidates(state)
+    assert restored.candidates.dtype == np.uint8  # Rust-side quarter-step packing
     assert restored.candidates.shape == features.numpy().shape
-    np.testing.assert_array_equal(restored.candidates, features.numpy())
+    np.testing.assert_array_equal(
+        restored.candidates.astype(np.float32) / 4.0, features.numpy()
+    )
     assert restored.policy.sum() == 1.0
     teacher_index = canonical.index(teacher)
     equivalent = np.all(features.numpy() == features.numpy()[teacher_index], axis=1)

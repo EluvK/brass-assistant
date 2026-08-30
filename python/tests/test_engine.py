@@ -120,10 +120,11 @@ def test_tensor_bounds_with_built_tiles():
 
 def test_legal_candidates_are_complete_and_executable():
     g = be.GameState(seed=21, players=4)
-    candidates = g.legal_candidates()
-    assert candidates
-    for canonical, features in candidates:
-        assert len(features) == be.ACTION_FEATURE_DIM
+    canonicals, features = g.legal_candidates()
+    assert canonicals
+    assert features.shape == (len(canonicals), be.ACTION_FEATURE_DIM)
+    for i, canonical in enumerate(canonicals):
+        assert features[i].shape == (be.ACTION_FEATURE_DIM,)
         g.clone().apply_move(canonical)
 
 
@@ -137,7 +138,10 @@ def test_snapshot_restores_state_and_full_legal_candidates():
     assert restored.era == g.era
     assert restored.round == g.round
     np.testing.assert_array_equal(restored.state_to_tensor()[0], g.state_to_tensor()[0])
-    assert restored.legal_candidates() == g.legal_candidates()
+    canonicals, features = g.legal_candidates()
+    restored_canonicals, restored_features = restored.legal_candidates()
+    assert restored_canonicals == canonicals
+    np.testing.assert_array_equal(restored_features, features)
 
 
 def test_ai_choices_return_legal_moves():

@@ -28,7 +28,6 @@ from .hierarchical_policy import (
     encode_legal_candidates,
     encode_teacher_candidates,
     coalesce_equivalent_policy,
-    teacher_equivalence_policy,
 )
 
 
@@ -73,22 +72,25 @@ def _rank_targets(ranking: list[int], n_players: int) -> tuple[np.ndarray, np.nd
 
 
 def materialize_sample(sample: Sample) -> Sample:
-    """Recover dynamic full-legal inputs for a snapshot-backed replay sample."""
+    """Recover dynamic full-legal inputs for a snapshot-backed replay sample.
+
+    The whole reconstruction (snapshot restore, full-legal candidate features,
+    teacher equivalence policy) runs in ONE Rust call
+    (`_engine.GameState.materialize_snapshot`) so no per-float Python objects
+    are ever created for the ~N*301 candidate matrix. Candidates come back as
+    lossless uint8 quarter-steps (see `compress_candidate_features`).
+    """
     if sample.snapshot is None:
         return sample
-    state = be.GameState.from_snapshot(sample.snapshot)
-    if state.current_player_id != sample.pid or state.era != sample.era:
+    (pid, era, board, links, global_vec, own_hand, opp_hands,
+     candidates, teacher_index, policy) = be.GameState.materialize_snapshot(
+        sample.snapshot, sample.teacher_canonical or "")
+    if pid != sample.pid or era != sample.era:
         raise ValueError("replay snapshot does not match its player/era metadata")
-    canonicals, candidates = encode_legal_candidates(state)
-    if sample.teacher_canonical not in canonicals:
-        raise ValueError("replay teacher action is not legal in its restored GameState")
-    board, links, global_vec, own_hand, opp_hands = state.state_to_tensor()
-    teacher_index = canonicals.index(sample.teacher_canonical)
-    policy = teacher_equivalence_policy(candidates.numpy(), teacher_index)
     return Sample(
-        pid=sample.pid, era=sample.era, board=board, links=links,
+        pid=pid, era=era, board=board, links=links,
         global_vec=global_vec, own_hand=own_hand, opp_hands=opp_hands,
-        candidates=candidates.numpy(), policy=policy, rank=sample.rank,
+        candidates=candidates, policy=policy, rank=sample.rank,
         winner=sample.winner, econ=sample.econ, snapshot=sample.snapshot,
         teacher_canonical=sample.teacher_canonical,
     )

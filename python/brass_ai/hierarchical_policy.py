@@ -26,10 +26,8 @@ def _feature_width() -> int:
 
 def encode_legal_candidates(state) -> tuple[list[str], torch.Tensor]:
     """Return concrete canonical moves and their Engine-owned feature rows."""
-    candidates = state.legal_candidates()
-    if not candidates:
-        raise ValueError("state has no legal candidates")
-    canonical, features = zip(*candidates)
+    canonical, features = state.legal_candidates()
+    # Engine boundary returns (list[str], f32 ndarray (N, ACTION_FEATURE_DIM)).
     array = np.asarray(features, dtype=np.float32)
     if array.ndim != 2 or array.shape[1] != _feature_width():
         raise ValueError("engine returned an invalid action-feature schema")
@@ -38,19 +36,23 @@ def encode_legal_candidates(state) -> tuple[list[str], torch.Tensor]:
 
 def encode_teacher_candidates(state) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, int, float, float]:
     """Return compact Rust-aligned teacher features and ranking scores."""
-    flat_features, scores, card_scores, canonical, teacher_index, score, card_score, count = state.heuristic_candidates()
+    features, scores, card_scores, canonical, teacher_index, score, card_score, count = (
+        state.heuristic_candidates()
+    )
     width = _feature_width()
-    array = np.asarray(flat_features, dtype=np.float32)
-    if count <= 0 or array.size != count * width:
+    array = np.asarray(features, dtype=np.float32)
+    if count <= 0 or array.shape != (count, width):
         raise ValueError("engine returned an invalid teacher action schema")
+    scores = np.asarray(scores, dtype=np.float32)
+    card_scores = np.asarray(card_scores, dtype=np.float32)
     if len(card_scores) != count:
         raise ValueError("engine returned invalid teacher card scores")
     if not 0 <= teacher_index < count:
         raise ValueError("engine returned an invalid teacher candidate index")
     return (
-        torch.from_numpy(array.reshape(count, width)),
-        torch.from_numpy(np.asarray(scores, dtype=np.float32)),
-        torch.from_numpy(np.asarray(card_scores, dtype=np.float32)),
+        torch.from_numpy(array),
+        torch.from_numpy(scores),
+        torch.from_numpy(card_scores),
         str(canonical),
         int(teacher_index),
         float(score),
@@ -60,7 +62,13 @@ def encode_teacher_candidates(state) -> tuple[torch.Tensor, torch.Tensor, torch.
 
 def compress_candidate_features(features: np.ndarray) -> np.ndarray:
     """Losslessly pack quarter-step action features into uint8 replay data."""
-    array = np.asarray(features, dtype=np.float32)
+    array = np.asarray(features)
+    if array.dtype == np.uint8:
+        # Already quarter-step packed at the Rust boundary (materialize path).
+        if array.ndim != 2 or array.shape[1] != _feature_width():
+            raise ValueError("invalid action features for compression")
+        return array
+    array = array.astype(np.float32)
     if array.ndim != 2 or array.shape[1] != _feature_width():
         raise ValueError("invalid action features for compression")
     scaled = array * ACTION_FEATURE_SCALE
@@ -89,27 +97,15 @@ def pad_candidate_features(rows: list[torch.Tensor], device=None) -> tuple[torch
 
 
 def coalesce_equivalent_policy(features: np.ndarray, policy: np.ndarray) -> np.ndarray:
-    """Spread each concrete-policy mass uniformly across equal feature rows."""
-    array = np.asarray(features, dtype=np.float32)
-    target = np.asarray(policy, dtype=np.float32)
-    if array.ndim != 2 or array.shape[1] != _feature_width():
-        raise ValueError("invalid candidate features for policy target")
-    if target.shape != (len(array),) or not np.isfinite(target).all() or (target < 0).any():
-        raise ValueError("invalid policy target")
-    total = float(target.sum())
-    if total <= 0:
-        raise ValueError("policy target must contain positive mass")
-    out = np.zeros(len(array), dtype=np.float32)
-    pending = np.flatnonzero(target > 0.0)
-    # MCTS visit targets have at most `sims` non-zero rows and shortlist
-    # targets are small. Work only on those classes instead of constructing a
-    # structured np.unique key for every full-legal candidate.
-    while len(pending):
-        index = pending[0]
-        equivalent = np.all(array == array[index], axis=1)
-        out[equivalent] = target[equivalent].sum() / equivalent.sum() / total
-        pending = pending[~equivalent[pending]]
-    return out
+    """Spread each concrete-policy mass uniformly across equal feature rows.
+
+    Delegates to the Rust engine (`_engine.coalesce_equivalent_policy`): the
+    self-play hot path coalesces a full-legal candidate matrix every move and
+    the numpy implementation allocates a boolean class mask per class.
+    """
+    array = np.ascontiguousarray(features, dtype=np.float32)
+    target = np.ascontiguousarray(policy, dtype=np.float32)
+    return be.coalesce_equivalent_policy(array, target)
 
 
 def teacher_equivalence_policy(features: np.ndarray, teacher_index: int) -> np.ndarray:

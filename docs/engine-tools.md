@@ -102,3 +102,13 @@ cargo run --release -p brass-engine --bin mcts_lab -- sweep 7 4 2000
 ```
 
 三个子命令都先以启发式策略推进到指定中局：`bench` 固定推进 60 步；`inspect` 的第 4 个参数为推进步数（默认 60）；`sweep` 固定 60 步。设置环境变量 `BRASS_MCTS_TWO_PLY`（任意非空值）可让 `inspect` 使用实验性的 `RootTwoPly` 叶节点估值（不影响 `bench`/`sweep`）；其余配置使用 `MctsConfig::default()`，仅由子命令覆盖需要扫描的参数。
+
+## `train_bench`：训练数据热路径基准
+
+```sh
+cargo run --release -p brass-engine --bin train_bench -- [positions] [seed]
+```
+
+以启发式对局收集 `positions` 个中局快照，逐项输出训练管线使用的引擎操作耗时：合法动作枚举（`legal_resolved_moves`）、候选特征编码（`encode_move` × 全部候选）、状态张量编码（`state_to_tensor`）、快照序列化/恢复、determinize、整状态 clone、教师打分（`candidate_actions_k(4)`）与 2-ply `choose_action`。用于评估引擎侧改动对训练数据生成（imitation 生成 / snapshot 物化 / NN-MCTS 展开）的影响。
+
+对应的 Python 侧跨界基准是 `python/bench_train_paths.py`（`legal_candidates` numpy 化、`materialize_snapshot` 单次调用端到端、`coalesce_equivalent_policy`），运行方式：`.venv/Scripts/python.exe python/bench_train_paths.py [n_positions]`。

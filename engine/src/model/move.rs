@@ -73,7 +73,7 @@ pub enum Move {
 }
 
 /// A fully specified operation that rules may execute.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedMove {
     Build {
         loc: Loc,

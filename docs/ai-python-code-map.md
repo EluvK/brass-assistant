@@ -24,15 +24,15 @@ bootstrap_imitation.py
 
 ### `brass_ai/hierarchical_policy.py`
 
-1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验动作特征 schema，将候选集 padding 为网络 batch，并处理"执行不同但特征相同"的等价类 policy 目标。
+1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验动作特征 schema，将候选集 padding 为网络 batch，并处理"执行不同但特征相同"的等价类 policy 目标。批量浮点负载全部经 numpy 跨界（Rust 侧直接产出 ndarray，不再逐元素装箱 Python float）。
 2. 主要函数：
    - `_feature_width()`：检查 Rust action feature schema version，返回动作特征维度。
-   - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, 301)` tensor。
-   - `encode_teacher_candidates(state)`：返回 heuristic shortlist 的特征、teacher 分数、卡牌保留分、最终动作及其索引。
-   - `compress_candidate_features(features)`：将以 0.25 为步长的特征无损压缩为 `uint8`。
+   - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, 301)` tensor（Rust 侧一次 memcpy 生成）。
+   - `encode_teacher_candidates(state)`：返回 heuristic shortlist 的特征、teacher 分数、卡牌保留分、最终动作及其索引（numpy 数组跨界）。
+   - `compress_candidate_features(features)`：将以 0.25 为步长的特征无损压缩为 `uint8`；`uint8` 输入直接透传（Rust materialize 已产出打包行）。
    - `pad_candidate_features(rows, device)`：把变长候选行变为 `(B, max_N, D)` 和 boolean mask。
-   - `coalesce_equivalent_policy(features, policy)`：把特征完全相同的候选视为等价类，将 policy 质量均摊到类内（MCTS visit 目标使用）。
-   - `teacher_equivalence_policy(features, teacher_index)`：把 teacher one-hot 展开为其特征等价类上的均匀分布（full-legal imitation 目标使用）。
+   - `coalesce_equivalent_policy(features, policy)`：把特征完全相同的候选视为等价类，将 policy 质量均摊到类内（MCTS visit 目标使用）。实现委托给 Rust `_engine.coalesce_equivalent_policy`，避免每类分配布尔掩码的 numpy 开销。
+   - `teacher_equivalence_policy(features, teacher_index)`：把 teacher one-hot 展开为其特征等价类上的均匀分布（full-legal imitation 目标使用；物化路径由 Rust `materialize_snapshot` 直接产出同等结果）。
 
 ### `brass_ai/net.py`
 
@@ -59,7 +59,7 @@ bootstrap_imitation.py
 1. 作用：定义 `Sample`，生成 MCTS self-play 或 heuristic imitation 数据；完整合法候选模式可通过 Rust snapshot 延迟物化候选集。
 2. 主要类/函数：
    - `Sample`：一个决策点的状态、候选、policy、rank/winner/econ 目标及可选 snapshot/教师动作。
-   - `materialize_sample(sample)` / `materialize_samples(samples)`：从 snapshot 恢复 Rust 状态并重建全合法候选与 one-hot target。
+   - `materialize_sample(sample)` / `materialize_samples(samples)`：从 snapshot 重建全合法候选与 one-hot target。核心重建在单次 Rust 调用 `_engine.GameState.materialize_snapshot(snapshot, teacher)` 内完成（恢复状态 → 全合法候选 uint8 quarter-step 特征 → teacher 等价类 policy），候选不再经 Python 逐元素转换。
    - `materialize_chunk(samples)` / `stream_materialized_batches(pool, batches, rpc_chunk)`：池 worker 批量物化（候选按 quarter-step 压成 uint8 传输，省 4× IPC），并按批预取使物化与 GPU 训练重叠。
    - `SelfPlayConfig`：玩家数、模拟数、温度、最大步数与 seed。
    - `_candidate_policy(...)`：将 MCTS visit 对齐为 Rust 候选顺序上的 policy 分布。

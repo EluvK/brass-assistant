@@ -20,6 +20,7 @@ use crate::heuristic_ai;
 use crate::move_codec;
 use crate::rules::ResolvedMove;
 use crate::state::GameState;
+use numpy::PyArray1;
 use numpy::PyArray2;
 use numpy::PyArrayMethods;
 use pyo3::Py;
@@ -353,6 +354,7 @@ fn descend(
             let mut children: Vec<Child> = Vec::new();
             let mut legal_candidate_ids: Vec<usize> = Vec::new();
             let mut candidate_features: Vec<Vec<f32>> = Vec::new();
+            let mut row = Vec::new();
             for (action_id, mv) in moves.into_iter().enumerate() {
                 legal_candidate_ids.push(action_id);
                 let child_idx = arena.len();
@@ -362,10 +364,8 @@ fn descend(
                     mv,
                     node: child_idx,
                 });
-                candidate_features.push(action_features::encode_move(
-                    work,
-                    &children.last().unwrap().mv,
-                ));
+                action_features::encode_move_into(work, &children.last().unwrap().mv, &mut row);
+                candidate_features.push(row.clone());
             }
             arena[node_idx].children = children;
             arena[node_idx].legal_candidate_ids = legal_candidate_ids.clone();
@@ -386,10 +386,14 @@ fn descend(
         if !node.ready_to_select() {
             // Expanded but priors are still pending (another sim parked here in
             // this wave): share its request.
+            let mut row = Vec::new();
             let candidate_features = arena[node_idx]
                 .children
                 .iter()
-                .map(|child| action_features::encode_move(work, &child.mv))
+                .map(|child| {
+                    action_features::encode_move_into(work, &child.mv, &mut row);
+                    row.clone()
+                })
                 .collect();
             return park(work, requests, request_by_node, path, move |node_idx| {
                 RequestKind::Expand {
@@ -519,25 +523,31 @@ fn apply_dirichlet_noise(
 /// Encode every pending request (ONE row each, from the state's current player
 /// perspective) and ask the Python `net_fn` for (candidate_logits (B,max_N),
 /// values (B,4)); split results back per request.
+///
+/// Arrays cross into Python as flat buffers reshaped into numpy matrices —
+/// one copy each, never per-element Python boxing.
 fn flush_net(
     py: Python<'_>,
     net_fn: &Py<PyAny>,
     requests: &[Request],
 ) -> PyResult<Vec<BatchResult>> {
     let n_rows = requests.len();
-    let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
-    let mut links: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
-    let mut globals: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
-    let mut own_hands: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
-    let mut opp_hands: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
+    let board_len = crate::encode::BOARD_PLANES * crate::encode::BOARD_CELLS;
+    let link_len = crate::encode::LINK_PLANES * crate::encode::LINK_CELLS;
+    let mut boards: Vec<f32> = Vec::with_capacity(n_rows * board_len);
+    let mut links: Vec<f32> = Vec::with_capacity(n_rows * link_len);
+    let mut globals: Vec<f32> = Vec::with_capacity(n_rows * crate::encode::GLOBAL_LEN);
+    let mut own_hands: Vec<f32> = Vec::with_capacity(n_rows * crate::encode::HAND_LEN);
+    let mut opp_hands: Vec<f32> =
+        Vec::with_capacity(n_rows * (MAX_PLAYERS - 1) * crate::encode::HAND_LEN);
     for req in requests {
         let pid = req.state.current_player_id();
         let t = crate::encode::state_to_tensor(&req.state, pid);
-        boards.push(t.board);
-        links.push(t.links);
-        globals.push(t.global);
-        own_hands.push(t.own_hand);
-        opp_hands.push(t.opp_hands);
+        boards.extend_from_slice(&t.board);
+        links.extend_from_slice(&t.links);
+        globals.extend_from_slice(&t.global);
+        own_hands.extend_from_slice(&t.own_hand);
+        opp_hands.extend_from_slice(&t.opp_hands);
     }
 
     let max_candidates = requests
@@ -550,34 +560,39 @@ fn flush_net(
         })
         .max()
         .unwrap_or(1);
-    let mut candidate_rows =
-        vec![vec![0.0; max_candidates * action_features::ACTION_FEATURE_DIM]; n_rows];
-    let mut candidate_masks = vec![vec![0.0; max_candidates]; n_rows];
+    let dim = action_features::ACTION_FEATURE_DIM;
+    let mut candidate_rows = vec![0.0f32; n_rows * max_candidates * dim];
+    let mut candidate_masks = vec![0.0f32; n_rows * max_candidates];
     for (row, req) in requests.iter().enumerate() {
         match &req.kind {
             RequestKind::Expand {
                 candidate_features, ..
             } => {
                 for (i, features) in candidate_features.iter().enumerate() {
-                    let begin = i * action_features::ACTION_FEATURE_DIM;
-                    candidate_rows[row][begin..begin + action_features::ACTION_FEATURE_DIM]
-                        .copy_from_slice(features);
-                    candidate_masks[row][i] = 1.0;
+                    let begin = row * max_candidates * dim + i * dim;
+                    candidate_rows[begin..begin + dim].copy_from_slice(features);
+                    candidate_masks[row * max_candidates + i] = 1.0;
                 }
             }
             // Value-only leaves still receive one inert candidate because the
             // Python policy API requires every padded row to have one entry.
-            RequestKind::Leaf => candidate_masks[row][0] = 1.0,
+            RequestKind::Leaf => candidate_masks[row * max_candidates] = 1.0,
         }
     }
 
-    let board_arr = PyArray2::from_vec2(py, &boards)?;
-    let links_arr = PyArray2::from_vec2(py, &links)?;
-    let global_arr = PyArray2::from_vec2(py, &globals)?;
-    let own_arr = PyArray2::from_vec2(py, &own_hands)?;
-    let opp_arr = PyArray2::from_vec2(py, &opp_hands)?;
-    let candidates_arr = PyArray2::from_vec2(py, &candidate_rows)?;
-    let candidate_mask_arr = PyArray2::from_vec2(py, &candidate_masks)?;
+    let board_arr =
+        PyArray1::from_vec(py, boards).reshape((n_rows, board_len))?;
+    let links_arr = PyArray1::from_vec(py, links).reshape((n_rows, link_len))?;
+    let global_arr =
+        PyArray1::from_vec(py, globals).reshape((n_rows, crate::encode::GLOBAL_LEN))?;
+    let own_arr =
+        PyArray1::from_vec(py, own_hands).reshape((n_rows, crate::encode::HAND_LEN))?;
+    let opp_arr = PyArray1::from_vec(py, opp_hands)
+        .reshape((n_rows, (MAX_PLAYERS - 1) * crate::encode::HAND_LEN))?;
+    let candidates_arr =
+        PyArray1::from_vec(py, candidate_rows).reshape((n_rows, max_candidates * dim))?;
+    let candidate_mask_arr =
+        PyArray1::from_vec(py, candidate_masks).reshape((n_rows, max_candidates))?;
 
     let out = net_fn.call1(
         py,
