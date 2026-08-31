@@ -120,12 +120,11 @@ python python/bootstrap_imitation.py `
 | `--lr` | AdamW 学习率 |
 | `--eval-games` / `--eval-sims` | 结尾 benchmark 的对局数（默认 20）/ 每步模拟数（默认 60） |
 | `--min-avg-vp` / `--min-vp` / `--max-attempts` | 样本质量门槛：整局平均 VP / 最差座位 VP 下限，及启用门槛后的对局尝试上限 |
-| `--shortlist-candidates` | 改用 heuristic shortlist 候选训练；**默认 full-legal**（完整合法候选 + one-hot teacher，样本存 Rust snapshot，训练前实时物化候选集），会显著增加 CPU/内存压力 |
 | `--resume` | 从 `--ckpt` 恢复完整 Trainer 状态（模型/optimizer/scheduler/scaler） |
 | `--sample-dir` | 复用已有 `imitation-*.pkl`，跳过重新生成 |
 | `--delete-samples-on-success` | 成功结束后删除默认的 `<ckpt>.imitation` 样本目录 |
 | `--enable-policy-eval` | 训练后统计全部 shard 上的 top-k policy 指标 |
-| `--mcts-full-legal` | 仅让结尾 benchmark 使用全合法候选 |
+| `--mcts-shortlist` | 仅让结尾 benchmark 使用 heuristic shortlist；默认 full-legal |
 
 当前源码中 `--max-candidate-batch` 的默认值是 `131072`。GPU 显存有限时应显式设置更小值，例如 `16384`，并从小规模运行开始。
 
@@ -135,7 +134,7 @@ python python/bootstrap_imitation.py `
 
 ## 样本与 checkpoint
 
-`Sample` 代表一个决策点。默认 full-legal 模式下，样本只保存 Rust state snapshot + teacher canonical action（不保存状态张量），候选集与状态张量在训练前从 snapshot 实时物化；`--shortlist-candidates` 模式则直接保存状态张量与 shortlist 候选特征。候选上的监督包括 policy 分布、rank/winner 终局目标与 econ 目标。
+`Sample` 代表一个决策点。imitation 训练统一使用 full-legal：样本只保存 Rust state snapshot + teacher canonical action（不保存状态张量），候选集与状态张量在训练前从 snapshot 实时物化。候选上的监督包括 policy 分布、rank/winner 终局目标与 econ 目标。
 
 Trainer checkpoint 包含：
 

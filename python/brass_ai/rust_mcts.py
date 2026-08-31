@@ -64,7 +64,9 @@ class RustMCTSConfig:
     dirichlet_alpha: float = 0.3
     dirichlet_weight: float = 0.15
     batch_size: int = 64
-    candidate_k: int = 4
+    # Zero expands every concrete legal move; positive values enable the
+    # optional heuristic shortlist for controlled experiments.
+    candidate_k: int = 0
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 

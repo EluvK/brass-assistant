@@ -56,16 +56,12 @@ def main():
                     help="only keep games whose lowest final VP is strictly above this value")
     ap.add_argument("--max-attempts", type=int, default=None,
                     help="candidate-game cap when a VP quality filter is enabled (default: 10x --games)")
-    ap.add_argument("--shortlist-candidates", action="store_true",
-                    help="train on the teacher shortlist instead of every legal candidate "
-                         "(v4 default is full-legal: source-identity features removed the "
-                         "one-hot target conflicts, see docs/archived/ai-encoding-v4-design.md §4.4)")
     ap.add_argument("--sample-dir", type=Path,
                     help="reuse existing imitation-*.pkl shards; skips generation and never deletes this directory")
     ap.add_argument("--delete-samples-on-success", action="store_true",
                     help="delete the default --ckpt.imitation shard directory after a successful run")
-    ap.add_argument("--mcts-full-legal", action="store_true",
-                    help="benchmark with every legal candidate instead of the shortlist")
+    ap.add_argument("--mcts-shortlist", action="store_true",
+                    help="benchmark with the optional heuristic shortlist instead of every legal candidate")
     args = ap.parse_args()
     if args.max_candidate_batch < 1:
         ap.error("--max-candidate-batch must be >= 1")
@@ -106,7 +102,6 @@ def main():
                 min_avg_vp=args.min_avg_vp,
                 min_vp=args.min_vp,
                 max_attempts=args.max_attempts,
-                full_legal_candidates=not args.shortlist_candidates,
             )
             print(f"generated imitation shards for {args.games} heuristic games "
                   f"({time.time()-t0:.0f}s)")
@@ -203,7 +198,7 @@ def main():
 
         mcts = RustISMCTS(net, RustMCTSConfig(
             c_puct=2.5, max_depth=10, device=device,
-            candidate_k=0 if args.mcts_full_legal else 4,
+            candidate_k=4 if args.mcts_shortlist else 0,
         ))
         result = benchmark_mcts_vs_heuristic(
             mcts, args.eval_sims, args.eval_games

@@ -208,7 +208,7 @@ L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split) + 1e-4 * 
 
 候选集事实（`heuristic_ai::candidate_actions_k` 是**唯一**的候选生成器）：
 
-- MCTS（`nn_mcts.rs`，`candidate_k=4`）与 shortlist imitation（`heuristic_candidates`）调用**同一个** `candidate_actions_k(state, 4)`——两者候选分布一致。plain MCTS（`mcts_ai.rs`）也用同一生成器（默认 k=3）。
+- NN-MCTS 默认 `candidate_k=0`，直接展开完整合法集；传入正数时才启用 `candidate_actions_k` 的 heuristic shortlist（用于受控性能实验）。imitation 训练统一使用 full-legal，`heuristic_candidates` 仅负责取得 teacher action。plain MCTS（`mcts_ai.rs`）仍使用同一生成器（默认 k=3）。
 - 生成器 v4（`SOURCE_VARIANTS=2`）：同一几何体（连接/建造位）下来源身份不同的变体**成对进入候选集**，"抽谁的矿/酒馆"由搜索而非生成器决定。
 - 整个管线没有默认越过生成器的路径；NN-MCTS 显式传 `candidate_k=0` 可全合法集展开。
 - **checkpoint 现状**：checkpoint 属本地不入库资产（`checkpoints/` 已被 gitignore），文档不引用具体训练产物文件名。首个 v4 full-legal imitation 训练 run 已产出样本分片（`<ckpt>.imitation/imitation-*.pkl`），正式训练尚在早期；candidate recall 等指标待训练充分后测量（§7）。

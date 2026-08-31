@@ -298,7 +298,7 @@ def play_game_with_roles(
 
 def _generate_imitation_game(args):
     """Generate one heuristic game in a worker process."""
-    seed, players, max_moves, full_legal_candidates = args
+    seed, players, max_moves = args
 
     state = be.GameState(seed=seed, players=players)
     local = []
@@ -307,36 +307,15 @@ def _generate_imitation_game(args):
     while not state.game_over and moves < max_moves:
         moves += 1
         pid = state.current_player_id
-        if full_legal_candidates:
-            # Only the teacher canonical is persisted. The full-legal candidate
-            # matrix is a deterministic derivative of the snapshot and is
-            # re-derived once at materialization time, so building it here
-            # (every move, only to validate the teacher) is discarded work.
-            _features, _scores, _card_scores, canon, _index, _score, _card_score = (
-                encode_teacher_candidates(state)
-            )
-        else:
-            candidate_tensor, teacher_scores, _card_scores, canon, _chosen_index, _score, _card_score = encode_teacher_candidates(state)
-            score_values = teacher_scores.numpy().astype(np.float64)
-            weights = np.exp((score_values - score_values.max()) / 1.0)
-            policy = coalesce_equivalent_policy(
-                candidate_tensor.numpy(), (weights / weights.sum()).astype(np.float32)
-            )
-        if full_legal_candidates:
-            # Complete candidate rows are a deterministic derivative of the
-            # state. Persisting only this snapshot and Rust's canonical action
-            # avoids the full-legal replay/IPC explosion.
-            local.append(Sample(
-                pid=pid, era=state.era, rank=0.0, winner=0.0,
-                snapshot=bytes(state.snapshot()), teacher_canonical=canon,
-            ))
-        else:
-            board, links, g, oh, op = state.state_to_tensor()
-            local.append(
-                Sample(pid=pid, board=board, links=links, global_vec=g,
-                       own_hand=oh, opp_hands=op, policy=policy, rank=0.0,
-                       winner=0.0, candidates=candidate_tensor.numpy(), era=state.era)
-            )
+        # Full-legal training stores only a snapshot and teacher action. The
+        # complete candidate matrix is materialized once in the trainer.
+        _features, _scores, _card_scores, canon, _index, _score, _card_score = (
+            encode_teacher_candidates(state)
+        )
+        local.append(Sample(
+            pid=pid, era=state.era, rank=0.0, winner=0.0,
+            snapshot=bytes(state.snapshot()), teacher_canonical=canon,
+        ))
         if state.era == 0:
             canal_samples.append(local[-1])
         try:
@@ -377,7 +356,6 @@ def generate_imitation_samples(
     min_avg_vp: float | None = None,
     min_vp: float | None = None,
     max_attempts: int | None = None,
-    full_legal_candidates: bool = False,
 ):
     """Heuristic-vs-heuristic games: one-hot imitation samples (cheap, no MCTS).
 
@@ -431,7 +409,7 @@ def generate_imitation_samples(
             "NUMEXPR_NUM_THREADS",
         ):
             os.environ[name] = "1"
-    jobs = [(gi, players, max_moves, full_legal_candidates) for gi in range(max_attempts)]
+    jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
         
     progress = Progress(total=n_games, label="accepted imitation game")
     accepted_games = 0
@@ -442,7 +420,13 @@ def generate_imitation_samples(
         attempted_games += 1
         local, vps = result
         if accepted(vps):
-            samples.extend(local)
+            # The in-memory API historically returned ready-to-train samples;
+            # keep that contract while shard generation remains snapshot-backed.
+            if local and isinstance(local[0], Sample):
+                samples.extend(materialize_samples(local))
+            else:
+                # Keep lightweight test/dry-run producers compatible.
+                samples.extend(local)
             accepted_games += 1
         progress.update(
             accepted_games,
@@ -503,7 +487,6 @@ def generate_imitation_sample_shards(
     min_avg_vp: float | None = None,
     min_vp: float | None = None,
     max_attempts: int | None = None,
-    full_legal_candidates: bool = False,
 ) -> list[Path]:
     """Generate imitation games and spill each accepted game to disk.
 
@@ -533,7 +516,7 @@ def generate_imitation_sample_shards(
 
     _generate_imitation_with_sink(
         n_games, players, max_moves, workers, min_avg_vp, min_vp,
-        max_attempts, sink, full_legal_candidates,
+        max_attempts, sink,
     )
     flush()
     return paths
@@ -541,7 +524,6 @@ def generate_imitation_sample_shards(
 
 def _generate_imitation_with_sink(
     n_games, players, max_moves, workers, min_avg_vp, min_vp, max_attempts, sink,
-    full_legal_candidates=False,
 ):
     """Shared generator core; ``sink`` is called for each accepted game."""
     # Keep the original implementation's validation and scheduling behavior,
@@ -566,7 +548,7 @@ def _generate_imitation_with_sink(
     if worker_count > 1:
         for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             os.environ[name] = "1"
-    jobs = [(gi, players, max_moves, full_legal_candidates) for gi in range(max_attempts)]
+    jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
     accepted_games = attempted_games = 0
     progress = Progress(total=n_games, label="accepted imitation game")
     def consume(result):

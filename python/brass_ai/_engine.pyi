@@ -72,7 +72,7 @@ class GameState:
         dirichlet_weight: float,
         add_root_noise: bool,
         batch_size: int = 64,
-        candidate_k: int = 4,
+        candidate_k: int = 0,
     ) -> Tuple[Optional[str], List[Tuple[int, str, int]], List[int]]: ...
 
     def apply_move(self, canonical: str) -> str: ...

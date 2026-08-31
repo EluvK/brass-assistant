@@ -56,7 +56,7 @@ impl Default for NnMctsConfig {
             dirichlet_alpha: 0.3,
             dirichlet_weight: 0.15,
             batch_size: 64,
-            candidate_k: 4,
+            candidate_k: 0,
         }
     }
 }

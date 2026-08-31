@@ -49,7 +49,7 @@ class WorkerConfig:
         device: str | None = None,
         c_puct: float = 2.5,
         max_depth: int = 10,
-        candidate_k: int = 4,
+        candidate_k: int = 0,
     ):
         self.ckpt = ckpt
         self.mode = mode

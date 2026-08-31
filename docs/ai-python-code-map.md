@@ -28,7 +28,7 @@ bootstrap_imitation.py
 2. 主要函数：
    - `_feature_width()`：检查 Rust action feature schema version，返回动作特征维度。
    - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, 301)` tensor（Rust 侧一次 memcpy 生成）。
-   - `encode_teacher_candidates(state)`：返回 heuristic shortlist 的特征、teacher 分数、卡牌保留分、最终动作及其索引（numpy 数组跨界）。
+   - `encode_teacher_candidates(state)`：返回 heuristic teacher 的候选评分及最终动作；训练只使用最终动作，候选特征不进入 replay。
    - `compress_candidate_features(features)`：将以 0.25 为步长的特征无损压缩为 `uint8`；`uint8` 输入直接透传（Rust materialize 已产出打包行）。
    - `pad_candidate_features(rows, device)`：把变长候选行变为 `(B, max_N, D)` 和 boolean mask。
    - `coalesce_equivalent_policy(features, policy)`：把特征完全相同的候选视为等价类，将 policy 质量均摊到类内（MCTS visit 目标使用）。实现委托给 Rust `_engine.coalesce_equivalent_policy`，避免每类分配布尔掩码的 numpy 开销。
