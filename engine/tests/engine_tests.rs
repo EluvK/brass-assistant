@@ -370,6 +370,112 @@ fn build_targets_should_not_include_slot_that_allow_multi_icon_builds_when_singl
 }
 
 #[test]
+fn build_targets_should_include_slot_that_allow_multi_icon_builds_when_single_icon_slot_exists_at_same_location_but_used()
+ {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let other_pid = if pid == 0 { 1 } else { 0 };
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::WildLocation, Card::WildLocation];
+    state.players[other_pid].money = 100;
+    state.players[other_pid].hand = vec![Card::WildLocation, Card::WildLocation];
+
+    let link = execute_network(&mut state, other_pid, 20, None, 0);
+    assert!(link.is_ok(), "expected network link to be created");
+    let coal = _engine::rules::coal_source_options(&state, Loc::Coalbrookdale, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let iron = _engine::rules::iron_source_options(&state, 0)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let r = execute_build(
+        &mut state,
+        other_pid,
+        Loc::Coalbrookdale,
+        1,
+        IndustryType::IronWorks,
+        &coal,
+        &iron,
+        0,
+    );
+    assert!(
+        r.is_ok(),
+        "expected ironworks to be built {}",
+        r.unwrap_err()
+    );
+
+    let targets = get_valid_build_targets(&state, pid);
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| {
+                target.loc == Loc::Coalbrookdale
+                    && target.ind == IndustryType::IronWorks
+                    && target.slot_index == 0
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn build_targets_should_include_rebuild_other_iron_if_market_run_out() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    let other_pid = if pid == 0 { 1 } else { 0 };
+    state.players[pid].money = 100;
+    state.players[pid].hand = vec![Card::WildLocation, Card::WildLocation];
+    state.players[other_pid].money = 100;
+    state.players[other_pid].hand = vec![Card::WildLocation, Card::WildLocation];
+
+    let link = execute_network(&mut state, other_pid, 20, None, 0);
+    assert!(link.is_ok(), "expected network link to be created");
+    let coal = _engine::rules::coal_source_options(&state, Loc::Coalbrookdale, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let iron = _engine::rules::iron_source_options(&state, 0)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    state.iron_market = 0; // make sure no free iron left. remove this line and should not allow rebuild others.
+    let r = execute_build(
+        &mut state,
+        other_pid,
+        Loc::Coalbrookdale,
+        1,
+        IndustryType::IronWorks,
+        &coal,
+        &iron,
+        0,
+    );
+    assert!(
+        r.is_ok(),
+        "expected ironworks to be built {}",
+        r.unwrap_err()
+    );
+
+    state.iron_market = 0;
+    state.players[pid].consume_tile(IndustryType::IronWorks); // remove level one.
+
+    let targets = get_valid_build_targets(&state, pid);
+    assert!(targets.iter().any(|target| {
+        target.loc == Loc::Coalbrookdale && target.ind == IndustryType::IronWorks
+    }));
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| {
+                target.loc == Loc::Coalbrookdale && target.ind == IndustryType::IronWorks
+            })
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn build_targets_should_include_all_valid_city_slots() {
     let mut state = setup(4);
     let pid = state.current_player_id();

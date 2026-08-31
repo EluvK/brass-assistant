@@ -16,7 +16,7 @@ use crate::state::{Card, GameState};
 /// `(hand_index, keep_score)`.
 pub type CardChoices = Vec<(usize, f64)>;
 
-/// Config-parameterised keep-score for one card.
+/// Config-parameterized keep-score for one card.
 pub(crate) fn card_keep_score_with(
     state: &GameState,
     pid: usize,
