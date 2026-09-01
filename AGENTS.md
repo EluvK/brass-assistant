@@ -1,14 +1,10 @@
-# AGENTS.md — Brass Assistant 项目背景知识
-
-> 本文件是给后续进入本仓库工作的 AI agent / 协作者 使用的背景知识文档。
-
-## 项目定位
+# AGENTS.md
 
 Brass Assistant 是一个为桌游《工业革命：伯明翰》（Brass: Birmingham）构建的 AI 策略分析与实时推荐辅助系统。
 
 长期目标：从零构建基于 ISMCTS + Policy-Value 神经网络 的《伯明翰》决策引擎。
 
-### 关键技术栈
+## 关键技术栈
 
 - 游戏引擎：Rust 模拟游戏规则、状态、合法动作生成器、图连通性
 - AI：PyTorch + ISMCTS（信息集蒙特卡洛树搜索），AlphaZero 风格 Policy-Value 网络
