@@ -89,7 +89,7 @@ source .venv/Scripts/activate
 
 ```powershell
 # Rust bridge 有修改时需要重新安装扩展
-maturin develop --release
+maturin develop --release --features python
 
 # Python 当前回归测试
 python -m pytest python/tests -q
@@ -102,10 +102,7 @@ python -m pytest python/tests -q
 `bootstrap_imitation.py` 是保留的训练入口。Rust heuristic 进行完整对局，Python 使用每步 teacher 候选集训练候选评分、value 和经济辅助头，再让网络引导 Rust MCTS 与 heuristic 对战。
 
 ```powershell
-python python/bootstrap_imitation.py `
-  --games 20 --epochs 1 --workers 1 `
-  --eval-games 2 --eval-sims 10 `
-  --ckpt checkpoints/bootstrap-smoke.pt
+python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp 77 --min-avg-vp 98 --max-attempts 1000 --ckpt checkpoints/bootstrap-smoke.pt
 ```
 
 这是一条小规模 smoke 命令。正式训练前应先确认 Rust 扩展已由当前源码构建，且 Python 测试通过。

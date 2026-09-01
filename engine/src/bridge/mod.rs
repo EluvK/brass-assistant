@@ -1,7 +1,8 @@
 //! Serialization, tensor encoding, and Python bindings.
 
-pub mod action_features;
-pub mod encode;
-pub mod move_codec;
 pub mod pymod;
-pub mod replay_fmt;
+
+// Compatibility paths for callers that historically imported these helpers
+// through `bridge`; the implementations are now available in pure-Rust
+// builds as top-level modules.
+pub use crate::{action_features, encode, move_codec};

@@ -4,12 +4,12 @@
 //! make an already generated step independently inspectable during one CLI
 //! process lifetime.
 
-use crate::bridge::move_codec;
 use crate::data::Era;
 use crate::engine::{TurnResult, advance_turn, handle_turn_result};
 use crate::heuristic_ai;
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots, connections};
 use crate::mcts_ai::{self, MctsConfig};
+use crate::move_codec;
 use crate::random_ai;
 use crate::rules::{ResolvedMove, apply_move, legal_resolved_moves};
 use crate::state::{Card, GameState, loc_from_key};
@@ -22,8 +22,13 @@ use std::collections::HashMap;
 pub enum StrategySpec {
     Heuristic,
     Random,
-    Mcts { simulations: usize },
-    Python { worker_config: String },
+    Mcts {
+        simulations: usize,
+    },
+    #[cfg(feature = "python")]
+    Python {
+        worker_config: String,
+    },
 }
 
 impl StrategySpec {
@@ -32,6 +37,7 @@ impl StrategySpec {
             "heuristic" => Ok(Self::Heuristic),
             "random" => Ok(Self::Random),
             "mcts" => Ok(Self::Mcts { simulations }),
+            #[cfg(feature = "python")]
             value if value.starts_with("python:") => Ok(Self::Python {
                 worker_config: value[7..].to_string(),
             }),
@@ -46,6 +52,7 @@ impl StrategySpec {
             Self::Heuristic => "heuristic".into(),
             Self::Random => "random".into(),
             Self::Mcts { simulations } => format!("mcts({simulations})"),
+            #[cfg(feature = "python")]
             Self::Python { worker_config } => format!("python:{worker_config}"),
         }
     }
@@ -307,6 +314,7 @@ impl StrategyAdapter for NativeStrategy {
                 );
                 Ok((decision.mv, trace))
             }
+            #[cfg(feature = "python")]
             StrategySpec::Python { worker_config } => Err(format!(
                 "python seat {worker_config:?} was not routed to a worker process; \
                  ReplaySession must build PythonWorkerStrategy for it"
@@ -601,7 +609,7 @@ impl ReplaySession {
         seed: u64,
         players: usize,
         specs: Vec<StrategySpec>,
-        worker: WorkerSettings,
+        #[cfg_attr(not(feature = "python"), allow(unused_variables))] worker: WorkerSettings,
     ) -> Result<Self, String> {
         if !(2..=4).contains(&players) {
             return Err("players must be between 2 and 4".into());
@@ -616,6 +624,7 @@ impl ReplaySession {
         let mut adapters: Vec<Box<dyn StrategyAdapter>> = Vec::with_capacity(specs.len());
         for (seat, spec) in specs.into_iter().enumerate() {
             match spec {
+                #[cfg(feature = "python")]
                 StrategySpec::Python { worker_config } => {
                     adapters.push(Box::new(crate::python_worker::PythonWorkerStrategy::spawn(
                         &worker.python_bin,

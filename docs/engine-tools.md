@@ -4,6 +4,12 @@
 
 所有命令从仓库根目录运行。建议在需要稳定结果时使用 `--release`；`seed` 相同且参数相同的命令可复现随机基线对局。
 
+## 构建边界
+
+默认构建是纯 Rust 引擎：规则、启发式策略、原生 MCTS、单局文本回放和批量实验都不解析或链接 Python 相关依赖。需要时加上 `--features python` 启用 Python 相关功能。
+
+`train_bench` 是该 feature 的专属二进制，运行时须带上 `--features python`。`replay_web` 默认可运行 heuristic/random/mcts；只有座位配置含 `python:` 时才须带上 `--features python`。普通 `replay` 同样不依赖 Python。
+
 ## 保留入口
 
 ```
@@ -17,39 +23,15 @@ engine/src/bin/
 ## `replay`：单局诊断
 
 ```sh
-cargo run --release -p brass-engine --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary] [trace] [candidate-k] [max-moves]
+cargo run --profile fast-release -p brass-engine --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary] [trace] [candidate-k] [max-moves]
 ```
 
-常用命令：
-
-```sh
-# 完整回放（trace 默认关闭）
-cargo run --release -p brass-engine --bin replay -- 7 4 heuristic
-
-# 仅输出每个时代的结算、动作汇总和终局
-cargo run --release -p brass-engine --bin replay -- 7 4 heuristic 300 false summary
-
-# 开启 trace，输出每个启发式决策的候选评分
-cargo run --release -p brass-engine --bin replay -- 7 4 heuristic 300 false summary trace
-
-# 只运行到运河时代结算前，用于检查运河局面
-cargo run --release -p brass-engine --bin replay -- 7 4 heuristic 300 canal summary
-
-# 输出 heuristic 决策的候选评分；仅追踪前 20 步
-cargo run --release -p brass-engine --bin replay -- 42 4 heuristic 300 false summary trace 10 20
-```
-
-`policy` 可为 `heuristic`（默认）、`mcts`、`random`、`mcts-vs-random` 或 `mcts-vs-heur`。混合策略中 MCTS 座位由 `seed % players` 决定。`sims` 仅用于含 MCTS 的策略（默认 `300`）。
-
-最后一个参数为 `summary` 时，隐藏逐动作的盘面、手牌和商家日志，但保留时代结算、各玩家动作统计、翻面板块和终局排名。
-
-`trace` 位默认关闭，传 `trace`（或 `1`/`true`）开启：每次启发式决策前输出按分数降序排列的 `candidate_actions_k` 结果、2-ply 最终选择和卡牌保留分；使用 `full` 模式时还会输出实际执行结果。`candidate-k` 默认为 `30`，并沿用 `candidate_actions_k` 的语义：每类 Build/Network 动作最多保留该数量，因此总候选数可能更大。`max-moves` 默认为 `200000`。对于 `mcts-vs-heur`，trace 只输出启发式座位的决策。
+> planned as deprecated 文字回放模式，用于单局对局的详细诊断。建议使用下面的 web 回放模式。
 
 ## `replay-web`：浏览器回放与诊断
 
 ```sh
-cargo run --release -p brass-engine --bin replay_web -- --seed 7 --players 4 \
-  --player heuristic --player heuristic --player mcts --player random
+cargo run --profile fast-release --bin replay_web -- --seed 7 --players 4
 ```
 
 命令启动后访问终端打印的 `http://127.0.0.1:8787/`。页面初始暂停，可单步、连续运行、暂停刷新和跳转已生成的时间线步骤。会话完全在 CLI 进程内存中，关闭浏览器或按 `Ctrl+C` 后不会留下回放文件。
@@ -59,7 +41,7 @@ cargo run --release -p brass-engine --bin replay_web -- --seed 7 --players 4 \
 网络座位示例（先确保 `.venv` 中已安装 `brass_ai._engine` 扩展）：
 
 ```sh
-cargo run --release -p brass-engine --bin replay_web -- --seed 7 --player "python:--ckpt checkpoints/<name>.pt --sims 200 --device cpu"
+cargo run --profile fast-release --features python --bin replay_web -- --seed 7 --player "python:--ckpt checkpoints/bootstrap-0831-20000.pt --sims 1000"
 ```
 
 `python:` 之后的参数原样传给 `python -m brass_ai.replay_worker`：`--ckpt` 为训练 checkpoint（必填），`--mode mcts|policy`（默认 `mcts`，前者为 Rust ISMCTS + 网络引导并按根访问数 argmax，后者为网络对全部合法候选一次前向后直接 argmax），`--sims`（默认 `128`）、`--device`（默认 cuda 可用则 cuda）。worker-config 按空白切分，含空格的参数（如 checkpoint 路径）可用单/双引号包裹。会话启动时即加载 checkpoint 并等待 worker 握手，加载失败会直接报错退出；每步决策受 `--worker-timeout`（默认 `300` 秒）约束，`--python-bin` 可指定解释器（默认 `python`）。网络座位的动作表会展示根访问次数、策略概率与当前玩家价值估计（`net-mcts` 证据），网络座位不做确定性承诺。
@@ -106,7 +88,7 @@ cargo run --release -p brass-engine --bin mcts_lab -- sweep 7 4 2000
 ## `train_bench`：训练数据热路径基准
 
 ```sh
-cargo run --release -p brass-engine --bin train_bench -- [positions] [seed]
+cargo run --release -p brass-engine --features python --bin train_bench -- [positions] [seed]
 ```
 
 以启发式对局收集 `positions` 个中局快照，逐项输出训练管线使用的引擎操作耗时：合法动作枚举（`legal_resolved_moves`）、候选特征编码（`encode_move` × 全部候选）、状态张量编码（`state_to_tensor`）、快照序列化/恢复、determinize、整状态 clone、教师打分（`candidate_actions_k(4)`）与 2-ply `choose_action`。用于评估引擎侧改动对训练数据生成（imitation 生成 / snapshot 物化 / NN-MCTS 展开）的影响。

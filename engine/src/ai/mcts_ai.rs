@@ -576,7 +576,6 @@ pub fn search_with_root_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::move_codec;
     use crate::rules::apply_move;
 
     #[test]
@@ -597,8 +596,7 @@ mod tests {
             let total: u32 = root.iter().map(|s| s.visits).sum();
             assert_eq!(total, cfg.simulations as u32);
             assert!(root.iter().all(|s| s.visits >= 1));
-            let chosen = move_codec::encode(&decision.mv);
-            assert!(root.iter().any(|s| move_codec::encode(&s.mv) == chosen));
+            assert!(root.iter().any(|s| s.mv == decision.mv));
             apply_move(&mut state, &decision.mv).unwrap();
             if state.game_over {
                 break;
