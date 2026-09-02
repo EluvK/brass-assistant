@@ -16,6 +16,33 @@ use crate::state::GameState;
 /// left" into 0..1).
 pub(crate) const ERA_ROUNDS: f64 = 8.0;
 
+/// Interpolate a value from `start` to `end` over a normalised round progress.
+/// The progress is clamped so callers can safely use it with diagnostic states.
+macro_rules! round_factor {
+    ($progress:expr, $start:expr, $end:expr) => {{
+        let progress = ($progress).clamp(0.0, 1.0);
+        ($start) + (($end) - ($start)) * progress
+    }};
+}
+
+/// Choose a Canal or Rail round interpolation without duplicating phase checks
+/// in every action scorer.
+macro_rules! era_round_factor {
+    ($is_canal:expr, $progress:expr,
+     $canal_start:expr, $canal_end:expr,
+     $rail_start:expr, $rail_end:expr $(,)?) => {{
+        let progress = ($progress).clamp(0.0, 1.0);
+        if $is_canal {
+            ($canal_start) + (($canal_end) - ($canal_start)) * progress
+        } else {
+            ($rail_start) + (($rail_end) - ($rail_start)) * progress
+        }
+    }};
+}
+
+pub(crate) use era_round_factor;
+pub(crate) use round_factor;
+
 /// One-shot evaluation context for scoring the current player's options.
 pub struct EvalContext<'a> {
     pub cfg: &'a HeuristicConfig,
@@ -27,6 +54,13 @@ pub struct EvalContext<'a> {
     pub rounds_remaining: f64,
     /// Fraction of the era still ahead, clamped to 0..1.
     pub era_frac: f64,
+    /// Era-local round progress: round 1 is 0.0 and round 8 is 1.0.
+    /// Unlike `era_frac`, this follows the rules' numbered rounds rather than
+    /// the remaining card budget.
+    pub round_progress: f64,
+    /// Numbered rounds including the current round until this era ends (8..1).
+    /// This is intentionally distinct from the fractional `rounds_remaining`.
+    pub rounds_left_in_era: f64,
 }
 
 /// Per-phase evaluation weights resolved from the config.
@@ -44,6 +78,9 @@ impl<'a> EvalContext<'a> {
         let phase = era_phase(state);
         let rounds_remaining = state.rounds_remaining();
         let era_frac = (rounds_remaining / ERA_ROUNDS).clamp(0.0, 1.0);
+        let era_round = state.round.clamp(1, ERA_ROUNDS as u32) as f64;
+        let round_progress = (era_round - 1.0) / (ERA_ROUNDS - 1.0);
+        let rounds_left_in_era = ERA_ROUNDS - era_round + 1.0;
         let params = cfg.era.params(phase);
         let profile = EraProfile {
             phase,
@@ -59,6 +96,8 @@ impl<'a> EvalContext<'a> {
             profile,
             rounds_remaining,
             era_frac,
+            round_progress,
+            rounds_left_in_era,
         }
     }
 
@@ -145,5 +184,39 @@ mod tests {
         // Early era: with a full era ahead, the future is worth near the top.
         assert!(ctx.era_frac > 0.9);
         assert!(d > cfg.discount.floor + cfg.discount.span * 0.9);
+    }
+
+    #[test]
+    fn numbered_round_tools_have_explicit_clamped_boundaries() {
+        let cfg = HeuristicConfig::default();
+        let mut state = GameState::new(rand_chacha::ChaCha12Rng::seed_from_u64(7), 4);
+
+        state.round = 1;
+        let first = ctx_for(&state, &cfg);
+        assert_eq!(first.round_progress, 0.0);
+        assert_eq!(first.rounds_left_in_era, 8.0);
+
+        state.round = 8;
+        let last = ctx_for(&state, &cfg);
+        assert_eq!(last.round_progress, 1.0);
+        assert_eq!(last.rounds_left_in_era, 1.0);
+
+        state.round = 99;
+        let clamped = ctx_for(&state, &cfg);
+        assert_eq!(clamped.round_progress, 1.0);
+        assert_eq!(clamped.rounds_left_in_era, 1.0);
+    }
+
+    #[test]
+    fn round_factor_macros_interpolate_era_endpoints() {
+        assert_eq!(round_factor!(0.5_f64, 20.0, 40.0), 30.0);
+        assert_eq!(
+            era_round_factor!(true, 1.0_f64, 20.0, 40.0, 40.0, 30.0),
+            40.0
+        );
+        assert_eq!(
+            era_round_factor!(false, 1.0_f64, 20.0, 40.0, 40.0, 30.0),
+            30.0
+        );
     }
 }

@@ -317,45 +317,21 @@ pub struct SellWeights {
 /// Loan action scoring.
 #[derive(Debug, Clone, Copy)]
 pub struct LoanWeights {
-    /// Same-turn combo evaluation: only when cash is below this and enough
-    /// rounds remain; the simulated follow-up gain is scaled by `combo_scale`.
-    pub combo_cash_threshold: f64,
-    pub combo_min_rounds_left: f64,
-    pub combo_scale: f64,
-    /// Idle protection: borrow when the hand cannot act productively below
-    /// this cash level.
-    pub idle_cash_threshold: f64,
-    pub idle_bonus: f64,
-    /// Income floor penalties by post-loan income level (never borrow into
-    /// a death spiral).
-    pub floor_deep_debt_income: i8,
-    pub floor_deep_debt_penalty: f64,
-    pub floor_debt_income: i8,
-    pub floor_debt_penalty: f64,
-    pub floor_breakeven_income: i8,
-    pub floor_breakeven_penalty: f64,
-    /// Rich penalties (do not over-borrow) by cash thresholds.
-    pub rich_heavy_cash: f64,
-    pub rich_heavy_penalty: f64,
-    pub rich_moderate_cash: f64,
-    pub rich_moderate_penalty: f64,
-    pub rich_light_cash: f64,
-    pub rich_light_penalty: f64,
-    /// Unlock bonus when the loan is what makes an affordable build appear.
-    pub unlock_min_after_score: f64,
-    pub unlock_bonus: f64,
-    /// Canal-Early startup loan: last round eligible, low-cash bonus and
-    /// the general nudge.
-    pub startup_max_round: u32,
-    pub startup_low_cash_threshold: f64,
-    pub startup_low_cash_bonus: f64,
-    pub startup_bonus: f64,
-    /// Canal-Late rail-era startup capital: from this round, below this
-    /// cash, with a sellable worth flipping soon.
-    pub canal_late_min_round: u32,
-    pub canal_late_cash_threshold: f64,
-    pub canal_late_low_cash_bonus: f64,
-    pub canal_late_bonus: f64,
+    /// Base VP-equivalent opportunity cost of spending one action on a loan.
+    pub action_cost: f64,
+    /// Multiplier applied after economic value is normalised to 0..1.
+    pub economic_score_scale: f64,
+    /// Cash-need threshold `a`, linearly interpolated by numbered round.
+    pub canal_a_start: f64,
+    pub canal_a_end: f64,
+    pub rail_a_start: f64,
+    pub rail_a_end: f64,
+    /// Income penalty divisor `b`, also linearly interpolated by numbered
+    /// round so tuning can change its strength within each era.
+    pub canal_b_start: f64,
+    pub canal_b_end: f64,
+    pub rail_b_start: f64,
+    pub rail_b_end: f64,
 }
 
 /// Scout (and pass) scoring.
@@ -626,33 +602,16 @@ impl Default for HeuristicConfig {
                 vp_scale_span: 0.5,
             },
             loan: LoanWeights {
-                combo_cash_threshold: 24.0,
-                combo_min_rounds_left: 1.5,
-                combo_scale: 0.7,
-                idle_cash_threshold: 18.0,
-                idle_bonus: 2.0,
-                floor_deep_debt_income: -7,
-                floor_deep_debt_penalty: 7.0,
-                floor_debt_income: -4,
-                floor_debt_penalty: 2.0,
-                floor_breakeven_income: 0,
-                floor_breakeven_penalty: 0.3,
-                rich_heavy_cash: 55.0,
-                rich_heavy_penalty: 5.0,
-                rich_moderate_cash: 42.0,
-                rich_moderate_penalty: 2.4,
-                rich_light_cash: 30.0,
-                rich_light_penalty: 1.0,
-                unlock_min_after_score: 0.8,
-                unlock_bonus: 3.2,
-                startup_max_round: 2,
-                startup_low_cash_threshold: 18.0,
-                startup_low_cash_bonus: 6.0,
-                startup_bonus: 0.5,
-                canal_late_min_round: 6,
-                canal_late_cash_threshold: 30.0,
-                canal_late_low_cash_bonus: 2.8,
-                canal_late_bonus: 1.8,
+                action_cost: -4.0,
+                economic_score_scale: 10.0,
+                canal_a_start: 20.0,
+                canal_a_end: 40.0,
+                rail_a_start: 36.0,
+                rail_a_end: 30.0,
+                canal_b_start: 10.0,
+                canal_b_end: 10.0,
+                rail_b_start: 10.0,
+                rail_b_end: 10.0,
             },
             scout: ScoutWeights {
                 low_keep: 1.0,
