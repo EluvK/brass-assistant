@@ -256,41 +256,41 @@ pub struct NetworkWeights {
 
 /// Develop action scoring.
 #[derive(Debug, Clone, Copy)]
+pub struct DevelopProfileWeights {
+    /// Static-profile multipliers at numbered round 1 and 8 of each era.
+    /// Cost is a £-to-profile conversion; VP and income penalise removing a
+    /// tile that would be valuable to build. All values are interpolated by
+    /// `EvalContext::round_progress` rather than global ScoreParts weights.
+    pub canal_vp_start: f64,
+    pub canal_vp_end: f64,
+    pub rail_vp_start: f64,
+    pub rail_vp_end: f64,
+    pub canal_income_start: f64,
+    pub canal_income_end: f64,
+    pub rail_income_start: f64,
+    pub rail_income_end: f64,
+    pub canal_cost_start: f64,
+    pub canal_cost_end: f64,
+    pub rail_cost_start: f64,
+    pub rail_cost_end: f64,
+}
+
+/// Develop action scoring.
+#[derive(Debug, Clone, Copy)]
 pub struct DevelopWeights {
-    /// Base target value by the printed era of the tile being developed.
-    pub rail_era_tile: f64,
-    pub canal_era_tile: f64,
-    /// Value per level of the tile being developed away.
-    pub per_level: f64,
-    /// Bonus for unlocking a double-scoring rail-era tile.
-    pub rail_unlock_bonus: f64,
-    /// Brewery-engine premium for developing the level-1 brewery away.
-    pub brewery_lv1_bonus: f64,
-    /// Canal-Early iron-price ladder for the brewery develop (developing
-    /// burns iron; only do it while iron is cheap).
-    pub iron_price_very_cheap_bonus: f64,
-    pub iron_price_cheap_bonus: f64,
-    pub iron_price_marginal_bonus: f64,
-    pub iron_price_expensive_penalty: f64,
-    /// Canal-era nudge (cross-era bonus window).
-    pub canal_bonus: f64,
-    /// Plan alignment and "we hold a card that can build it" bonuses.
-    pub plan_bonus: f64,
-    pub buildable_card_bonus: f64,
-    /// Opportunity cost charged when the iron spent is not free.
-    pub iron_scarcity_cost: f64,
-    /// Scale applied to the second develop target (diminishing returns).
-    pub second_target_scale: f64,
-    /// Canal-era develop tempo shaping: overall scale, penalty for spending
-    /// the action on a single tile, small bonus for a double develop.
-    pub canal_scale: f64,
-    pub canal_single_target_penalty: f64,
-    pub canal_double_target_bonus: f64,
-    /// Develop-count guardrail: per-era limits and a steep quadratic penalty
-    /// `over * over * steepness + over` beyond the limit.
-    pub canal_count_limit: f64,
-    pub rail_count_limit: f64,
-    pub over_limit_steepness: f64,
+    /// Fixed prices used only by static tile profiles; they never inspect the
+    /// current market. £3 is the middle market price for both resources.
+    pub static_coal_price: f64,
+    pub static_iron_price: f64,
+    /// Era-local, independently tunable weights for static tile profiles.
+    pub profile: DevelopProfileWeights,
+    /// Develop's action baseline is centred at 3. A paid iron unit below this
+    /// reference raises the baseline; one above it lowers it.
+    pub iron_price_reference: f64,
+    pub iron_price_score_per_pound: f64,
+    pub base_score_center: f64,
+    pub base_score_min: f64,
+    pub base_score_max: f64,
 }
 
 /// Sell action scoring.
@@ -401,8 +401,7 @@ pub struct LookaheadParams {
     pub end_turn_runway_span: f64,
 }
 
-/// Hard policy constraints (temporary strategic guardrails) and their
-/// penalty coefficients.
+/// Hard policy constraints (temporary strategic guardrails).
 #[derive(Debug, Clone, Copy)]
 pub struct Guardrails {
     /// Forbid building the level-1 brewery (vanishes at era end; develop
@@ -413,12 +412,6 @@ pub struct Guardrails {
     pub ban_develop_iron_lv2_plus: bool,
     /// Forbid developing brewery level 2+ during the canal era.
     pub ban_develop_brewery_lv2_canal_early: bool,
-    /// Develop-guardrail penalties for brewing/coal at level 2+:
-    /// `base + per_level * (level - 2)`.
-    pub develop_brewery_penalty_base: f64,
-    pub develop_brewery_penalty_per_level: f64,
-    pub develop_coal_penalty_base: f64,
-    pub develop_coal_penalty_per_level: f64,
 }
 
 /// Full heuristic parameter set.
@@ -569,26 +562,27 @@ impl Default for HeuristicConfig {
                 double_surcharge_weight: 1.0,
             },
             develop: DevelopWeights {
-                rail_era_tile: 0.35,
-                canal_era_tile: 0.12,
-                per_level: 0.18,
-                rail_unlock_bonus: 0.25,
-                brewery_lv1_bonus: 0.55,
-                iron_price_very_cheap_bonus: 3.0,
-                iron_price_cheap_bonus: 2.0,
-                iron_price_marginal_bonus: 0.5,
-                iron_price_expensive_penalty: -1.5,
-                canal_bonus: 0.15,
-                plan_bonus: 0.3,
-                buildable_card_bonus: 0.3,
-                iron_scarcity_cost: 0.6,
-                second_target_scale: 0.4,
-                canal_scale: 2.0,
-                canal_single_target_penalty: 2.0,
-                canal_double_target_bonus: 0.5,
-                canal_count_limit: 4.0,
-                rail_count_limit: 1.0,
-                over_limit_steepness: 2.0,
+                static_coal_price: 3.0,
+                static_iron_price: 3.0,
+                profile: DevelopProfileWeights {
+                    canal_vp_start: 0.9,
+                    canal_vp_end: 1.0,
+                    rail_vp_start: 1.0,
+                    rail_vp_end: 1.1,
+                    canal_income_start: 0.4,
+                    canal_income_end: 0.2,
+                    rail_income_start: 0.2,
+                    rail_income_end: 0.0,
+                    canal_cost_start: 1.6,
+                    canal_cost_end: 1.0,
+                    rail_cost_start: 1.0,
+                    rail_cost_end: 0.5,
+                },
+                iron_price_reference: 3.0,
+                iron_price_score_per_pound: 0.5,
+                base_score_center: 3.0,
+                base_score_min: 2.0,
+                base_score_max: 4.0,
             },
             sell: SellWeights {
                 develop_bonus_value: 0.5,
@@ -658,10 +652,6 @@ impl Default for HeuristicConfig {
                 ban_build_lv1_brewery: true,
                 ban_develop_iron_lv2_plus: true,
                 ban_develop_brewery_lv2_canal_early: true,
-                develop_brewery_penalty_base: 1.8,
-                develop_brewery_penalty_per_level: 0.2,
-                develop_coal_penalty_base: 1.5,
-                develop_coal_penalty_per_level: 0.2,
             },
         }
     }

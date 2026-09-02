@@ -3,7 +3,7 @@
 //! Each predicate here used to be re-implemented inline in several scoring
 //! functions; they now live once. All functions are read-only.
 
-use crate::data::{CardType, IndustryType};
+use crate::data::IndustryType;
 use crate::graph::{connected_locations, count_beer_sources, find_coal_sources, find_iron_sources};
 use crate::map::{Loc, connections};
 use crate::rules::BuildTarget;
@@ -138,15 +138,6 @@ pub fn player_owns_link_touching(state: &GameState, pid: usize, city_id: Loc) ->
         } else {
             false
         }
-    })
-}
-
-/// True if the player holds a card that can build `ind` (industry or wild).
-pub fn player_has_buildable_card(state: &GameState, pid: usize, ind: IndustryType) -> bool {
-    let player = &state.players[pid];
-    player.hand.iter().any(|c| {
-        matches!(c, Card::Industry { .. } if c.is_industry(ind))
-            || c.ctype() == CardType::WildIndustry
     })
 }
 

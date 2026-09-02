@@ -180,7 +180,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // Keep the iterator-based shape here so each branch obeys the same Top-K
     // contract and can grow to emit alternatives without changing this dispatcher.
     out.extend(
-        score_develop_plans(state, &ctx, &plan, &card_choices)
+        score_develop_plans(state, &ctx, &card_choices)
             .into_iter()
             .take(k),
     );
