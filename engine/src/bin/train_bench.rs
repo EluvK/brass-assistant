@@ -10,8 +10,8 @@
 
 use std::time::Instant;
 
-use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha12Rng;
+use rand_chacha::rand_core::SeedableRng;
 
 use _engine::bridge::action_features;
 use _engine::encode;

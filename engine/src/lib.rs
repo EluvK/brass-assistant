@@ -4,26 +4,26 @@
 //! Rust callers and the Python binding. New code should prefer the layer paths
 //! (`model`, `game_state`, `gameplay`, `ai`, and `bridge`).
 
-pub mod ai;
 #[path = "bridge/action_features.rs"]
 pub mod action_features;
+pub mod ai;
 #[cfg(feature = "python")]
 pub mod bridge;
 #[path = "bridge/encode.rs"]
 pub mod encode;
-#[path = "bridge/move_codec.rs"]
-pub mod move_codec;
 pub mod game_state;
 pub mod gameplay;
 pub mod model;
+#[path = "bridge/move_codec.rs"]
+pub mod move_codec;
 // Human-readable diagnostics are useful to the pure-Rust replay binary too.
 // The source remains beside the related bridge code until that directory is
 // split physically; it is not part of the Python feature boundary.
 #[path = "bridge/replay_fmt.rs"]
 pub mod replay_fmt;
 
-pub use ai::{heuristic_ai, mcts_ai, random_ai};
 pub use ai::replay;
+pub use ai::{heuristic_ai, mcts_ai, random_ai};
 #[cfg(feature = "python")]
 pub use ai::{nn_mcts, python_worker};
 #[cfg(feature = "python")]

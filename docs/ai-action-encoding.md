@@ -1,6 +1,6 @@
 # 动作特征编码与网络头设计
 
-本文描述当前 candidate-scoring 方案中**动作特征（301 维，schema v4）的具体布局**与 **Python 网络各输出头（policy / rank / winner / econ）的设计**，并给出每类动作的实测编码示例。
+本文描述当前 candidate-scoring 方案中**动作特征（301 维，schema v5）的具体布局**与 **Python 网络各输出头（policy / rank / winner / econ）的设计**，并给出每类动作的实测编码示例。
 
 对应实现：`engine/src/bridge/action_features.rs`（编码）、`python/brass_ai/net.py`（网络）、`python/brass_ai/train.py`（损失）。
 当前版本：`ACTION_FEATURE_SCHEMA_VERSION = 4`，`STATE_FEATURE_SCHEMA_VERSION = 4`。状态张量（board 24 平面 / links / global 168 / 手牌）的布局见 `engine/src/bridge/encode.rs` 模块注释与 `docs/architecture.md`。
@@ -41,7 +41,7 @@ Rust legal_resolved_moves()          枚举完整可执行动作（含资源与�
 | `CONNECTION_1` | 85 | 39 | 单铁路目标 / 双铁路第一条连接 one-hot |
 | `CONNECTION_2` | 124 | 39 | 双铁路第二条连接 one-hot |
 | `SELL_KEY` | 163 | 47 | Sell 的目标城市槽位（全局槽位 key），卖几个亮几个 |
-| `MERCHANT` | 210 | 9 | Sell 的目标商家 one-hot |
+| `MERCHANT` | 210 | 9 | 保留区；v5 的 Sell 不编码普通买家 |
 | `DRAIN` | 219 | 49 | **按棋盘格索引**（47 城市槽 + 2 农场，与 board 张量同索引）该动作抽取的资源量（cubes/4）。煤/铁/酒厂啤酒共用一个块：一格只有一种行业，**种类与归属由状态平面 join 提供**。市场购买无身份，不进本块 |
 | `MERCHANT_BEER` | 268 | 9 | 从各商家抽走的啤酒量（cubes/4） |
 | `CONSEQUENCE` | 277 | 12 | 解析后果：[0]建链数/2、[1]网络新触及地点/4、[2]新触及商家 0/1、[3]/[4]翻面数 自家/对手（各 /4）、[5]overbuild、[6]升级、[7]建满城市、[8]待售板块/4、[9]免费开发、[10]/[11]保留 |
@@ -52,10 +52,10 @@ Rust legal_resolved_moves()          枚举完整可执行动作（含资源与�
 | 对象 | 索引系 | 内容 | 编码去向 |
 | --- | --- | --- | --- |
 | 城市槽 + 农场 | 47+2 = **49 棋盘格**（board 张量同索引） | 行业板块的建造/翻面/资源 | 动作：DRAIN、CITY_SLOT、SELL_KEY；状态：board (24,49) |
-| **商家** | **9 个商家板块**，挂在 9 个商家**地点**上 | 每局随机 `buys`（收什么货）+ `has_beer`（商家酒） | 动作：MERCHANT（Sell 目标）、MERCHANT_BEER（抽商家酒）；状态：global 商家块 |
+| **商家** | **9 个商家板块**，挂在 9 个商家**地点**上 | 每局随机 `buys`（收什么货）+ `has_beer`（商家酒） | 动作：MERCHANT_BEER（抽商家酒）；状态：global 商家块 |
 | **市场** | **虚拟**，无地点无身份 | 只有煤/铁供应（价格随存量浮动），**没有啤酒** | 状态：global 煤/铁市场 one-hot；动作：SUMMARY 市场煤/铁计数。永不进 DRAIN |
 
-Sell 打分的 join 由此完备：动作的 `MERCHANT[i]` one-hot × 状态里商家 i 的 `buys`/`has_beer` = "这个商家收不收我的货、有没有酒可喝"。啤酒的三个来源索引系不混用：自家/对手酒厂 → DRAIN（49 格），商家 → MERCHANT_BEER（9 板块），市场无啤酒。
+Sell 的普通买家仅是合法性约束，不是动作身份；商家酒的身份由 `MERCHANT_BEER` 唯一表达。啤酒的三个来源索引系不混用：自家/对手酒厂 → DRAIN（49 格），商家 → MERCHANT_BEER（9 板块），市场无啤酒。
 
 ## 3. 每类动作实测示例
 
@@ -116,12 +116,12 @@ SUMMARY[4]=2     # 2 个市场铁
 ### 3.5 Sell
 
 ```text
-ACTION[3]=1  CARD[28]=1  SELL_KEY[4]=1  MERCHANT[7]=1
+ACTION[3]=1  CARD[28]=1  SELL_KEY[4]=1
 CONSEQUENCE[8]=0.25   # 1 张待售板块（/4）
 SUMMARY[6]=0.25       # 1 / 4
 ```
 
-该例板块不需要啤酒。若需要，啤酒支付计划（引擎确定性补足）显式进 DRAIN / MERCHANT_BEER——不是网络自行推断的隐式信息。
+该例板块不需要啤酒。若需要，所选择的具体酒桶显式进 DRAIN / MERCHANT_BEER——不是网络自行推断的隐式信息。
 
 ### 3.6 Loan / Scout / Pass
 
@@ -248,7 +248,7 @@ L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split) + 1e-4 * 
 ### 8.2 派生信息（不是选择，无需编码）
 
 - **市场档位**：市场补足固定取最便宜档、按升序付款（`graph.rs`），玩家无选择空间；成本可由 SUMMARY 市场计数 + global 市场状态 one-hot 推断。
-- **Sell 的酒厂啤酒支付计划**：`beer_sources` 由引擎确定性补足，不是选择；其结果显式编码进 DRAIN / MERCHANT_BEER。
+- **Sell 的酒桶选择**：扁平 `beer_sources` 是动作身份；引擎只在执行时确定其到板块的合法分配，结果显式编码进 DRAIN / MERCHANT_BEER。
 
 ### 8.3 迭代原则
 

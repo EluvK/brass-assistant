@@ -580,13 +580,11 @@ fn flush_net(
         }
     }
 
-    let board_arr =
-        PyArray1::from_vec(py, boards).reshape((n_rows, board_len))?;
+    let board_arr = PyArray1::from_vec(py, boards).reshape((n_rows, board_len))?;
     let links_arr = PyArray1::from_vec(py, links).reshape((n_rows, link_len))?;
     let global_arr =
         PyArray1::from_vec(py, globals).reshape((n_rows, crate::encode::GLOBAL_LEN))?;
-    let own_arr =
-        PyArray1::from_vec(py, own_hands).reshape((n_rows, crate::encode::HAND_LEN))?;
+    let own_arr = PyArray1::from_vec(py, own_hands).reshape((n_rows, crate::encode::HAND_LEN))?;
     let opp_arr = PyArray1::from_vec(py, opp_hands)
         .reshape((n_rows, (MAX_PLAYERS - 1) * crate::encode::HAND_LEN))?;
     let candidates_arr =

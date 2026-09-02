@@ -16,6 +16,7 @@ pub struct IndustrySlot {
     pub slot_index: usize,
 }
 
+#[rustfmt::skip]
 const IRON_SLOTS: [IndustrySlot; 9] = [
     IndustrySlot { loc: Loc::Derby, slot_index: 2 },
     IndustrySlot { loc: Loc::StokeOnTrent, slot_index: 1 },
@@ -28,6 +29,7 @@ const IRON_SLOTS: [IndustrySlot; 9] = [
     IndustrySlot { loc: Loc::Redditch, slot_index: 1 },
 ];
 
+#[rustfmt::skip]
 const BREWERY_SLOTS: [IndustrySlot; 11] = [
     IndustrySlot { loc: Loc::Derby, slot_index: 0 },
     IndustrySlot { loc: Loc::Stone, slot_index: 0 },
@@ -282,11 +284,20 @@ mod tests {
     fn industry_slot_queries_cover_static_and_current_empty_capacity() {
         assert_eq!(industry_slots(IndustryType::IronWorks).len(), 9);
         assert_eq!(industry_slots(IndustryType::Brewery).len(), 11);
-        assert!(city_supports_industry(Loc::Birmingham, IndustryType::IronWorks));
-        assert!(city_supports_industry(Loc::Uttoxeter, IndustryType::Brewery));
+        assert!(city_supports_industry(
+            Loc::Birmingham,
+            IndustryType::IronWorks
+        ));
+        assert!(city_supports_industry(
+            Loc::Uttoxeter,
+            IndustryType::Brewery
+        ));
 
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(3), 4);
-        assert_eq!(empty_industry_slot_count(&state, IndustryType::IronWorks), 9);
+        assert_eq!(
+            empty_industry_slot_count(&state, IndustryType::IronWorks),
+            9
+        );
         assert_eq!(empty_industry_slot_count(&state, IndustryType::Brewery), 11);
         let def = industry_tiles(IndustryType::Brewery)[0];
         state.place_tile(

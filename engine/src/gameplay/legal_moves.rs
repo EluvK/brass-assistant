@@ -2,10 +2,9 @@
 
 use crate::data::{Era, IndustryType};
 use crate::gameplay::actions::{
-    SellTarget, affordable_develop_iron_count, any_card_indices, can_develop, can_scout,
+    affordable_develop_iron_count, any_card_indices, can_develop, can_scout,
     coal_options_for_connection, coal_source_options, get_second_rail_options,
-    get_valid_build_targets, get_valid_network_targets, get_valid_sell_targets,
-    iron_source_options, valid_build_cards,
+    get_valid_build_targets, get_valid_network_targets, iron_source_options, valid_build_cards,
 };
 use crate::map::connections;
 use crate::r#move::{CardCandidate, Move, ResolvedMove};
@@ -160,20 +159,14 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
     }
 
     // SELL
-    let sell_targets = get_valid_sell_targets(state, pid);
-    if !sell_targets.is_empty() {
-        // A Sell action may include any non-empty subset of sellable tiles.
-        // A plan retains every per-tile merchant/beer route because they can
-        // produce different merchant bonuses and consume different beer.
-        let sell_plans = build_sell_plans(state, pid, &sell_targets);
+    let sell_plans = build_sell_plans(state, pid);
+    if !sell_plans.is_empty() {
         for ci in &cards {
             for plan in &sell_plans {
-                for free_develop in sell_free_develop_options(state, pid, &plan.1, &plan.2) {
+                for free_develop in sell_free_develop_options(state, pid, &plan.0, &plan.1) {
                     moves.push(ResolvedMove::Sell {
                         keys: plan.0.clone(),
-                        merchant_indices: plan.1.clone(),
-                        use_merchant_beer: plan.2.clone(),
-                        beer_sources: plan.3.clone(),
+                        beer_sources: plan.1.clone(),
                         free_develop,
                         card_index: *ci,
                     });
@@ -374,19 +367,13 @@ fn structural_from_resolved(mv: &ResolvedMove) -> (String, Move, Vec<usize>) {
         ),
         ResolvedMove::Sell {
             keys,
-            merchant_indices,
-            use_merchant_beer,
             beer_sources,
             free_develop,
             card_index,
         } => (
-            format!(
-                "sell:{keys:?}:{merchant_indices:?}:{use_merchant_beer:?}:{beer_sources:?}:{free_develop:?}"
-            ),
+            format!("sell:{keys:?}:{beer_sources:?}:{free_develop:?}"),
             Move::Sell {
                 keys: keys.clone(),
-                merchant_indices: merchant_indices.clone(),
-                use_merchant_beer: use_merchant_beer.clone(),
                 beer_sources: beer_sources.clone(),
                 free_develop: *free_develop,
                 card_candidates: vec![],
@@ -453,133 +440,172 @@ mod tests {
     }
 }
 
-/// All Sell plans: every non-empty subset of targets combined with every
-/// per-target merchant route. Plans are dry-run validated because beer and
-/// merchant-beer availability are shared across the tiles in one action.
-///
-/// Keys are emitted in target order, which is ascending city-slot key order,
-/// so an unordered set of sold tiles has one canonical representation.
+/// Backtracking source-combination enumeration.  The validator is the single
+/// source of truth for buyer assignment and shared-resource legality.
 fn build_sell_plans(
     state: &GameState,
     pid: usize,
-    targets: &[SellTarget],
-) -> Vec<(
-    Vec<usize>,
-    Vec<usize>,
-    Vec<bool>,
-    Vec<Vec<crate::graph::BeerSource>>,
-)> {
+) -> Vec<(Vec<usize>, Vec<crate::graph::BeerSource>)> {
+    use crate::graph::{BeerSource, BeerSourceKind, find_beer_sources};
+    use std::collections::HashSet;
+    let targets: Vec<usize> = state
+        .city_tiles
+        .iter()
+        .enumerate()
+        .filter_map(|(k, t)| {
+            let t = t.as_ref()?;
+            (t.player == pid && !t.flipped && t.ind.is_sellable()).then_some(k)
+        })
+        .collect();
     let mut out = Vec::new();
-    let mut keys = Vec::new();
-    let mut merchants = Vec::new();
-    let mut use_beer = Vec::new();
-    enumerate_sell_plans(
-        state,
-        pid,
-        targets,
-        0,
-        &mut keys,
-        &mut merchants,
-        &mut use_beer,
-        &mut out,
-    );
+    let mut seen = HashSet::new();
+    for mask in 1usize..(1usize << targets.len()) {
+        let keys: Vec<_> = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &k)| (mask & (1 << i) != 0).then_some(k))
+            .collect();
+        let needed: usize = keys
+            .iter()
+            .map(|&k| {
+                state.city_tiles[k]
+                    .as_ref()
+                    .unwrap()
+                    .def
+                    .beers_to_sell
+                    .unwrap_or(0) as usize
+            })
+            .sum();
+        let mut pool = Vec::<BeerSource>::new();
+        for &key in &keys {
+            let tile = state.city_tiles[key].as_ref().unwrap();
+            let loc = crate::state::loc_from_key(key).unwrap().0;
+            pool.extend(find_beer_sources(state, loc, pid, &[]));
+            for (i, merchant) in state.merchants.iter().enumerate() {
+                if merchant.has_beer
+                    && merchant.accepts(tile.ind)
+                    && crate::graph::connected_locations(state, loc).contains(&merchant.loc)
+                {
+                    pool.push(BeerSource {
+                        kind: BeerSourceKind::Merchant,
+                        key: usize::MAX,
+                        farm_idx: None,
+                        merchant_idx: Some(i),
+                    });
+                }
+            }
+        }
+        pool.sort_by_key(crate::gameplay::actions::beer_source_sort_key);
+        // Each physical source appears at most as often as it exists in the
+        // state, even if it is reachable from several selected tiles.
+        let mut capped = Vec::new();
+        for src in pool {
+            let available = match src.kind {
+                BeerSourceKind::Merchant => 1,
+                _ => find_beer_sources(
+                    state,
+                    crate::state::loc_from_key(keys[0]).unwrap().0,
+                    pid,
+                    &[],
+                )
+                .iter()
+                .filter(|x| **x == src)
+                .count(),
+            };
+            if capped.iter().filter(|x| **x == src).count() < available {
+                capped.push(src);
+            }
+        }
+        fn choose(
+            state: &GameState,
+            pid: usize,
+            keys: &[usize],
+            pool: &[BeerSource],
+            start: usize,
+            left: usize,
+            picked: &mut Vec<BeerSource>,
+            out: &mut Vec<(Vec<usize>, Vec<BeerSource>)>,
+            seen: &mut HashSet<crate::gameplay::actions::SellIdentity>,
+        ) {
+            if left == 0 {
+                let id = crate::gameplay::actions::sell_identity(keys, picked, None);
+                if sell_plan_is_valid(state, pid, &id.keys, &id.beer_sources)
+                    && seen.insert(id.clone())
+                {
+                    out.push((id.keys, id.beer_sources));
+                }
+                return;
+            }
+            for i in start..pool.len() {
+                picked.push(pool[i]);
+                choose(state, pid, keys, pool, i + 1, left - 1, picked, out, seen);
+                picked.pop();
+            }
+        }
+        if needed == 0 {
+            let id = crate::gameplay::actions::sell_identity(&keys, &[], None);
+            if sell_plan_is_valid(state, pid, &id.keys, &id.beer_sources) && seen.insert(id.clone())
+            {
+                out.push((id.keys, id.beer_sources));
+            }
+        } else if needed <= capped.len() {
+            choose(
+                state,
+                pid,
+                &keys,
+                &capped,
+                0,
+                needed,
+                &mut Vec::new(),
+                &mut out,
+                &mut seen,
+            );
+        }
+    }
     out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn enumerate_sell_plans(
+fn sell_plan_is_valid(
     state: &GameState,
     pid: usize,
-    targets: &[SellTarget],
-    target_index: usize,
-    keys: &mut Vec<usize>,
-    merchants: &mut Vec<usize>,
-    use_beer: &mut Vec<bool>,
-    out: &mut Vec<(
-        Vec<usize>,
-        Vec<usize>,
-        Vec<bool>,
-        Vec<Vec<crate::graph::BeerSource>>,
-    )>,
-) {
-    if target_index == targets.len() {
-        if keys.is_empty() {
-            return;
-        }
-        let Ok(beer_sources) =
-            crate::rules::plan_sell_beer_sources(state, pid, keys, merchants, use_beer)
-        else {
-            return;
-        };
-        out.push((
-            keys.clone(),
-            merchants.clone(),
-            use_beer.clone(),
-            beer_sources,
-        ));
-        return;
-    }
-
-    // This target is not part of the action.
-    enumerate_sell_plans(
-        state,
-        pid,
-        targets,
-        target_index + 1,
-        keys,
-        merchants,
-        use_beer,
-        out,
-    );
-
-    // This target is sold through each of its distinct merchant routes.
-    let target = &targets[target_index];
-    for route in &target.routes {
-        keys.push(target.key);
-        merchants.push(route.merchant_index);
-        use_beer.push(route.use_merchant_beer);
-        enumerate_sell_plans(
-            state,
-            pid,
-            targets,
-            target_index + 1,
-            keys,
-            merchants,
-            use_beer,
-            out,
-        );
-        keys.pop();
-        merchants.pop();
-        use_beer.pop();
-    }
+    keys: &[usize],
+    sources: &[crate::graph::BeerSource],
+) -> bool {
+    crate::gameplay::actions::validate_sell_plan(state, pid, keys, sources, None).is_ok()
+        || state.players[pid]
+            .developable_types()
+            .into_iter()
+            .any(|(ind, _)| {
+                crate::gameplay::actions::validate_sell_plan(state, pid, keys, sources, Some(ind))
+                    .is_ok()
+            })
 }
 
 fn sell_free_develop_options(
     state: &GameState,
     pid: usize,
-    merchant_indices: &[usize],
-    use_merchant_beer: &[bool],
+    keys: &[usize],
+    sources: &[crate::graph::BeerSource],
 ) -> Vec<Option<IndustryType>> {
-    let awards = merchant_indices
-        .iter()
-        .zip(use_merchant_beer)
-        .filter(|(merchant, uses_beer)| {
-            **uses_beer
-                && state.merchants.get(**merchant).is_some_and(|mt| {
-                    matches!(
-                        crate::map::merchant_bonus_at(mt.loc),
-                        crate::map::MerchantBonus::Develop(_)
-                    )
-                })
-        })
-        .count();
-    match awards {
-        0 => vec![None],
-        1 => state.players[pid]
-            .developable_types()
-            .into_iter()
-            .map(|(ind, _)| Some(ind))
-            .collect(),
-        _ => Vec::new(),
+    let eligible = sources.iter().any(|s| {
+        s.kind == crate::graph::BeerSourceKind::Merchant
+            && s.merchant_idx.is_some_and(|i| {
+                matches!(
+                    crate::map::merchant_bonus_at(state.merchants[i].loc),
+                    crate::map::MerchantBonus::Develop(_)
+                )
+            })
+    });
+    if !eligible {
+        return vec![None];
     }
+    state.players[pid]
+        .developable_types()
+        .into_iter()
+        .filter_map(|(ind, _)| {
+            crate::gameplay::actions::validate_sell_plan(state, pid, keys, sources, Some(ind))
+                .ok()
+                .map(|_| Some(ind))
+        })
+        .collect()
 }

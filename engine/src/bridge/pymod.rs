@@ -220,8 +220,10 @@ impl PyGame {
         }
 
         let t = encode::state_to_tensor(&work, pid);
-        let board = PyArray1::from_vec(py, t.board).reshape((encode::BOARD_PLANES, encode::BOARD_CELLS))?;
-        let links = PyArray1::from_vec(py, t.links).reshape((encode::LINK_PLANES, encode::LINK_CELLS))?;
+        let board =
+            PyArray1::from_vec(py, t.board).reshape((encode::BOARD_PLANES, encode::BOARD_CELLS))?;
+        let links =
+            PyArray1::from_vec(py, t.links).reshape((encode::LINK_PLANES, encode::LINK_CELLS))?;
         Ok((
             pid,
             era,
@@ -267,10 +269,7 @@ impl PyGame {
                         crate::r#move::CardRequirement::One => 1,
                         crate::r#move::CardRequirement::ScoutThree => 3,
                     },
-                    mv.card_candidates()
-                        .iter()
-                        .map(|c| c.hand_index)
-                        .collect(),
+                    mv.card_candidates().iter().map(|c| c.hand_index).collect(),
                 )
             })
             .collect()
@@ -754,9 +753,9 @@ fn coalesce_equivalent_policy<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     let dim = crate::bridge::action_features::ACTION_FEATURE_DIM;
     let feats = features.readonly();
-    let array = feats.as_slice().map_err(|_| {
-        PyValueError::new_err("candidate features must be contiguous")
-    })?;
+    let array = feats
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("candidate features must be contiguous"))?;
     let target = policy.readonly();
     let target = target
         .as_slice()

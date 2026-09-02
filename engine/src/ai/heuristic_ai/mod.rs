@@ -128,14 +128,10 @@ pub(crate) fn operation_key(mv: &ResolvedMove) -> String {
         } => format!("develop:{ind1:?}:{ind2:?}:{iron:?}"),
         ResolvedMove::Sell {
             keys,
-            merchant_indices,
-            use_merchant_beer,
             beer_sources,
             free_develop,
             ..
-        } => format!(
-            "sell:{keys:?}:{merchant_indices:?}:{use_merchant_beer:?}:{beer_sources:?}:{free_develop:?}"
-        ),
+        } => format!("sell:{keys:?}:{beer_sources:?}:{free_develop:?}"),
         ResolvedMove::Loan { .. } => "loan".into(),
         // Scout is one operation; the three discarded cards belong to the
         // separate card-selection head and must not multiply operation nodes.

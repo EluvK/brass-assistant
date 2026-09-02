@@ -225,36 +225,31 @@ pub fn move_detail(state: &GameState, mv: &ResolvedMove) -> String {
             format!("{s}，用牌[{}]", card_name)
         }
         ResolvedMove::Sell {
-            keys,
-            merchant_indices,
-            use_merchant_beer,
-            ..
+            keys, beer_sources, ..
         } => {
             let mut parts = Vec::new();
-            for (i, k) in keys.iter().enumerate() {
+            for k in keys {
                 let (loc, slot) = match crate::state::loc_from_key(*k) {
                     Some((l, s)) => (Some(l), s),
                     None => (None, 0),
                 };
                 let ind = state.city_tiles[*k].as_ref().map(|t| t.ind);
-                let merchant = merchant_indices
-                    .get(i)
-                    .and_then(|&mi| state.merchants.get(mi))
-                    .map(|mt| loc_label(mt.loc))
-                    .unwrap_or_else(|| "?".to_string());
-                let beer = use_merchant_beer.get(i).copied().unwrap_or(false);
                 let loc_n = loc.map(loc_label).unwrap_or_else(|| "?".to_string());
                 let ind_n = ind
                     .map(|i| industry_label(i).to_string())
                     .unwrap_or_else(|| "?".to_string());
-                parts.push(format!(
-                    "{}({})@{}(槽{})=>{}",
-                    ind_n,
-                    if beer { "喝商家酒" } else { "自酿酒" },
-                    loc_n,
-                    slot + 1,
-                    merchant
-                ));
+                parts.push(format!("{}@{}(槽{})", ind_n, loc_n, slot + 1));
+            }
+            let merchant_beer: Vec<_> = beer_sources
+                .iter()
+                .filter_map(|s| {
+                    s.merchant_idx
+                        .and_then(|i| state.merchants.get(i))
+                        .map(|m| loc_label(m.loc))
+                })
+                .collect();
+            if !merchant_beer.is_empty() {
+                parts.push(format!("商家酒@{}", merchant_beer.join(",")));
             }
             format!("卖货 [{}]，用牌[{}]", parts.join(" + "), card_name)
         }

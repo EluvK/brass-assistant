@@ -1,4 +1,4 @@
-//! Structured neural features for one concrete legal move (schema v4).
+//! Structured neural features for one concrete legal move (schema v5).
 //!
 //! v4 principle: the action encoding states the CHOICE (which board cells are
 //! drained, which connection, which merchant), while tile identity — industry,
@@ -34,7 +34,7 @@ use crate::r#move::ResolvedMove;
 use crate::state::{Card, GameState};
 
 pub const ACTION_FEATURE_DIM: usize = 301;
-pub const ACTION_FEATURE_SCHEMA_VERSION: usize = 4;
+pub const ACTION_FEATURE_SCHEMA_VERSION: usize = 5;
 
 const ACTION: usize = 0;
 const CARD: usize = 7;
@@ -45,7 +45,8 @@ const INDUSTRY_2: usize = 79;
 const CONNECTION_1: usize = 85;
 const CONNECTION_2: usize = 124;
 const SELL_KEY: usize = 163;
-const MERCHANT: usize = 210;
+#[allow(dead_code)]
+const MERCHANT: usize = 210; // reserved v5 block; retained for layout assertions
 const DRAIN: usize = 219;
 const MERCHANT_BEER: usize = 268;
 const CONSEQUENCE: usize = 277;
@@ -365,8 +366,6 @@ pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>
         }
         ResolvedMove::Sell {
             keys,
-            merchant_indices,
-            use_merchant_beer: _,
             beer_sources,
             free_develop,
             card_index,
@@ -377,16 +376,11 @@ pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>
             for &key in keys {
                 one_hot(out, SELL_KEY, 47, key);
             }
-            for &merchant in merchant_indices {
-                one_hot(out, MERCHANT, 9, merchant);
-            }
             // The engine's deterministic beer payment plan is explicit input:
             // brewery beer drains cells, merchant beer drains merchants. The
             // aligned `use_merchant_beer` flags are subsumed by the plan.
-            for plan in beer_sources {
-                for source in plan {
-                    drain_cube(&mut drain, &mut merchant_beer, source);
-                }
+            for source in beer_sources {
+                drain_cube(&mut drain, &mut merchant_beer, source);
             }
             if let Some(ind) = free_develop {
                 industry(out, INDUSTRY_1, *ind);
@@ -454,7 +448,7 @@ mod tests {
             [0, 7, 42, 69, 73, 79, 85, 124, 163, 210, 219, 268, 277, 289]
         );
         assert_eq!(ACTION_FEATURE_DIM, 301);
-        assert_eq!(ACTION_FEATURE_SCHEMA_VERSION, 4);
+        assert_eq!(ACTION_FEATURE_SCHEMA_VERSION, 5);
     }
 
     #[test]

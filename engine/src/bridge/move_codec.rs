@@ -96,19 +96,8 @@ fn u_list(v: &[usize]) -> String {
         .join(";")
 }
 
-fn b_list(v: &[bool]) -> String {
-    v.iter()
-        .map(|b| *b as u8)
-        .map(|x| x.to_string())
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-fn beer_plan(v: &[Vec<BeerSource>]) -> String {
-    v.iter()
-        .map(|payment| payment.iter().map(beer).collect::<Vec<_>>().join("|"))
-        .collect::<Vec<_>>()
-        .join("~")
+fn beer_list(v: &[BeerSource]) -> String {
+    v.iter().map(beer).collect::<Vec<_>>().join("|")
 }
 
 // --- source decoders --------------------------------------------------------
@@ -184,26 +173,10 @@ fn u_list_dec(s: &str) -> Result<Vec<usize>, String> {
     s.split(';').filter(|x| !x.is_empty()).map(un).collect()
 }
 
-fn b_list_dec(s: &str) -> Result<Vec<bool>, String> {
-    s.split(';')
-        .filter(|x| !x.is_empty())
-        .map(|x| {
-            x.parse::<u8>()
-                .map(|b| b != 0)
-                .map_err(|e| format!("bad bool {x:?}: {e}"))
-        })
-        .collect()
-}
-
-fn beer_plan_dec(s: &str) -> Result<Vec<Vec<BeerSource>>, String> {
-    s.split('~')
-        .map(|payment| {
-            payment
-                .split('|')
-                .filter(|source| !source.is_empty())
-                .map(dec_beer)
-                .collect()
-        })
+fn beer_list_dec(s: &str) -> Result<Vec<BeerSource>, String> {
+    s.split('|')
+        .filter(|source| !source.is_empty())
+        .map(dec_beer)
         .collect()
 }
 
@@ -287,17 +260,13 @@ fn encode_legacy(mv: &ResolvedMove) -> String {
         ),
         ResolvedMove::Sell {
             keys,
-            merchant_indices,
-            use_merchant_beer,
             beer_sources,
             free_develop,
             card_index,
         } => format!(
-            "Sell{{keys:{},merchants:{},beer:{},sources:{},free:{},card:{}}}",
+            "Sell{{keys:{},sources:{},free:{},card:{}}}",
             u_list(keys),
-            u_list(merchant_indices),
-            b_list(use_merchant_beer),
-            beer_plan(beer_sources),
+            beer_list(beer_sources),
             free_develop
                 .map(|x| x as usize)
                 .map(|x| x.to_string())
@@ -402,13 +371,9 @@ pub fn decode(s: &str) -> Result<ResolvedMove, String> {
         }),
         "Sell" => {
             let keys = u_list_dec(field(body, "keys")?)?;
-            let merchant_indices = u_list_dec(field(body, "merchants")?)?;
-            let use_merchant_beer = b_list_dec(field(body, "beer")?)?;
-            let beer_sources = beer_plan_dec(field(body, "sources")?)?;
+            let beer_sources = beer_list_dec(field(body, "sources")?)?;
             Ok(ResolvedMove::Sell {
                 keys,
-                merchant_indices,
-                use_merchant_beer,
                 beer_sources,
                 free_develop: field_opt_ind(body, "free")?,
                 card_index: field_u(body, "card")?,

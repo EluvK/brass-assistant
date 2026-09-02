@@ -136,14 +136,11 @@ fn profile_raw_range(ctx: &EvalContext) -> (f64, f64) {
     ]
     .into_iter()
     .flat_map(|ind| {
-        industry_tiles(ind)
-            .iter()
-            .copied()
-            .filter(move |tile| {
-                tile.can_develop
-                    && !is_top_level_industry_tile(ind, *tile)
-                    && !has_fixed_develop_value(ind, *tile)
-            })
+        industry_tiles(ind).iter().copied().filter(move |tile| {
+            tile.can_develop
+                && !is_top_level_industry_tile(ind, *tile)
+                && !has_fixed_develop_value(ind, *tile)
+        })
     })
     .map(|tile| profile_raw_value(static_develop_profile(tile, &ctx.cfg.develop), ctx))
     .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
@@ -151,11 +148,7 @@ fn profile_raw_range(ctx: &EvalContext) -> (f64, f64) {
     })
 }
 
-fn normalized_profile_value(
-    tile: TileDef,
-    ctx: &EvalContext,
-    profile_range: (f64, f64),
-) -> f64 {
+fn normalized_profile_value(tile: TileDef, ctx: &EvalContext, profile_range: (f64, f64)) -> f64 {
     let raw = profile_raw_value(static_develop_profile(tile, &ctx.cfg.develop), ctx);
     let (min, max) = profile_range;
     if (max - min).abs() <= f64::EPSILON {
@@ -179,27 +172,26 @@ pub(super) fn develop_tile_diagnostics(ctx: &EvalContext) -> Vec<DevelopTileDiag
                 .copied()
                 .filter(move |tile| allowed_develop_target(ctx, industry, *tile))
                 .map(move |tile| {
-                let profile = static_develop_profile(tile, &ctx.cfg.develop);
-                let weights = profile_weights(ctx);
-                DevelopTileDiagnostic {
-                    industry,
-                    level: tile.level,
-                    profile,
-                    profile_raw: profile_raw_value(profile, ctx),
-                    removal_score: develop_target_value_with_profile_range(
-                        ctx,
+                    let profile = static_develop_profile(tile, &ctx.cfg.develop);
+                    let weights = profile_weights(ctx);
+                    DevelopTileDiagnostic {
                         industry,
-                        tile,
-                        profile_range,
-                    ),
-                    era_frac: ctx.era_frac,
-                    round_progress: ctx.round_progress,
-                    vp_weight: weights.vp,
-                    income_weight: weights.income,
-                    cost_weight: weights.cost,
-                }
-                }
-            )
+                        level: tile.level,
+                        profile,
+                        profile_raw: profile_raw_value(profile, ctx),
+                        removal_score: develop_target_value_with_profile_range(
+                            ctx,
+                            industry,
+                            tile,
+                            profile_range,
+                        ),
+                        era_frac: ctx.era_frac,
+                        round_progress: ctx.round_progress,
+                        vp_weight: weights.vp,
+                        income_weight: weights.income,
+                        cost_weight: weights.cost,
+                    }
+                })
         })
         .collect()
 }
@@ -442,7 +434,7 @@ mod tests {
                             .filter(|tile| allowed_develop_target(&ctx, ind, **tile))
                             .count()
                     })
-                    .sum()
+                    .sum::<usize>()
             );
             println!(
                 "{era:?} round {round}: era_frac={:.3}, round_progress={:.3}",

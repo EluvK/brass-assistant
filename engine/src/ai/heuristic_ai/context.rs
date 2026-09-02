@@ -44,6 +44,7 @@ pub(crate) use era_round_factor;
 pub(crate) use round_factor;
 
 /// One-shot evaluation context for scoring the current player's options.
+/// ready for deprecation. do not use in new code.
 pub struct EvalContext<'a> {
     pub cfg: &'a HeuristicConfig,
     pub pid: usize,
@@ -64,6 +65,7 @@ pub struct EvalContext<'a> {
 }
 
 /// Per-phase evaluation weights resolved from the config.
+/// ready for deprecation. do not use in new code.
 #[derive(Debug, Clone, Copy)]
 pub struct EraProfile {
     pub phase: Phase,

@@ -140,7 +140,12 @@ pub(crate) fn ranked_card_choices_with(
     cfg: &HeuristicConfig,
 ) -> CardChoices {
     let mut ranked: Vec<(usize, f64)> = (0..state.players[pid].hand.len())
-        .map(|index| (index, card_keep_score_with(state, pid, index, valid_targets, cfg)))
+        .map(|index| {
+            (
+                index,
+                card_keep_score_with(state, pid, index, valid_targets, cfg),
+            )
+        })
         .collect();
     ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
     ranked

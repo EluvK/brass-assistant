@@ -1746,20 +1746,16 @@ fn sell_uses_the_explicitly_chosen_merchant_bonus() {
     let tile_key = state
         .city_slot_key(Loc::Stone, 0)
         .expect("stone slot should exist");
-    let beer_sources = _engine::rules::plan_sell_beer_sources(
-        &state,
-        pid,
-        &[tile_key],
-        &[warrington_idx],
-        &[true],
-    )
-    .expect("test sale should have a valid beer payment");
+    let beer_sources = vec![_engine::graph::BeerSource {
+        kind: _engine::graph::BeerSourceKind::Merchant,
+        key: usize::MAX,
+        farm_idx: None,
+        merchant_idx: Some(warrington_idx),
+    }];
     let res = _engine::rules::execute_sell_with_free_develop(
         &mut state,
         pid,
         &[tile_key],
-        &[warrington_idx],
-        &[true],
         &beer_sources,
         None,
         0,
@@ -1823,15 +1819,16 @@ fn gloucester_bonus_becomes_pending_resolve_move() {
     let tile_key = state
         .city_slot_key(Loc::Kidderminster, 1)
         .expect("kidderminster slot should exist");
-    let beer_sources =
-        _engine::rules::plan_sell_beer_sources(&state, pid, &[tile_key], &[0], &[true])
-            .expect("test sale should have a valid beer payment");
+    let beer_sources = vec![_engine::graph::BeerSource {
+        kind: _engine::graph::BeerSourceKind::Merchant,
+        key: usize::MAX,
+        farm_idx: None,
+        merchant_idx: Some(0),
+    }];
     let res = _engine::rules::execute_sell_with_free_develop(
         &mut state,
         pid,
         &[tile_key],
-        &[0],
-        &[true],
         &beer_sources,
         Some(IndustryType::CottonMill),
         0,
@@ -1889,18 +1886,11 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
         .find_map(|d| match d.mv {
             _engine::rules::ResolvedMove::Sell {
                 keys,
-                merchant_indices,
-                use_merchant_beer,
                 beer_sources,
+                free_develop,
                 card_index,
                 ..
-            } => Some((
-                keys,
-                merchant_indices,
-                use_merchant_beer,
-                beer_sources,
-                card_index,
-            )),
+            } => Some((keys, beer_sources, free_develop, card_index)),
             _ => None,
         })
         .expect("heuristic should generate a sell candidate");
@@ -1912,8 +1902,9 @@ fn heuristic_sell_plan_does_not_overbook_a_single_merchant_beer() {
     );
 
     let mut sim = state.clone();
-    let res =
-        _engine::rules::execute_sell(&mut sim, pid, &sell.0, &sell.1, &sell.2, &sell.3, sell.4);
+    let res = _engine::rules::execute_sell_with_free_develop(
+        &mut sim, pid, &sell.0, &sell.1, sell.2, sell.3,
+    );
     assert!(
         res.is_ok(),
         "generated sell plan must execute successfully: {res:?}"

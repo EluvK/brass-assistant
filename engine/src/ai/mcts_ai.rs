@@ -98,9 +98,8 @@ enum MoveKey {
     },
     Sell {
         keys: Vec<usize>,
-        merchant_indices: Vec<usize>,
-        use_merchant_beer: Vec<bool>,
-        beer_sources: Vec<Vec<crate::graph::BeerSource>>,
+        beer_sources: Vec<crate::graph::BeerSource>,
+        free_develop: Option<IndustryType>,
     },
     Loan,
     Scout {
@@ -163,40 +162,16 @@ fn move_key(mv: &ResolvedMove) -> MoveKey {
         }
         ResolvedMove::Sell {
             keys,
-            merchant_indices,
-            use_merchant_beer,
             beer_sources,
+            free_develop,
             ..
         } => {
-            let mut pairs: Vec<(usize, usize, bool, Vec<crate::graph::BeerSource>)> = keys
-                .iter()
-                .copied()
-                .zip(merchant_indices.iter().copied())
-                .zip(use_merchant_beer.iter().copied())
-                .zip(beer_sources.iter().cloned())
-                .map(|(((key, merchant_index), use_merchant), sources)| {
-                    (key, merchant_index, use_merchant, sources)
-                })
-                .collect();
-            pairs.sort_unstable_by_key(|(key, _, _, _)| *key);
-            let keys = pairs.iter().map(|(key, _, _, _)| *key).collect();
-            let merchant_indices = pairs
-                .iter()
-                .map(|(_, merchant_index, _, _)| *merchant_index)
-                .collect();
-            let use_merchant_beer = pairs
-                .iter()
-                .map(|(_, _, use_merchant, _)| *use_merchant)
-                .collect();
-            let beer_sources = pairs
-                .into_iter()
-                .map(|(_, _, _, sources)| sources)
-                .collect();
+            let identity =
+                crate::gameplay::actions::sell_identity(keys, beer_sources, *free_develop);
             MoveKey::Sell {
-                keys,
-                merchant_indices,
-                use_merchant_beer,
-                beer_sources,
+                keys: identity.keys,
+                beer_sources: identity.beer_sources,
+                free_develop: identity.free_develop,
             }
         }
         ResolvedMove::Loan { .. } => MoveKey::Loan,

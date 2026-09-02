@@ -51,9 +51,7 @@ pub enum Move {
     },
     Sell {
         keys: Vec<usize>,
-        merchant_indices: Vec<usize>,
-        use_merchant_beer: Vec<bool>,
-        beer_sources: Vec<Vec<BeerSource>>,
+        beer_sources: Vec<BeerSource>,
         free_develop: Option<IndustryType>,
         card_candidates: Vec<CardCandidate>,
     },
@@ -100,9 +98,7 @@ pub enum ResolvedMove {
     },
     Sell {
         keys: Vec<usize>,
-        merchant_indices: Vec<usize>,
-        use_merchant_beer: Vec<bool>,
-        beer_sources: Vec<Vec<BeerSource>>,
+        beer_sources: Vec<BeerSource>,
         /// Gloucester's merchant bonus is resolved atomically with this sell.
         /// `None` means the selected sale does not award a free develop.
         free_develop: Option<IndustryType>,
@@ -231,15 +227,11 @@ impl Move {
             },
             Move::Sell {
                 keys,
-                merchant_indices,
-                use_merchant_beer,
                 beer_sources,
                 free_develop,
                 ..
             } => ResolvedMove::Sell {
                 keys: keys.clone(),
-                merchant_indices: merchant_indices.clone(),
-                use_merchant_beer: use_merchant_beer.clone(),
                 beer_sources: beer_sources.clone(),
                 free_develop: *free_develop,
                 card_index: selected_cards[0],

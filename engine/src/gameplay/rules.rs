@@ -6,13 +6,13 @@
 use crate::state::GameState;
 
 pub use crate::gameplay::actions::{
-    BuildCost, BuildTarget, SecondRailOption, SellRoute, SellTarget, any_card_indices,
+    BuildCost, BuildTarget, SecondRailOption, SellExecutionPlan, SellIdentity, any_card_indices,
     beer_sources_for_link, calculate_build_cost, can_develop, can_scout,
     coal_options_for_connection, coal_source_options, discard_card, execute_build, execute_develop,
     execute_loan, execute_network, execute_network_double, execute_pass, execute_scout,
-    execute_sell, execute_sell_with_free_develop, get_second_rail_options, get_valid_build_targets,
-    get_valid_network_targets, get_valid_second_rail_links, get_valid_sell_targets,
-    iron_source_options, plan_sell_beer_sources, valid_build_cards,
+    execute_sell_with_free_develop, get_second_rail_options, get_valid_build_targets,
+    get_valid_network_targets, get_valid_second_rail_links, iron_source_options, sell_identity,
+    valid_build_cards, validate_sell_plan,
 };
 pub use crate::gameplay::legal_moves::{legal_moves, legal_resolved_moves};
 pub use crate::r#move::{Move, ResolvedMove};
@@ -60,8 +60,6 @@ pub fn apply_move(state: &mut GameState, mv: &ResolvedMove) -> Result<String, St
         } => execute_develop(state, pid, *ind1, *ind2, iron, *card_index),
         ResolvedMove::Sell {
             keys,
-            merchant_indices,
-            use_merchant_beer,
             beer_sources,
             free_develop,
             card_index,
@@ -69,8 +67,6 @@ pub fn apply_move(state: &mut GameState, mv: &ResolvedMove) -> Result<String, St
             state,
             pid,
             keys,
-            merchant_indices,
-            use_merchant_beer,
             beer_sources,
             *free_develop,
             *card_index,
