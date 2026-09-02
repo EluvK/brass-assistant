@@ -32,9 +32,13 @@ fn scout_hand_refresh_score(card_choices: &CardChoices, ctx: &EvalContext) -> f6
     let high_value_shortfall = (w.desired_high_value.saturating_sub(high_value_count) as f64
         / w.desired_high_value as f64)
         .clamp(0.0, 1.0);
-    // Average quality shortfall measured against the base keep-score of a
-    // plain location card (`CardWeights::location_base`).
-    let anchor = ctx.cfg.cards.location_base;
+    // Average quality shortfall measured against this era's plain location
+    // card baseline.
+    let anchor = if ctx.is_canal() {
+        ctx.cfg.cards.canal_location_base
+    } else {
+        ctx.cfg.cards.rail_location_base
+    };
     let average_keep_score = retained.iter().map(|(_, score)| score).sum::<f64>() / retained_count;
     let average_quality_shortfall = ((anchor - average_keep_score) / anchor).clamp(0.0, 1.0);
 

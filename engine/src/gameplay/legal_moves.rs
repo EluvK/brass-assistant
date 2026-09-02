@@ -220,7 +220,6 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
 /// Resource/source choices remain part of the operation; only card selection
 /// is factored out of the action space.
 pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
-    let pid = state.current_player_id();
     let resolved = legal_resolved_moves(state);
     let mut positions: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut out: Vec<Move> = Vec::new();
@@ -249,7 +248,6 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
         for card_index in card_indices {
             candidates.push(CardCandidate {
                 hand_index: card_index,
-                keep_score: card_keep_score(state, pid, card_index),
             });
         }
         if let Some(&position) = positions.get(&key) {
@@ -304,15 +302,6 @@ pub fn legal_moves(state: &mut GameState) -> Vec<Move> {
         cards.dedup_by_key(|c| c.hand_index);
     }
     out
-}
-
-fn card_keep_score(state: &GameState, pid: usize, index: usize) -> f64 {
-    match state.players[pid].hand.get(index) {
-        Some(crate::state::Card::Location(_)) => 1.15,
-        Some(crate::state::Card::Industry { .. }) => 1.0,
-        Some(crate::state::Card::WildLocation | crate::state::Card::WildIndustry) => 3.8,
-        None => f64::INFINITY,
-    }
 }
 
 fn structural_from_resolved(mv: &ResolvedMove) -> (String, Move, Vec<usize>) {

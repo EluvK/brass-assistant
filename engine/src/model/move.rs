@@ -6,13 +6,9 @@ use crate::map::{Loc, connections};
 use crate::state::GameState;
 
 /// A card that may be used to complete a structural move.
-///
-/// `keep_score` is an advisory heuristic feature: lower values mean the card
-/// is less valuable to retain.  Rules never use this score for legality.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardCandidate {
     pub hand_index: usize,
-    pub keep_score: f64,
 }
 
 /// The card-selection shape required to turn a [`Move`] into a

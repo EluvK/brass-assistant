@@ -9,6 +9,71 @@ use crate::map::{Loc, connections};
 use crate::rules::BuildTarget;
 use crate::state::{Card, GameState};
 
+/// A static physical board slot used by the heuristic's long-term card model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IndustrySlot {
+    pub loc: Loc,
+    pub slot_index: usize,
+}
+
+const IRON_SLOTS: [IndustrySlot; 9] = [
+    IndustrySlot { loc: Loc::Derby, slot_index: 2 },
+    IndustrySlot { loc: Loc::StokeOnTrent, slot_index: 1 },
+    IndustrySlot { loc: Loc::Walsall, slot_index: 0 },
+    IndustrySlot { loc: Loc::Coalbrookdale, slot_index: 0 },
+    IndustrySlot { loc: Loc::Coalbrookdale, slot_index: 1 },
+    IndustrySlot { loc: Loc::Dudley, slot_index: 1 },
+    IndustrySlot { loc: Loc::Birmingham, slot_index: 2 },
+    IndustrySlot { loc: Loc::Coventry, slot_index: 2 },
+    IndustrySlot { loc: Loc::Redditch, slot_index: 1 },
+];
+
+const BREWERY_SLOTS: [IndustrySlot; 11] = [
+    IndustrySlot { loc: Loc::Derby, slot_index: 0 },
+    IndustrySlot { loc: Loc::Stone, slot_index: 0 },
+    IndustrySlot { loc: Loc::Uttoxeter, slot_index: 0 },
+    IndustrySlot { loc: Loc::Uttoxeter, slot_index: 1 },
+    IndustrySlot { loc: Loc::Stafford, slot_index: 0 },
+    IndustrySlot { loc: Loc::BurtonOnTrent, slot_index: 1 },
+    IndustrySlot { loc: Loc::Walsall, slot_index: 1 },
+    IndustrySlot { loc: Loc::Coalbrookdale, slot_index: 0 },
+    IndustrySlot { loc: Loc::Nuneaton, slot_index: 0 },
+    IndustrySlot { loc: Loc::BreweryNorth, slot_index: 0 },
+    IndustrySlot { loc: Loc::BrewerySouth, slot_index: 0 },
+];
+
+/// Static slots relevant to Iron/Brewery hand capacity.
+pub fn industry_slots(ind: IndustryType) -> &'static [IndustrySlot] {
+    match ind {
+        IndustryType::IronWorks => &IRON_SLOTS,
+        IndustryType::Brewery => &BREWERY_SLOTS,
+        _ => &[],
+    }
+}
+
+pub fn city_supports_industry(loc: Loc, ind: IndustryType) -> bool {
+    loc.is_city() && industry_slots(ind).iter().any(|slot| slot.loc == loc)
+}
+
+/// Empty physical slots, independent of cash, network, cards, and era.
+pub fn empty_industry_slots(state: &GameState, ind: IndustryType) -> Vec<IndustrySlot> {
+    industry_slots(ind)
+        .iter()
+        .copied()
+        .filter(|slot| {
+            if slot.loc.is_city() {
+                state.tile_at(slot.loc, slot.slot_index).is_none()
+            } else {
+                state.farm_tile(slot.loc).is_none()
+            }
+        })
+        .collect()
+}
+
+pub fn empty_industry_slot_count(state: &GameState, ind: IndustryType) -> usize {
+    empty_industry_slots(state, ind).len()
+}
+
 /// Does a merchant that accepts `ind` sit in `pid`'s network reach from `loc`?
 pub fn merchant_reachable(state: &GameState, loc: Loc, ind: IndustryType) -> bool {
     let connected = connected_locations(state, loc);
@@ -220,5 +285,30 @@ mod tests {
         let key = state.city_slot_key(loc, 0).unwrap();
         state.city_tiles[key].as_mut().unwrap().player = (pid + 1) % state.players.len();
         assert_eq!(own_overbuild_vp_loss(&state, pid, &cand, 1.0), 0.0);
+    }
+
+    #[test]
+    fn industry_slot_queries_cover_static_and_current_empty_capacity() {
+        assert_eq!(industry_slots(IndustryType::IronWorks).len(), 9);
+        assert_eq!(industry_slots(IndustryType::Brewery).len(), 11);
+        assert!(city_supports_industry(Loc::Birmingham, IndustryType::IronWorks));
+        assert!(city_supports_industry(Loc::Uttoxeter, IndustryType::Brewery));
+
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(3), 4);
+        assert_eq!(empty_industry_slot_count(&state, IndustryType::IronWorks), 9);
+        assert_eq!(empty_industry_slot_count(&state, IndustryType::Brewery), 11);
+        let def = industry_tiles(IndustryType::Brewery)[0];
+        state.place_tile(
+            Loc::BreweryNorth,
+            0,
+            BoardTile {
+                player: 0,
+                ind: IndustryType::Brewery,
+                def,
+                flipped: false,
+                resource_cubes: def.resource_cubes,
+            },
+        );
+        assert_eq!(empty_industry_slot_count(&state, IndustryType::Brewery), 10);
     }
 }

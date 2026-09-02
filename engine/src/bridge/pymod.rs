@@ -251,10 +251,10 @@ impl PyGame {
     }
 
     /// Structural legal operations.  Each row contains its per-state id,
-    /// description, required card count (1 or 3 for Scout), and candidates as
-    /// `(hand_index, keep_score)`.  Resolve the selected cards through
+    /// description, required card count (1 or 3 for Scout), and candidate
+    /// hand indices. Resolve the selected cards through
     /// `resolve_legal_operation` before applying the result.
-    fn legal_operations(&self) -> Vec<(usize, String, usize, Vec<(usize, f64)>)> {
+    fn legal_operations(&self) -> Vec<(usize, String, usize, Vec<usize>)> {
         let mut state = self.state.clone();
         legal_moves(&mut state)
             .into_iter()
@@ -269,7 +269,7 @@ impl PyGame {
                     },
                     mv.card_candidates()
                         .iter()
-                        .map(|c| (c.hand_index, c.keep_score))
+                        .map(|c| c.hand_index)
                         .collect(),
                 )
             })

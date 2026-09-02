@@ -326,10 +326,57 @@ fn pick_build_card(
     let player = &state.players[pid];
     let indices = valid_build_cards(state, player, pid, cand.loc, cand.ind);
     // Prefer a non-wild matching card over a wild one.
-    let index = indices
+    let non_wild: Vec<_> = indices
+        .iter()
+        .copied()
+        .filter(|index| {
+            !matches!(
+                player.hand[*index],
+                crate::state::Card::WildLocation | crate::state::Card::WildIndustry
+            )
+        })
+        .collect();
+    let candidates = if non_wild.is_empty() {
+        &indices
+    } else {
+        &non_wild
+    };
+    let index = candidates
+        .iter()
+        .copied()
         .into_iter()
         .min_by(|a, b| keep(*a).total_cmp(&keep(*b)).then(a.cmp(b)))?;
     Some((index, keep(index)))
+}
+
+#[cfg(test)]
+mod build_card_tests {
+    use super::*;
+    use crate::rules::get_valid_build_targets;
+    use crate::state::Card;
+    use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
+
+    #[test]
+    fn build_keeps_a_wild_when_a_matching_industry_card_exists() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(22), 4);
+        let pid = state.current_player_id();
+        let target = get_valid_build_targets(&state, pid)
+            .into_iter()
+            .next()
+            .expect("opening state has a build target");
+        state.players[pid].hand = vec![
+            Card::Industry {
+                industries: [target.ind; 2],
+                n: 1,
+            },
+            Card::WildIndustry,
+        ];
+        // A deliberately lower Wild keep-score verifies that Build's explicit
+        // non-Wild preference, rather than incidental score ordering, wins.
+        let chosen = pick_build_card(&state, pid, &target, &[(0, 2.0), (1, 0.0)]);
+        assert_eq!(chosen, Some((0, 2.0)));
+    }
 }
 
 /// Top-K build candidates by 1-ply score. Used by MCTS to get a wider prior.

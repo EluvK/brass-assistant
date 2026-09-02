@@ -1,152 +1,138 @@
-//! Card keep-score: how valuable each hand card is to hold.
-//!
-//! This is the "card-selection head" of the heuristic: operations and card
-//! choice are separate policy dimensions. Lower keep-scores are preferred
-//! when an action can consume any card. Deliberately transparent and
-//! deterministic so replay traces can expose every component's effect
-//! while the weights are tuned (see `CardWeights`).
+//! Heuristic hand-card keep scoring and card-choice ranking.
 
-use super::config::HeuristicConfig;
+use super::board::{city_supports_industry, empty_industry_slot_count};
+use super::config::{CardWeights, HeuristicConfig};
 use crate::data::{Era, IndustryType};
 use crate::map::city_slots;
 use crate::rules::{BuildTarget, ResolvedMove, valid_build_cards};
 use crate::state::{Card, GameState};
 
-/// Card choices ordered from least valuable to most valuable:
-/// `(hand_index, keep_score)`.
 pub type CardChoices = Vec<(usize, f64)>;
 
-/// Config-parameterized keep-score for one card.
+fn duplicate_ordinal(hand: &[Card], card_index: usize, ind: IndustryType) -> usize {
+    hand[..=card_index]
+        .iter()
+        .filter(|card| card.is_industry(ind))
+        .count()
+}
+
+fn industry_score(
+    state: &GameState,
+    pid: usize,
+    card_index: usize,
+    ind: IndustryType,
+    w: &CardWeights,
+) -> f64 {
+    let ordinal = duplicate_ordinal(&state.players[pid].hand, card_index, ind);
+    let mut score = match state.era {
+        Era::Canal => match ind {
+            IndustryType::IronWorks => {
+                w.canal_iron_base - ordinal.saturating_sub(2) as f64 * w.canal_iron_third_penalty
+            }
+            IndustryType::CottonMill | IndustryType::Manufacturer | IndustryType::Pottery => {
+                w.canal_sellable_base
+                    - ordinal.saturating_sub(1) as f64 * w.canal_sellable_duplicate_penalty
+            }
+            IndustryType::CoalMine | IndustryType::Brewery => {
+                w.canal_resource_base
+                    - ordinal.saturating_sub(1) as f64 * w.canal_resource_duplicate_penalty
+            }
+        },
+        Era::Rail => match ind {
+            IndustryType::CoalMine => {
+                w.rail_coal_base - ordinal.saturating_sub(2) as f64 * w.rail_coal_third_penalty
+            }
+            IndustryType::Brewery => {
+                w.rail_brewery_base
+                    - ordinal.saturating_sub(1) as f64 * w.rail_industry_duplicate_penalty
+            }
+            IndustryType::IronWorks => {
+                w.rail_iron_base
+                    - ordinal.saturating_sub(1) as f64 * w.rail_industry_duplicate_penalty
+            }
+            IndustryType::CottonMill | IndustryType::Manufacturer | IndustryType::Pottery => {
+                w.rail_sellable_base
+                    - ordinal.saturating_sub(1) as f64 * w.rail_industry_duplicate_penalty
+            }
+        },
+    };
+    if matches!(ind, IndustryType::IronWorks | IndustryType::Brewery)
+        && ordinal > empty_industry_slot_count(state, ind)
+    {
+        score -= w.unconsumable_industry_penalty;
+    }
+    score
+}
+
+fn location_score(
+    state: &GameState,
+    pid: usize,
+    card_index: usize,
+    loc: crate::map::Loc,
+    w: &CardWeights,
+) -> f64 {
+    let hand = &state.players[pid].hand;
+    let ordinal = hand[..=card_index]
+        .iter()
+        .filter(|card| matches!(card, Card::Location(other) if *other == loc))
+        .count();
+    let mut score = match state.era {
+        Era::Canal => {
+            w.canal_location_base
+                + if city_supports_industry(loc, IndustryType::IronWorks)
+                    || city_supports_industry(loc, IndustryType::Brewery)
+                {
+                    w.canal_resource_city_bonus
+                } else {
+                    0.0
+                }
+        }
+        Era::Rail => w.rail_location_base,
+    };
+    let occupied = city_slots(loc)
+        .iter()
+        .enumerate()
+        .filter(|(slot_index, _)| state.tile_at(loc, *slot_index).is_some())
+        .count();
+    score -= occupied as f64 * w.occupied_city_slot_penalty;
+    if ordinal >= 2 {
+        score -= w.location_second_duplicate_penalty;
+    }
+    if ordinal >= 3 {
+        score -= (ordinal - 2) as f64 * w.location_third_duplicate_penalty;
+    }
+    score
+}
+
 pub(crate) fn card_keep_score_with(
     state: &GameState,
     pid: usize,
     card_index: usize,
-    valid_targets: &[BuildTarget],
+    _valid_targets: &[BuildTarget],
     cfg: &HeuristicConfig,
 ) -> f64 {
-    let w = &cfg.cards;
     let Some(card) = state.players[pid].hand.get(card_index) else {
         return f64::INFINITY;
     };
-
-    let hand = &state.players[pid].hand;
-    let mut score = match card {
-        Card::Location(_) => w.location_base,
-        Card::Industry { .. } => w.industry_base,
-        Card::WildLocation | Card::WildIndustry => w.wild_base,
-    };
-
-    // Repeated cards are less urgent to preserve. Industry cards are grouped
-    // broadly because a duplicate production role is still less flexible in
-    // the canal era even when the printed industry pair differs.
-    let duplicate_count = match card {
-        Card::Location(loc) => hand
-            .iter()
-            .filter(|other| matches!(other, Card::Location(other_loc) if other_loc == loc))
-            .count(),
-        Card::Industry { .. } => hand
-            .iter()
-            .filter(|other| matches!(other, Card::Industry { .. }))
-            .count(),
-        Card::WildLocation | Card::WildIndustry => 0,
-    };
-    score -= w.duplicate_penalty * duplicate_count.saturating_sub(1) as f64;
-
     match card {
-        Card::Location(loc) if loc.is_city() => {
-            let target_count = valid_targets.iter().filter(|t| t.loc == *loc).count();
-            let city_is_full = city_slots(*loc).iter().enumerate().all(|(slot, _)| {
-                let key = state
-                    .city_slot_key(*loc, slot)
-                    .expect("city slot from city_slots must have a key");
-                state.city_tiles[key].is_some()
-            });
-            if city_is_full {
-                // A location card still bypasses network access for an own
-                // resource overbuild. Preserve it in Rail when no matching
-                // industry card in hand can serve as the alternative.
-                let resource_upgrade = state.era == Era::Rail
-                    && city_slots(*loc).iter().enumerate().any(|(slot, _)| {
-                        let key = state
-                            .city_slot_key(*loc, slot)
-                            .expect("city slot from city_slots must have a key");
-                        let Some(tile) = state.city_tiles[key].as_ref() else {
-                            return false;
-                        };
-                        matches!(
-                            tile.ind,
-                            IndustryType::CoalMine
-                                | IndustryType::IronWorks
-                                | IndustryType::Brewery
-                        ) && tile.player == pid
-                            && state.players[pid]
-                                .next_tile(tile.ind)
-                                .is_some_and(|next| next.level > tile.def.level)
-                            && !hand.iter().any(|other| {
-                                other.is_industry(tile.ind) || matches!(other, Card::WildIndustry)
-                            })
-                    });
-                score -= if resource_upgrade {
-                    w.city_full_resource_upgrade_penalty
-                } else {
-                    w.city_full_useless_penalty
-                };
-            } else {
-                score += w.city_target_bonus * (target_count.min(w.city_target_cap)) as f64;
-            }
-        }
-        // Non-city location cards cannot occur: the deck only prints city
-        // location cards. Keep a conservative value instead of panicking if
-        // data ever changes.
-        Card::Location(_) => {
-            debug_assert!(false, "non-city location card in hand: {card:?}");
-            score -= w.city_full_useless_penalty;
-        }
-        Card::Industry { industries, n } => {
-            let mut best_role_targets = 0usize;
-            for ind in industries.iter().take(*n as usize) {
-                best_role_targets =
-                    best_role_targets.max(valid_targets.iter().filter(|t| t.ind == *ind).count());
-            }
-            if best_role_targets == 0 {
-                score -= w.industry_no_target_penalty;
-            } else {
-                score +=
-                    w.industry_target_bonus * (best_role_targets.min(w.industry_target_cap)) as f64;
-            }
-            if state.era == Era::Canal && duplicate_count > 1 {
-                score -= w.canal_industry_duplicate_penalty;
-            }
-        }
-        Card::WildLocation | Card::WildIndustry => {
-            // Wild cards are intentionally expensive to discard. Their score
-            // is still allowed to fall when the hand contains duplicates.
-            score += w.wild_duplicate_bonus * duplicate_count.saturating_sub(1) as f64;
-        }
+        Card::Location(loc) => location_score(state, pid, card_index, *loc, &cfg.cards),
+        Card::Industry { industries, n } => industries[..*n as usize]
+            .iter()
+            .map(|ind| industry_score(state, pid, card_index, *ind, &cfg.cards))
+            .fold(f64::NEG_INFINITY, f64::max),
+        Card::WildLocation | Card::WildIndustry => 3.0,
     }
-
-    score
+    .clamp(0.0, 3.0)
 }
 
-/// Card keep-score against all current build targets (public helper for
-/// replay tools; hot paths should precompute the target list once).
 pub fn card_keep_score(state: &GameState, pid: usize, card_index: usize) -> f64 {
-    let cfg = HeuristicConfig::default();
-    let valid_targets = crate::rules::get_valid_build_targets(state, pid);
-    card_keep_score_with(state, pid, card_index, &valid_targets, &cfg)
+    card_keep_score_with(state, pid, card_index, &[], &HeuristicConfig::default())
 }
 
-/// All cards ranked from least to most valuable to keep.
 pub fn ranked_card_choices(state: &GameState, pid: usize) -> CardChoices {
-    // Build-target enumeration performs connectivity, resource and era
-    // checks; compute it once per ranking instead of once per card.
-    let cfg = HeuristicConfig::default();
-    let valid_targets = crate::rules::get_valid_build_targets(state, pid);
-    ranked_card_choices_with(state, pid, &valid_targets, &cfg)
+    ranked_card_choices_with(state, pid, &[], &HeuristicConfig::default())
 }
 
-/// Target-list-sharing variant used by the candidate batch, which has
-/// already enumerated build targets.
 pub(crate) fn ranked_card_choices_with(
     state: &GameState,
     pid: usize,
@@ -154,20 +140,12 @@ pub(crate) fn ranked_card_choices_with(
     cfg: &HeuristicConfig,
 ) -> CardChoices {
     let mut ranked: Vec<(usize, f64)> = (0..state.players[pid].hand.len())
-        .map(|index| {
-            (
-                index,
-                card_keep_score_with(state, pid, index, valid_targets, cfg),
-            )
-        })
+        .map(|index| (index, card_keep_score_with(state, pid, index, valid_targets, cfg)))
         .collect();
     ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
     ranked
 }
 
-/// Card choices available to the card-selection head for a structural move.
-/// Build is restricted by its target; all other ordinary operations may use
-/// every card in hand.
 pub fn card_choices_for_move(state: &GameState, mv: &ResolvedMove) -> CardChoices {
     let pid = state.current_player_id();
     match mv {
@@ -181,9 +159,6 @@ pub fn card_choices_for_move(state: &GameState, mv: &ResolvedMove) -> CardChoice
     }
 }
 
-/// Keep-value score for the card references carried by a move. Lower values
-/// mean the card is a better discard. Scout consumes three cards, so its
-/// score is the sum of the three individual scores.
 pub(crate) fn move_card_score(state: &GameState, mv: &ResolvedMove) -> f64 {
     let pid = state.current_player_id();
     let choices = ranked_card_choices(state, pid);
@@ -203,5 +178,91 @@ pub(crate) fn move_card_score(state: &GameState, mv: &ResolvedMove) -> f64 {
         | ResolvedMove::Sell { card_index, .. }
         | ResolvedMove::Loan { card_index }
         | ResolvedMove::Pass { card_index } => score(*card_index),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::heuristic_ai::board::industry_slots;
+    use crate::data::industry_tiles;
+    use crate::map::Loc;
+    use crate::state::BoardTile;
+    use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
+
+    fn state(era: Era, hand: Vec<Card>) -> GameState {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(13), 4);
+        state.era = era;
+        state.players[0].hand = hand;
+        state
+    }
+
+    fn industry(ind: IndustryType) -> Card {
+        Card::Industry {
+            industries: [ind; 2],
+            n: 1,
+        }
+    }
+
+    fn tile(ind: IndustryType) -> BoardTile {
+        let def = industry_tiles(ind)[0];
+        BoardTile {
+            player: 1,
+            ind,
+            def,
+            flipped: false,
+            resource_cubes: def.resource_cubes,
+        }
+    }
+
+    #[test]
+    fn industry_thresholds_and_capacity_are_scored_in_the_ai_layer() {
+        let canal = state(
+            Era::Canal,
+            vec![
+                industry(IndustryType::IronWorks),
+                industry(IndustryType::IronWorks),
+                industry(IndustryType::IronWorks),
+            ],
+        );
+        assert_eq!(card_keep_score(&canal, 0, 0), 2.0);
+        assert_eq!(card_keep_score(&canal, 0, 1), 2.0);
+        assert_eq!(card_keep_score(&canal, 0, 2), 1.5);
+
+        let mut rail = state(Era::Rail, vec![industry(IndustryType::IronWorks)]);
+        assert_eq!(card_keep_score(&rail, 0, 0), 1.5);
+        for slot in industry_slots(IndustryType::IronWorks) {
+            rail.place_tile(slot.loc, slot.slot_index, tile(IndustryType::IronWorks));
+        }
+        assert_eq!(card_keep_score(&rail, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn location_duplicates_and_scout_ranking_use_the_new_model() {
+        let canal = state(
+            Era::Canal,
+            vec![
+                Card::Location(Loc::Derby),
+                Card::Location(Loc::Derby),
+                Card::WildLocation,
+                industry(IndustryType::CoalMine),
+                industry(IndustryType::CoalMine),
+                industry(IndustryType::IronWorks),
+                industry(IndustryType::IronWorks),
+                industry(IndustryType::IronWorks),
+            ],
+        );
+        assert_eq!(card_keep_score(&canal, 0, 0), 2.0);
+        assert_eq!(card_keep_score(&canal, 0, 1), 1.5);
+        assert_eq!(card_keep_score(&canal, 0, 2), 3.0);
+        assert_eq!(
+            ranked_card_choices(&canal, 0)
+                .iter()
+                .take(3)
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>(),
+            vec![4, 1, 3]
+        );
     }
 }

@@ -354,30 +354,28 @@ pub struct ScoutWeights {
     pub pass_fallback_score: f64,
 }
 
-/// Card keep-score (`cards.rs`): how valuable a hand card is to hold.
+/// Card keep-score parameters (`cards.rs`), all expressed on the 0..3 scale.
 #[derive(Debug, Clone, Copy)]
 pub struct CardWeights {
-    /// Base keep-score by card kind.
-    pub location_base: f64,
-    pub industry_base: f64,
-    pub wild_base: f64,
-    /// Per-duplicate penalty (location exact duplicates, industry role
-    /// duplicates), and the wild-card bonus per extra wild.
-    pub duplicate_penalty: f64,
-    pub wild_duplicate_bonus: f64,
-    /// A full city devalues its location card: less if a rail-era resource
-    /// overbuild is still possible from the location, more otherwise.
-    pub city_full_resource_upgrade_penalty: f64,
-    pub city_full_useless_penalty: f64,
-    /// Per-buildable-target bonus caps for city and industry cards.
-    pub city_target_bonus: f64,
-    pub city_target_cap: usize,
-    pub industry_target_bonus: f64,
-    pub industry_target_cap: usize,
-    /// Industry card with no legal target this turn.
-    pub industry_no_target_penalty: f64,
-    /// Canal-era duplicate industry penalty (production role less flexible).
-    pub canal_industry_duplicate_penalty: f64,
+    pub canal_iron_base: f64,
+    pub canal_sellable_base: f64,
+    pub canal_resource_base: f64,
+    pub rail_coal_base: f64,
+    pub rail_brewery_base: f64,
+    pub rail_iron_base: f64,
+    pub rail_sellable_base: f64,
+    pub canal_iron_third_penalty: f64,
+    pub canal_sellable_duplicate_penalty: f64,
+    pub canal_resource_duplicate_penalty: f64,
+    pub rail_coal_third_penalty: f64,
+    pub rail_industry_duplicate_penalty: f64,
+    pub canal_location_base: f64,
+    pub canal_resource_city_bonus: f64,
+    pub rail_location_base: f64,
+    pub occupied_city_slot_penalty: f64,
+    pub location_second_duplicate_penalty: f64,
+    pub location_third_duplicate_penalty: f64,
+    pub unconsumable_industry_penalty: f64,
 }
 
 /// 2-ply lookahead and turn-end safety parameters.
@@ -623,19 +621,25 @@ impl Default for HeuristicConfig {
                 pass_fallback_score: -0.5,
             },
             cards: CardWeights {
-                location_base: 1.15,
-                industry_base: 1.0,
-                wild_base: 3.8,
-                duplicate_penalty: 0.48,
-                wild_duplicate_bonus: 0.35,
-                city_full_resource_upgrade_penalty: 0.45,
-                city_full_useless_penalty: 1.05,
-                city_target_bonus: 0.28,
-                city_target_cap: 3,
-                industry_target_bonus: 0.22,
-                industry_target_cap: 3,
-                industry_no_target_penalty: 0.65,
-                canal_industry_duplicate_penalty: 0.22,
+                canal_iron_base: 2.0,
+                canal_sellable_base: 1.8,
+                canal_resource_base: 1.5,
+                rail_coal_base: 2.5,
+                rail_brewery_base: 2.0,
+                rail_iron_base: 1.5,
+                rail_sellable_base: 1.8,
+                canal_iron_third_penalty: 0.5,
+                canal_sellable_duplicate_penalty: 0.3,
+                canal_resource_duplicate_penalty: 0.5,
+                rail_coal_third_penalty: 1.0,
+                rail_industry_duplicate_penalty: 0.3,
+                canal_location_base: 1.5,
+                canal_resource_city_bonus: 0.5,
+                rail_location_base: 2.0,
+                occupied_city_slot_penalty: 0.5,
+                location_second_duplicate_penalty: 0.5,
+                location_third_duplicate_penalty: 1.0,
+                unconsumable_industry_penalty: 1.5,
             },
             lookahead: LookaheadParams {
                 first_action_k: 3,
