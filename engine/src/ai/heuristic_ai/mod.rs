@@ -187,11 +187,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     let mut unique = std::collections::HashSet::new();
     out.retain(|d| unique.insert(operation_key(&d.mv)));
 
-    out.extend(
-        score_sell_plans(state, &ctx, &card_choices)
-            .into_iter()
-            .take(k),
-    );
+    out.extend(score_sell_plans(state, &card_choices).into_iter().take(k));
     out.extend(
         score_loan_result(state, &ctx, &plan, &card_choices)
             .into_iter()

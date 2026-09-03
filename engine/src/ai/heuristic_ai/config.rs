@@ -1,9 +1,11 @@
 //! Central tuning parameters for the heuristic AI.
 //!
-//! Every weight, threshold, and policy switch used by the scoring pipeline
-//! lives here, grouped by concern. `Default` mirrors the historical constants
-//! so the refactor starts from the previous behaviour; tuning means
-//! overriding individual groups (same pattern as [`crate::ai::mcts_ai::MctsConfig`]).
+//! Tunable weights, thresholds, and policy switches used by the scoring
+//! pipeline live here, grouped by concern. Small scorer-local constants remain
+//! next to the scorer when they are not part of the configurable policy.
+//! `Default` mirrors the historical constants so the refactor starts from the
+//! previous behaviour; tuning means overriding individual groups (same
+//! pattern as [`crate::ai::mcts_ai::MctsConfig`]).
 //!
 //! All scores are expressed in one currency: **VP equivalents** (see
 //! [`super::value::ScoreParts`]). Weights that convert raw quantities (cash,
@@ -293,27 +295,6 @@ pub struct DevelopWeights {
     pub base_score_max: f64,
 }
 
-/// Sell action scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct SellWeights {
-    /// Value of a merchant's free-develop bonus (already realised during
-    /// the same action).
-    pub develop_bonus_value: f64,
-    /// Income share added to a tile's printed VP when ranking sell targets
-    /// (flipping advances the income track too).
-    pub tile_income_share: f64,
-    /// Era-end urgency bonus when sellables vanish unflipped (canal) or the
-    /// finish is selling (rail), plus the rail-late baseline bonus.
-    pub urgency_bonus: f64,
-    pub rail_late_baseline_bonus: f64,
-    /// Share of the income gain credited as a recurring stream.
-    pub income_stream_share: f64,
-    /// Scale of the realised VP by how much era remains (sells are about
-    /// income early and VP late): `floor + span * (1 - era_frac)`.
-    pub vp_scale_floor: f64,
-    pub vp_scale_span: f64,
-}
-
 /// Loan action scoring.
 #[derive(Debug, Clone, Copy)]
 pub struct LoanWeights {
@@ -424,7 +405,6 @@ pub struct HeuristicConfig {
     pub build: BuildWeights,
     pub network: NetworkWeights,
     pub develop: DevelopWeights,
-    pub sell: SellWeights,
     pub loan: LoanWeights,
     pub scout: ScoutWeights,
     pub cards: CardWeights,
@@ -583,15 +563,6 @@ impl Default for HeuristicConfig {
                 base_score_center: 3.0,
                 base_score_min: 2.0,
                 base_score_max: 4.0,
-            },
-            sell: SellWeights {
-                develop_bonus_value: 0.5,
-                tile_income_share: 0.3,
-                urgency_bonus: 3.0,
-                rail_late_baseline_bonus: 1.2,
-                income_stream_share: 0.5,
-                vp_scale_floor: 0.1,
-                vp_scale_span: 0.5,
             },
             loan: LoanWeights {
                 action_cost: -4.0,
