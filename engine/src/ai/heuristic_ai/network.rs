@@ -6,9 +6,7 @@ use super::plan::{Phase, Plan};
 use super::value::{ScoreParts, link_current_and_potential_vps};
 use super::{CardChoices, Decision};
 use crate::map::{CANAL_LINK_COST, connections};
-use crate::rules::{
-    ResolvedMove, enumerate_double_rail_candidates, get_valid_network_targets,
-};
+use crate::rules::{ResolvedMove, enumerate_double_rail_candidates, get_valid_network_targets};
 use crate::state::GameState;
 
 fn coal_effective_price(src: &crate::graph::CoalSource) -> i32 {
@@ -218,37 +216,40 @@ pub(crate) fn score_top_network_doubles(
     let w = &ctx.cfg.network;
     let mut scored = Vec::new();
     for candidate in enumerate_double_rail_candidates(state, ctx.pid) {
-            // Value both links and charge realistic resource cost:
-            // total = £15 base + 2 coal (explicitly estimated from legal
-            // sources). The double-rail surcharge (£15 vs 2×£5) is charged
-            // as money through the same conversion as everything else.
-            let c1 = &connections()[candidate.conn1];
-            let c2 = &connections()[candidate.conn2];
-            let cost1 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal1);
-            let cost2 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal2);
-            let s1 = score_network_candidate(state, ctx, candidate.conn1, cost1, &[c1.a, c1.b], plan);
-            let s2 = score_network_candidate(state, ctx, candidate.conn2, cost2, &[c2.a, c2.b], plan);
-            let surcharge = ctx.money_value(
-                (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST) as f64
-                    * w.double_surcharge_weight,
-            );
-            let mut total = s1.total(ctx) + s2.total(ctx) - surcharge;
-            // Double-rail synergy: one action builds two links (tempo win),
-            // strongest in Rail-Early when the net is being laid out.
-            total += if ctx.phase == Phase::RailEarly {
-                w.double_tempo_rail_early
-            } else {
-                w.double_tempo_other
-            };
-            // Beer-lock synergy: grabbing a brewery farm link locks beer
-            // while saving tempo.
-            let touches_farm = [&connections()[candidate.conn1], &connections()[candidate.conn2]]
-                .iter()
-                .any(|c| c.a.is_farm() || c.b.is_farm() || c.via_farm.is_some_and(|f| f.is_farm()));
-            if touches_farm {
-                total += w.double_farm_lock_bonus;
-            }
-            scored.push((candidate, total));
+        // Value both links and charge realistic resource cost:
+        // total = £15 base + 2 coal (explicitly estimated from legal
+        // sources). The double-rail surcharge (£15 vs 2×£5) is charged
+        // as money through the same conversion as everything else.
+        let c1 = &connections()[candidate.conn1];
+        let c2 = &connections()[candidate.conn2];
+        let cost1 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal1);
+        let cost2 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal2);
+        let s1 = score_network_candidate(state, ctx, candidate.conn1, cost1, &[c1.a, c1.b], plan);
+        let s2 = score_network_candidate(state, ctx, candidate.conn2, cost2, &[c2.a, c2.b], plan);
+        let surcharge = ctx.money_value(
+            (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST) as f64
+                * w.double_surcharge_weight,
+        );
+        let mut total = s1.total(ctx) + s2.total(ctx) - surcharge;
+        // Double-rail synergy: one action builds two links (tempo win),
+        // strongest in Rail-Early when the net is being laid out.
+        total += if ctx.phase == Phase::RailEarly {
+            w.double_tempo_rail_early
+        } else {
+            w.double_tempo_other
+        };
+        // Beer-lock synergy: grabbing a brewery farm link locks beer
+        // while saving tempo.
+        let touches_farm = [
+            &connections()[candidate.conn1],
+            &connections()[candidate.conn2],
+        ]
+        .iter()
+        .any(|c| c.a.is_farm() || c.b.is_farm() || c.via_farm.is_some_and(|f| f.is_farm()));
+        if touches_farm {
+            total += w.double_farm_lock_bonus;
+        }
+        scored.push((candidate, total));
     }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     let Some(card_index) = card_choices.first().map(|(index, _)| *index) else {
@@ -261,13 +262,13 @@ pub(crate) fn score_top_network_doubles(
         // The coal2 options must be enumerated against the SAME coal1 we
         // actually use, otherwise the emitted move may fail to execute.
         out.push(Decision {
-                    mv: candidate.to_move(card_index),
-                    score,
-                    card_score: card_choices
-                        .first()
-                        .map(|(_, s)| *s)
-                        .unwrap_or(f64::INFINITY),
-                });
+            mv: candidate.to_move(card_index),
+            score,
+            card_score: card_choices
+                .first()
+                .map(|(_, s)| *s)
+                .unwrap_or(f64::INFINITY),
+        });
     }
     out
 }
