@@ -147,12 +147,90 @@ pub fn execute_network(
 
 /// A legal second-rail link together with the beer sources the player may
 /// choose to power it (own breweries anywhere + connected opponent breweries).
-pub struct SecondRailOption {
+struct SecondRailOption {
     pub conn: usize,
     pub beers: Vec<BeerSource>,
     /// Coal source selections for the second link, computed with the FIRST
     /// link in place (matching execution order). Empty outer = illegal.
     pub coal2_opts: Vec<Vec<CoalSource>>,
+}
+
+/// One fully-resolved double-rail resource plan (independent of card choice).
+/// This is the canonical enumeration result consumed by legal-move generation
+/// and by AIs that want to score concrete resource choices.
+#[derive(Clone, Copy, Debug)]
+pub struct DoubleRailCandidate {
+    pub conn1: usize,
+    pub coal1: CoalSource,
+    pub conn2: usize,
+    pub coal2: CoalSource,
+    pub beer: BeerSource,
+}
+
+impl DoubleRailCandidate {
+    pub fn to_move(self, card_index: usize) -> crate::r#move::ResolvedMove {
+        crate::r#move::ResolvedMove::NetworkDouble {
+            conn1: self.conn1,
+            conn2: self.conn2,
+            coal1: self.coal1,
+            coal2: self.coal2,
+            beer: self.beer,
+            card_index,
+        }
+    }
+}
+
+/// Enumerate every executable double-rail resource plan. All connectivity and
+/// resource checks are delegated to `get_second_rail_options`, which dry-runs
+/// the first link transactionally so coal/beer availability matches execution.
+pub fn enumerate_double_rail_candidates(
+    state: &mut GameState,
+    pid: usize,
+) -> Vec<DoubleRailCandidate> {
+    // Hard preconditions before any connection/transaction work.  £15 is the
+    // fixed double-rail base cost (coal is additional), and merchant beer is
+    // not a legal rail-building source, so an empty free-beer cache proves
+    // that no candidate can exist.
+    if state.era != Era::Rail
+        || state.players[pid].rail_links < 2
+        || state.players[pid].money < RAIL_DOUBLE_LINK_COST
+        || state.free_beer_cubes.is_empty()
+    {
+        return Vec::new();
+    }
+    enumerate_double_rail_candidates_from_firsts(state, pid, &get_valid_network_targets(state, pid))
+}
+
+pub(crate) fn enumerate_double_rail_candidates_from_firsts(
+    state: &mut GameState,
+    pid: usize,
+    firsts: &[usize],
+) -> Vec<DoubleRailCandidate> {
+    let mut out = Vec::new();
+    for &conn1 in firsts {
+        for selection in coal_options_for_connection(state, &connections()[conn1], 1) {
+            let Some(coal1) = selection.first().copied() else {
+                continue;
+            };
+            for option in get_second_rail_options(state, pid, conn1, coal1) {
+                for coal_selection in &option.coal2_opts {
+                    let Some(coal2) = coal_selection.first().copied() else {
+                        continue;
+                    };
+                    for &beer in &option.beers {
+                        out.push(DoubleRailCandidate {
+                            conn1,
+                            coal1,
+                            conn2: option.conn,
+                            coal2,
+                            beer,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// All beer sources legal for powering a double-rail second link: own breweries
@@ -172,25 +250,7 @@ pub fn beer_sources_for_link(state: &GameState, pid: usize, conn: &Connection) -
 /// each with the full set of legal beer sources (matching `execute_network_double`).
 /// Uses the cheapest first-link coal as a representative dry-run (only the
 /// set of reachable second links matters here, not the coal pairing).
-pub fn get_valid_second_rail_links(
-    state: &mut GameState,
-    pid: usize,
-    first_conn: usize,
-) -> Vec<usize> {
-    let first = match connections().iter().find(|c| c.id == first_conn) {
-        Some(c) => c,
-        None => return Vec::new(),
-    };
-    let Some(coal1) = cheapest_coal_for_connection(state, first) else {
-        return Vec::new();
-    };
-    get_second_rail_options(state, pid, first_conn, coal1)
-        .into_iter()
-        .map(|o| o.conn)
-        .collect()
-}
-
-pub fn get_second_rail_options(
+fn get_second_rail_options(
     state: &mut GameState,
     pid: usize,
     first_conn: usize,
@@ -208,6 +268,17 @@ pub fn get_second_rail_options(
         Some(c) => c,
         None => return Vec::new(),
     };
+    // Keep this helper total and side-effect free for arbitrary callers (the
+    // legal-move and heuristic paths normally pre-filter these conditions).
+    // An occupied/non-rail first connection must never be dry-run as a new
+    // link, and an invalid coal descriptor must not reach consume_coal_source.
+    if !first.rail || state.links[first_conn].is_some() {
+        return Vec::new();
+    }
+    let legal_coal1 = coal_options_for_connection(state, first, 1);
+    if !legal_coal1.iter().any(|opt| opt.as_slice() == [coal1]) {
+        return Vec::new();
+    }
     let has_no_presence = !player_has_presence(state, pid);
     if !has_no_presence
         && !is_in_network(state, pid, first.a)

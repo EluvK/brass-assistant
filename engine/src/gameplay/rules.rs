@@ -6,12 +6,12 @@
 use crate::state::GameState;
 
 pub use crate::gameplay::actions::{
-    BuildCost, BuildTarget, SecondRailOption, SellExecutionPlan, SellIdentity, any_card_indices,
+    BuildCost, BuildTarget, DoubleRailCandidate, SellExecutionPlan, SellIdentity, any_card_indices,
     beer_sources_for_link, calculate_build_cost, can_develop, can_scout,
     coal_options_for_connection, coal_source_options, discard_card, execute_build, execute_develop,
     execute_loan, execute_network, execute_network_double, execute_pass, execute_scout,
-    execute_sell_with_free_develop, get_second_rail_options, get_valid_build_targets,
-    get_valid_network_targets, get_valid_second_rail_links, iron_source_options, sell_identity,
+    enumerate_double_rail_candidates, execute_sell_with_free_develop, get_valid_build_targets,
+    get_valid_network_targets, iron_source_options, sell_identity,
     valid_build_cards, validate_sell_plan,
 };
 pub use crate::gameplay::legal_moves::{legal_moves, legal_resolved_moves};

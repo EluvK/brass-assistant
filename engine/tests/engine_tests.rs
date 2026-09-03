@@ -2,8 +2,8 @@ use _engine::data::{Era, IndustryType, industry_tiles};
 use _engine::engine::{TurnResult, advance_turn, handle_turn_result, step};
 use _engine::map::*;
 use _engine::rules::{
-    ResolvedMove, apply_move, execute_build, execute_network, execute_network_double,
-    get_valid_build_targets, get_valid_network_targets, get_valid_second_rail_links,
+    ResolvedMove, apply_move, enumerate_double_rail_candidates, execute_build, execute_network,
+    execute_network_double, get_valid_build_targets, get_valid_network_targets,
     iron_source_options, legal_resolved_moves,
 };
 use _engine::scoring;
@@ -1466,7 +1466,11 @@ fn second_rail_links_allow_own_unconnected_beer() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::BrewerySouth, pid, 1);
 
-    let second_links = get_valid_second_rail_links(&mut state, pid, 15);
+    let second_links: Vec<_> = enumerate_double_rail_candidates(&mut state, pid)
+        .into_iter()
+        .filter(|c| c.conn1 == 15)
+        .map(|c| c.conn2)
+        .collect();
 
     assert!(
         second_links.contains(&33),
@@ -1481,7 +1485,11 @@ fn second_rail_links_require_opponent_beer_to_be_connected() {
     place_test_coal_mine(&mut state, 1);
     place_test_brewery(&mut state, Loc::BrewerySouth, 1, 1);
 
-    let second_links = get_valid_second_rail_links(&mut state, pid, 15);
+    let second_links: Vec<_> = enumerate_double_rail_candidates(&mut state, pid)
+        .into_iter()
+        .filter(|c| c.conn1 == 15)
+        .map(|c| c.conn2)
+        .collect();
 
     assert!(
         !second_links.contains(&33),

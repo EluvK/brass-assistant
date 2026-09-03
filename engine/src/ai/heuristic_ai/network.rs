@@ -5,10 +5,9 @@ use super::context::EvalContext;
 use super::plan::{Phase, Plan};
 use super::value::{ScoreParts, link_current_and_potential_vps};
 use super::{CardChoices, Decision};
-use crate::graph::BeerSourceKind;
 use crate::map::{CANAL_LINK_COST, connections};
 use crate::rules::{
-    ResolvedMove, get_second_rail_options, get_valid_network_targets, get_valid_second_rail_links,
+    ResolvedMove, enumerate_double_rail_candidates, get_valid_network_targets,
 };
 use crate::state::GameState;
 
@@ -217,20 +216,18 @@ pub(crate) fn score_top_network_doubles(
         return Vec::new();
     }
     let w = &ctx.cfg.network;
-    let singles = get_valid_network_targets(state, ctx.pid);
-    let mut scored: Vec<(usize, usize, f64)> = Vec::new();
-    for conn1 in singles {
-        for conn2 in get_valid_second_rail_links(state, ctx.pid, conn1) {
+    let mut scored = Vec::new();
+    for candidate in enumerate_double_rail_candidates(state, ctx.pid) {
             // Value both links and charge realistic resource cost:
             // total = £15 base + 2 coal (explicitly estimated from legal
             // sources). The double-rail surcharge (£15 vs 2×£5) is charged
             // as money through the same conversion as everything else.
-            let c1 = &connections()[conn1];
-            let c2 = &connections()[conn2];
-            let cost1 = crate::map::RAIL_LINK_COST + estimated_connection_coal_cost(state, conn1);
-            let cost2 = crate::map::RAIL_LINK_COST + estimated_connection_coal_cost(state, conn2);
-            let s1 = score_network_candidate(state, ctx, conn1, cost1, &[c1.a, c1.b], plan);
-            let s2 = score_network_candidate(state, ctx, conn2, cost2, &[c2.a, c2.b], plan);
+            let c1 = &connections()[candidate.conn1];
+            let c2 = &connections()[candidate.conn2];
+            let cost1 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal1);
+            let cost2 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal2);
+            let s1 = score_network_candidate(state, ctx, candidate.conn1, cost1, &[c1.a, c1.b], plan);
+            let s2 = score_network_candidate(state, ctx, candidate.conn2, cost2, &[c2.a, c2.b], plan);
             let surcharge = ctx.money_value(
                 (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST) as f64
                     * w.double_surcharge_weight,
@@ -245,70 +242,32 @@ pub(crate) fn score_top_network_doubles(
             };
             // Beer-lock synergy: grabbing a brewery farm link locks beer
             // while saving tempo.
-            let touches_farm = [&connections()[conn1], &connections()[conn2]]
+            let touches_farm = [&connections()[candidate.conn1], &connections()[candidate.conn2]]
                 .iter()
                 .any(|c| c.a.is_farm() || c.b.is_farm() || c.via_farm.is_some_and(|f| f.is_farm()));
             if touches_farm {
                 total += w.double_farm_lock_bonus;
             }
-            scored.push((conn1, conn2, total));
-        }
+            scored.push((candidate, total));
     }
-    scored.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     let Some(card_index) = card_choices.first().map(|(index, _)| *index) else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(k);
-    let mut geometries = 0usize;
-    for (conn1, conn2, score) in scored {
-        if geometries >= k {
-            break;
-        }
+    for (candidate, score) in scored.into_iter().take(k) {
         // v4: up to SOURCE_VARIANTS variants per geometry, differing in coal1
         // identity; the best coal1 also varies the beer source (Own first).
         // The coal2 options must be enumerated against the SAME coal1 we
         // actually use, otherwise the emitted move may fail to execute.
-        let coal1_opts = super::distinct_source_options(
-            crate::rules::coal_options_for_connection(state, &connections()[conn1], 1),
-            |s: &crate::graph::CoalSource| (s.kind, s.key),
-            super::SOURCE_VARIANTS,
-        );
-        for (vi, mut option) in coal1_opts.into_iter().enumerate() {
-            let Some(coal1) = option.pop() else { continue };
-            let Some(opt) = get_second_rail_options(state, ctx.pid, conn1, coal1)
-                .into_iter()
-                .find(|o| o.conn == conn2)
-            else {
-                continue;
-            };
-            // Prefer consuming our own beer (advances our own income when it
-            // flips) over an opponent's.
-            let mut beers: Vec<crate::graph::BeerSource> = opt.beers.iter().copied().collect();
-            beers.sort_by_key(|b| b.kind != BeerSourceKind::Own);
-            let beer_cap = if vi == 0 { super::SOURCE_VARIANTS } else { 1 };
-            beers.truncate(beer_cap);
-            for beer in beers {
-                let Some(coal2) = opt.coal2_opts.first().and_then(|o| o.first()).copied() else {
-                    continue;
-                };
-                out.push(Decision {
-                    mv: ResolvedMove::NetworkDouble {
-                        conn1,
-                        conn2,
-                        coal1,
-                        coal2,
-                        beer,
-                        card_index,
-                    },
+        out.push(Decision {
+                    mv: candidate.to_move(card_index),
                     score,
                     card_score: card_choices
                         .first()
                         .map(|(_, s)| *s)
                         .unwrap_or(f64::INFINITY),
                 });
-            }
-        }
-        geometries += 1;
     }
     out
 }

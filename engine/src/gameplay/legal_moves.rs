@@ -3,7 +3,7 @@
 use crate::data::{Era, IndustryType};
 use crate::gameplay::actions::{
     affordable_develop_iron_count, any_card_indices, can_develop, can_scout,
-    coal_options_for_connection, coal_source_options, get_second_rail_options,
+    coal_options_for_connection, coal_source_options, enumerate_double_rail_candidates_from_firsts,
     get_valid_build_targets, get_valid_network_targets, iron_source_options, valid_build_cards,
 };
 use crate::map::connections;
@@ -50,23 +50,24 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
     }
 
     // NETWORK (single + double)
+    let network_targets = get_valid_network_targets(state, pid);
     if state.era == Era::Canal && state.players[pid].canal_links > 0
         || state.era == Era::Rail && state.players[pid].rail_links > 0
     {
-        for conn in get_valid_network_targets(state, pid) {
+        for conn in &network_targets {
             for ci in &cards {
                 if state.era == Era::Canal {
                     moves.push(ResolvedMove::Network {
-                        conn_id: conn,
+                        conn_id: *conn,
                         coal: None,
                         card_index: *ci,
                     });
                 } else {
-                    let c = &connections()[conn];
+                            let c = &connections()[*conn];
                     let coal_opts = coal_options_for_connection(state, c, 1);
                     for coal in &coal_opts {
                         moves.push(ResolvedMove::Network {
-                            conn_id: conn,
+                            conn_id: *conn,
                             coal: coal.first().copied(),
                             card_index: *ci,
                         });
@@ -75,33 +76,16 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
             }
         }
     }
-    if state.era == Era::Rail {
+    if state.era == Era::Rail
+        && state.players[pid].rail_links >= 2
+        && state.players[pid].money >= crate::map::RAIL_DOUBLE_LINK_COST
+        && !state.free_beer_cubes.is_empty()
+    {
         // For each valid first link, find valid second links (double rail) and
         // enumerate every legal coal/beer source choice for the second link.
-        let single = get_valid_network_targets(state, pid);
-        for conn1 in single {
-            let c1 = &connections()[conn1];
-            let coal1_opts = coal_options_for_connection(state, c1, 1);
-            for coal1 in &coal1_opts {
-                let Some(&coal1) = coal1.first() else {
-                    continue;
-                };
-                for opt in get_second_rail_options(state, pid, conn1, coal1) {
-                    for coal2 in &opt.coal2_opts {
-                        for beer in &opt.beers {
-                            for ci in &cards {
-                                moves.push(ResolvedMove::NetworkDouble {
-                                    conn1,
-                                    conn2: opt.conn,
-                                    coal1,
-                                    coal2: coal2[0],
-                                    beer: *beer,
-                                    card_index: *ci,
-                                });
-                            }
-                        }
-                    }
-                }
+        for candidate in enumerate_double_rail_candidates_from_firsts(state, pid, &network_targets) {
+            for ci in &cards {
+                moves.push(candidate.to_move(*ci));
             }
         }
     }
