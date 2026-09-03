@@ -244,7 +244,9 @@ pub(super) fn score_develop_plans(state: &GameState, card_choices: &CardChoices)
     let pid = state.current_player_id();
     let already_develop_cnt = match state.era {
         crate::data::Era::Canal => state.players[pid].develops_in_canal,
-        crate::data::Era::Rail => state.players[pid].develops_in_rail,
+        crate::data::Era::Rail => {
+            state.players[pid].develops_in_rail + state.players[pid].develops_in_canal
+        }
     };
     if !can_develop(state, pid) || card_choices.is_empty() {
         return Vec::new();
@@ -339,12 +341,12 @@ fn score_target_plan(
         if actual_cost > state.players[state.current_player_id()].money {
             continue;
         }
-        let same_industry_bonus = if second.is_some_and(|s| s.ind == first.ind) {
-            0.1
-        } else {
-            0.0
+        let second_industry_bonus = match second {
+            Some(ind) if ind.ind == first.ind => 0.1, // same as first, more valuable
+            Some(_) => 0.1,
+            None => -0.5,
         };
-        let score = iron_baseline(&iron) + target_value + same_industry_bonus
+        let score = iron_baseline(&iron) + target_value + second_industry_bonus
             - already_develop_cnt as f64 * 0.2;
         decisions.push(Decision {
             mv: ResolvedMove::Develop {
