@@ -128,7 +128,7 @@ fn normalized_profile_value(tile: TileDef, state: &GameState, profile_range: (f6
     if (max - min).abs() <= f64::EPSILON {
         0.0
     } else {
-        ((raw - min) / (max - min) * 2.0 - 1.0).clamp(-1.0, 1.0)
+        ((raw - min) / (max - min) * 1.6 - 0.8).clamp(-0.8, 0.8)
     }
 }
 
@@ -188,11 +188,11 @@ fn develop_target_value_with_profile_range(
         return 0.8;
     }
     match ind {
-        IndustryType::Brewery if tile.level == 1 => 0.8,
+        IndustryType::Brewery if tile.level == 1 => 0.75,
         IndustryType::Brewery => -0.5,
-        IndustryType::CoalMine if tile.level == 1 => 0.2,
+        IndustryType::CoalMine if tile.level == 1 => 0.8,
         IndustryType::CoalMine => -0.5,
-        IndustryType::IronWorks if tile.level == 1 => 0.2,
+        IndustryType::IronWorks if tile.level == 1 => 0.8,
         IndustryType::IronWorks => -0.3,
         IndustryType::CottonMill | IndustryType::Manufacturer | IndustryType::Pottery => {
             normalized_profile_value(tile, state, profile_range)
@@ -242,6 +242,10 @@ fn iron_baseline(iron: &[crate::graph::IronSource]) -> f64 {
 
 pub(super) fn score_develop_plans(state: &GameState, card_choices: &CardChoices) -> Vec<Decision> {
     let pid = state.current_player_id();
+    let already_develop_cnt = match state.era {
+        crate::data::Era::Canal => state.players[pid].develops_in_canal,
+        crate::data::Era::Rail => state.players[pid].develops_in_rail,
+    };
     if !can_develop(state, pid) || card_choices.is_empty() {
         return Vec::new();
     }
@@ -263,35 +267,51 @@ pub(super) fn score_develop_plans(state: &GameState, card_choices: &CardChoices)
     }
 
     let mut decisions = Vec::new();
-    for first in first_targets {
-        score_target_plan(state, card_choices, first, None, &mut decisions);
-        let mut player_after_first = state.players[pid].clone();
-        player_after_first
-            .consume_tile(first.ind)
-            .expect("first develop target must remain on the player mat");
-        for (ind, tile) in player_after_first
-            .developable_types()
-            .into_iter()
-            .filter(|(ind, tile)| allowed_develop_target(state.is_canal_era(), *ind, *tile))
-        {
-            // For two different industries, A -> B and B -> A remove the
-            // same pair of tiles and spend the same iron. Keep one canonical
-            // ordering; same-industry pairs remain because their second tile
-            // is the one uncovered after removing the first.
-            if ind != first.ind && (ind as usize) < (first.ind as usize) {
-                continue;
-            }
-            score_target_plan(
-                state,
-                card_choices,
-                first,
-                Some(DevelopTarget {
-                    ind,
-                    value: develop_target_value_with_profile_range(state, ind, tile, profile_range),
-                }),
-                &mut decisions,
-            );
+    // Score all single-develop plans independently from double plans.
+    for &first in &first_targets {
+        score_target_plan(
+            state,
+            card_choices,
+            first,
+            None,
+            already_develop_cnt,
+            &mut decisions,
+        );
+    }
+
+    // Build and score each legal pair once. The player helper handles the
+    // game-rule check (including same-industry uncovering); the additional
+    // filters here only apply heuristic restrictions and canonical ordering.
+    for (ind1, ind2) in state.players[pid].double_developable_types() {
+        let Some(&first) = first_targets.iter().find(|target| target.ind == ind1) else {
+            continue;
+        };
+        let tile = if ind1 == ind2 {
+            state.players[pid].tile_after(ind2, 1)
+        } else {
+            state.players[pid].next_tile(ind2)
+        };
+        let Some(tile) = tile else { continue };
+        if !allowed_develop_target(state.is_canal_era(), ind2, tile) {
+            continue;
         }
+        // For different industries, keep one canonical ordering. Same-
+        // industry pairs remain ordered because the second tile is exposed
+        // only after removing the first.
+        if ind1 != ind2 && (ind2 as usize) < (ind1 as usize) {
+            continue;
+        }
+        score_target_plan(
+            state,
+            card_choices,
+            first,
+            Some(DevelopTarget {
+                ind: ind2,
+                value: develop_target_value_with_profile_range(state, ind2, tile, profile_range),
+            }),
+            already_develop_cnt,
+            &mut decisions,
+        );
     }
     decisions.sort_by(|a, b| b.score.total_cmp(&a.score));
     decisions
@@ -302,6 +322,7 @@ fn score_target_plan(
     card_choices: &CardChoices,
     first: DevelopTarget,
     second: Option<DevelopTarget>,
+    already_develop_cnt: u8,
     decisions: &mut Vec<Decision>,
 ) {
     let iron_needed = usize::from(second.is_some()) + 1;
@@ -318,7 +339,13 @@ fn score_target_plan(
         if actual_cost > state.players[state.current_player_id()].money {
             continue;
         }
-        let score = iron_baseline(&iron) + target_value;
+        let same_industry_bonus = if second.is_some_and(|s| s.ind == first.ind) {
+            0.1
+        } else {
+            0.0
+        };
+        let score = iron_baseline(&iron) + target_value + same_industry_bonus
+            - already_develop_cnt as f64 * 0.2;
         decisions.push(Decision {
             mv: ResolvedMove::Develop {
                 ind1: first.ind,
@@ -405,7 +432,7 @@ mod tests {
             IndustryType::CoalMine,
             industry_tiles(IndustryType::CoalMine)[1],
         );
-        assert_eq!(brewery_one, 0.8);
+        assert_eq!(brewery_one, 0.75);
         assert_eq!(coal_two, -0.5);
 
         let pottery_two = develop_target_value(
@@ -480,9 +507,9 @@ mod tests {
     fn hard_develop_bans_remain_filters_not_score_penalties() {
         let mut state = ctx_for(Era::Canal, 1);
         let pid = state.current_player_id();
-        state.players[pid].consume_tile(IndustryType::IronWorks);
-        state.players[pid].consume_tile(IndustryType::Brewery);
-        state.players[pid].consume_tile(IndustryType::Brewery);
+        state.players[pid].develop_tile(IndustryType::IronWorks, state.era);
+        state.players[pid].develop_tile(IndustryType::Brewery, state.era);
+        state.players[pid].develop_tile(IndustryType::Brewery, state.era);
         // let iron_two = state.players[pid]
         // .next_tile(IndustryType::IronWorks)
         // .unwrap();

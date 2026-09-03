@@ -254,7 +254,60 @@ impl Player {
         out
     }
 
+    /// Returns every ordered pair of industry types that can be developed in
+    /// sequence. For a same-industry pair, the second type is checked against
+    /// the tile exposed after removing the first one, without cloning the
+    /// player state.
+    pub fn double_developable_types(&self) -> Vec<(IndustryType, IndustryType)> {
+        let mut out = Vec::new();
+        for first in IndustryType::ALL {
+            let Some(first_tile) = self.next_tile(first) else {
+                continue;
+            };
+            if !first_tile.can_develop {
+                continue;
+            }
+            for second in IndustryType::ALL {
+                let second_tile = if second == first {
+                    self.tile_after(second, 1)
+                } else {
+                    self.next_tile(second)
+                };
+                if second_tile.is_some_and(|tile| tile.can_develop) {
+                    out.push((first, second));
+                }
+            }
+        }
+        out
+    }
+
+    pub fn built_tile(&mut self, ind: IndustryType) -> Option<TileDef> {
+        let stack = player_industry_stack(ind);
+        let idx = self.industry_next[ind as usize] as usize;
+        let t = stack.get(idx).copied()?;
+        self.industry_next[ind as usize] += 1;
+        Some(t)
+    }
+
+    pub fn develop_tile(&mut self, ind: IndustryType, era: Era) -> Option<TileDef> {
+        let stack = player_industry_stack(ind);
+        let idx = self.industry_next[ind as usize] as usize;
+        let t = stack.get(idx).copied()?;
+        self.industry_next[ind as usize] += 1;
+        match era {
+            Era::Canal => {
+                self.develops_in_canal += 1;
+            }
+            Era::Rail => {
+                self.develops_in_rail += 1;
+            }
+        }
+        Some(t)
+    }
+
     /// Mark the next tile of `ind` as used (build or develop).
+    /// ready to be deprecated. use `built_tile` or `develop_tile` instead.
+    #[deprecated]
     pub fn consume_tile(&mut self, ind: IndustryType) -> Option<TileDef> {
         let stack = player_industry_stack(ind);
         let idx = self.industry_next[ind as usize] as usize;

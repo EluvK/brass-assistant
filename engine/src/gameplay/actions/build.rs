@@ -361,7 +361,7 @@ pub fn execute_build(
 
     let tile_def = {
         let p = &mut state.players[pid];
-        p.consume_tile(ind).ok_or("No tile available")?
+        p.built_tile(ind).ok_or("No tile available")?
     };
 
     state.spend_money(pid, total);

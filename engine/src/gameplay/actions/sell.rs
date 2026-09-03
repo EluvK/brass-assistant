@@ -286,12 +286,8 @@ pub fn execute_sell_with_free_develop(
         }
         if let Some(ind) = plan.free_develop {
             let tile = state.players[pid]
-                .consume_tile(ind)
+                .develop_tile(ind, state.era)
                 .ok_or("No tile available to free develop")?;
-            match state.era {
-                crate::data::Era::Canal => state.players[pid].develops_in_canal += 1,
-                crate::data::Era::Rail => state.players[pid].develops_in_rail += 1,
-            };
             notes.push(format!(
                 "free develop {} Lv{}",
                 log_industry_label(ind),

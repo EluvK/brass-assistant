@@ -114,44 +114,38 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
             .into_iter()
             .map(|(ind, _)| ind)
             .collect();
+        let double_types = if affordable_iron >= 2 {
+            state.players[pid].double_developable_types()
+        } else {
+            Vec::new()
+        };
+        // Single develop
+        let iron_opts = iron_source_options(state, 1);
         for &ind1 in &types {
-            // Single develop
-            if affordable_iron >= 1 {
-                let iron_opts = iron_source_options(state, 1);
+            for iron in &iron_opts {
+                for ci in &cards {
+                    moves.push(ResolvedMove::Develop {
+                        ind1,
+                        ind2: None,
+                        iron: iron.clone(),
+                        card_index: *ci,
+                    });
+                }
+            }
+        }
+        // Double develop. `double_developable_types` already accounts for
+        // the tile uncovered by the first development.
+        if affordable_iron >= 2 {
+            let iron_opts = iron_source_options(state, 2);
+            for &(ind1, ind2) in &double_types {
                 for iron in &iron_opts {
                     for ci in &cards {
                         moves.push(ResolvedMove::Develop {
                             ind1,
-                            ind2: None,
+                            ind2: Some(ind2),
                             iron: iron.clone(),
                             card_index: *ci,
                         });
-                    }
-                }
-            }
-            // Double develop: the second choice is evaluated after removing
-            // the first tile, which matters when both choices use one industry.
-            if affordable_iron >= 2 {
-                let mut player_after_first = state.players[pid].clone();
-                player_after_first
-                    .consume_tile(ind1)
-                    .expect("developable first tile must be present");
-                let second_types: Vec<IndustryType> = player_after_first
-                    .developable_types()
-                    .into_iter()
-                    .map(|(ind, _)| ind)
-                    .collect();
-                let iron_opts = iron_source_options(state, 2);
-                for &ind2 in &second_types {
-                    for iron in &iron_opts {
-                        for ci in &cards {
-                            moves.push(ResolvedMove::Develop {
-                                ind1,
-                                ind2: Some(ind2),
-                                iron: iron.clone(),
-                                card_index: *ci,
-                            });
-                        }
                     }
                 }
             }

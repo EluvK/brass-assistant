@@ -40,7 +40,7 @@ pub fn execute_develop(
         .filter(|tile| tile.can_develop)
         .ok_or("First industry is not developable")?;
     simulated_player
-        .consume_tile(ind1)
+        .develop_tile(ind1, state.era)
         .expect("validated first develop tile must be present");
 
     let second_tile = if let Some(ind2) = ind2 {
@@ -49,7 +49,7 @@ pub fn execute_develop(
             .filter(|tile| tile.can_develop)
             .ok_or("Second industry is not developable")?;
         simulated_player
-            .consume_tile(ind2)
+            .develop_tile(ind2, state.era)
             .expect("validated second develop tile must be present");
         Some(tile)
     } else {
@@ -73,7 +73,7 @@ pub fn execute_develop(
 
     // Remove tiles from mat
     state.players[pid]
-        .consume_tile(ind1)
+        .develop_tile(ind1, state.era)
         .expect("validated first develop tile must be present");
     let mut removed = vec![format!(
         "{} Lv{}",
@@ -82,7 +82,7 @@ pub fn execute_develop(
     )];
     if let (Some(i2), Some(t2)) = (ind2, second_tile) {
         state.players[pid]
-            .consume_tile(i2)
+            .develop_tile(i2, state.era)
             .expect("validated second develop tile must be present");
         removed.push(format!("{} Lv{}", log_industry_label(i2), t2.level));
     }
