@@ -84,7 +84,7 @@ impl PyGame {
     }
 
     #[getter]
-    fn round(&self) -> u32 {
+    fn round(&self) -> usize {
         self.state.round
     }
 

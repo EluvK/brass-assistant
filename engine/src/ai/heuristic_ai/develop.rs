@@ -57,7 +57,7 @@ define_era_round_factor!(
 
 define_era_round_factor!(
     DevelopIncomeFactor,
-    canal: (0.4, 0.2),
+    canal: (0.8, 0.2),
     rail: (0.2, 0.0),
 );
 
@@ -240,6 +240,11 @@ fn iron_baseline(iron: &[crate::graph::IronSource]) -> f64 {
     (3.0 + (3.0 - average_paid_price) * 0.5).clamp(2.0, 4.0)
 }
 
+/// Quantize heuristic scores before they are compared/sorted.
+fn quantize_score(score: f64) -> f64 {
+    (score * 100.0).round() / 100.0
+}
+
 pub(super) fn score_develop_plans(state: &GameState, card_choices: &CardChoices) -> Vec<Decision> {
     let pid = state.current_player_id();
     let already_develop_cnt = match state.era {
@@ -342,7 +347,7 @@ fn score_target_plan(
             continue;
         }
         let second_industry_bonus = match second {
-            Some(ind) if ind.ind == first.ind => 0.1, // same as first, more valuable
+            Some(ind) if ind.ind == first.ind => 0.2, // same as first, more valuable
             Some(_) => 0.1,
             None => -0.5,
         };
@@ -355,7 +360,7 @@ fn score_target_plan(
                 iron,
                 card_index: card_choices[0].0,
             },
-            score: score.clamp(0.0, 6.0),
+            score: quantize_score(score.clamp(0.0, 6.0)),
             card_score: card_choices[0].1,
         });
     }
@@ -478,6 +483,40 @@ mod tests {
         assert!(iron_baseline(&[cheap]) >= iron_baseline(&[expensive]));
         assert_eq!(iron_baseline(&[cheap]), 4.0);
         assert_eq!(iron_baseline(&[expensive]), 2.0);
+    }
+
+    #[test]
+    fn canal_round_one_brewery_pair_matches_coal_iron_pair() {
+        let state = ctx_for(Era::Canal, 1);
+        let decisions = score_develop_plans(&state, &vec![(0, 0.0)]);
+
+        let brewery_pair = decisions
+            .iter()
+            .filter_map(|decision| match decision.mv {
+                ResolvedMove::Develop {
+                    ind1: IndustryType::Brewery,
+                    ind2: Some(IndustryType::Brewery),
+                    ..
+                } => Some(decision.score),
+                _ => None,
+            })
+            .max_by(f64::total_cmp)
+            .expect("Canal round one should allow developing two level-one breweries");
+        let coal_iron_pair = decisions
+            .iter()
+            .filter_map(|decision| match decision.mv {
+                ResolvedMove::Develop {
+                    ind1: IndustryType::CoalMine,
+                    ind2: Some(IndustryType::IronWorks),
+                    ..
+                } => Some(decision.score),
+                _ => None,
+            })
+            .max_by(f64::total_cmp)
+            .expect("Canal round one should allow developing one coal mine and one iron works");
+
+        println!("brewery={brewery_pair}, coal_iron={coal_iron_pair}");
+        assert_eq!(brewery_pair, coal_iron_pair);
     }
 
     #[test]
