@@ -256,45 +256,6 @@ pub struct NetworkWeights {
     pub double_surcharge_weight: f64,
 }
 
-/// Develop action scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct DevelopProfileWeights {
-    /// Static-profile multipliers at numbered round 1 and 8 of each era.
-    /// Cost is a £-to-profile conversion; VP and income penalise removing a
-    /// tile that would be valuable to build. All values are interpolated by
-    /// `EvalContext::round_progress` rather than global ScoreParts weights.
-    pub canal_vp_start: f64,
-    pub canal_vp_end: f64,
-    pub rail_vp_start: f64,
-    pub rail_vp_end: f64,
-    pub canal_income_start: f64,
-    pub canal_income_end: f64,
-    pub rail_income_start: f64,
-    pub rail_income_end: f64,
-    pub canal_cost_start: f64,
-    pub canal_cost_end: f64,
-    pub rail_cost_start: f64,
-    pub rail_cost_end: f64,
-}
-
-/// Develop action scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct DevelopWeights {
-    /// Fixed prices used only by static tile profiles; they never inspect the
-    /// current market. £3 is the middle market price for both resources.
-    pub static_coal_price: f64,
-    pub static_iron_price: f64,
-    /// Era-local, independently tunable weights for static tile profiles.
-    pub profile: DevelopProfileWeights,
-    /// Develop's action baseline is centred at 3. A paid iron unit below this
-    /// reference raises the baseline; one above it lowers it.
-    pub iron_price_reference: f64,
-    pub iron_price_score_per_pound: f64,
-    pub base_score_center: f64,
-    pub base_score_min: f64,
-    pub base_score_max: f64,
-}
-
 /// Loan action scoring.
 #[derive(Debug, Clone, Copy)]
 pub struct LoanWeights {
@@ -388,11 +349,6 @@ pub struct Guardrails {
     /// Forbid building the level-1 brewery (vanishes at era end; develop
     /// it instead).
     pub ban_build_lv1_brewery: bool,
-    /// Forbid developing iron works level 2+ (iron is for builds, not
-    /// develop fodder).
-    pub ban_develop_iron_lv2_plus: bool,
-    /// Forbid developing brewery level 2+ during the canal era.
-    pub ban_develop_brewery_lv2_canal_early: bool,
 }
 
 /// Full heuristic parameter set.
@@ -404,7 +360,6 @@ pub struct HeuristicConfig {
     pub flip: FlipWeights,
     pub build: BuildWeights,
     pub network: NetworkWeights,
-    pub develop: DevelopWeights,
     pub loan: LoanWeights,
     pub scout: ScoutWeights,
     pub cards: CardWeights,
@@ -541,29 +496,6 @@ impl Default for HeuristicConfig {
                 double_farm_lock_bonus: 0.8,
                 double_surcharge_weight: 1.0,
             },
-            develop: DevelopWeights {
-                static_coal_price: 3.0,
-                static_iron_price: 3.0,
-                profile: DevelopProfileWeights {
-                    canal_vp_start: 0.9,
-                    canal_vp_end: 1.0,
-                    rail_vp_start: 1.0,
-                    rail_vp_end: 1.1,
-                    canal_income_start: 0.4,
-                    canal_income_end: 0.2,
-                    rail_income_start: 0.2,
-                    rail_income_end: 0.0,
-                    canal_cost_start: 1.6,
-                    canal_cost_end: 1.0,
-                    rail_cost_start: 1.0,
-                    rail_cost_end: 0.5,
-                },
-                iron_price_reference: 3.0,
-                iron_price_score_per_pound: 0.5,
-                base_score_center: 3.0,
-                base_score_min: 2.0,
-                base_score_max: 4.0,
-            },
             loan: LoanWeights {
                 action_cost: -4.0,
                 economic_score_scale: 10.0,
@@ -621,8 +553,6 @@ impl Default for HeuristicConfig {
             },
             guardrails: Guardrails {
                 ban_build_lv1_brewery: true,
-                ban_develop_iron_lv2_plus: true,
-                ban_develop_brewery_lv2_canal_early: true,
             },
         }
     }

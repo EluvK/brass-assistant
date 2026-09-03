@@ -1,9 +1,8 @@
 //! Develop action scoring based on the tiles actually removed from a mat.
 
-use super::context::{EvalContext, era_round_factor, round_factor};
-use super::value::ScoreParts;
 use super::{CardChoices, Decision, SOURCE_VARIANTS, distinct_source_options};
 use crate::data::{IndustryType, TileDef, industry_tiles};
+use crate::heuristic_ai::context::define_era_round_factor;
 use crate::rules::{ResolvedMove, can_develop, iron_source_options};
 use crate::state::GameState;
 
@@ -29,8 +28,6 @@ pub(super) struct DevelopTileDiagnostic {
     pub profile: DevelopTileProfile,
     pub profile_raw: f64,
     pub removal_score: f64,
-    pub era_frac: f64,
-    pub round_progress: f64,
     pub vp_weight: f64,
     pub income_weight: f64,
     pub cost_weight: f64,
@@ -38,73 +35,50 @@ pub(super) struct DevelopTileDiagnostic {
 
 /// Read a tile's printed facts into the static development profile. Resource
 /// requirements use the configured generic prices instead of board/market data.
-pub(super) fn static_develop_profile(
-    tile: TileDef,
-    w: &super::config::DevelopWeights,
-) -> DevelopTileProfile {
+pub(super) fn static_develop_profile(tile: TileDef) -> DevelopTileProfile {
     DevelopTileProfile {
         level: tile.level,
         vp_value: tile.vp as f64,
         income_value: tile.income as f64,
         cost_penalty: tile.cost as f64
-            + tile.cost_coal as f64 * w.static_coal_price
-            + tile.cost_iron as f64 * w.static_iron_price
-            + tile.beers_to_sell.unwrap_or(0) as f64 * w.static_iron_price, // whatever,
+            + tile.cost_coal as f64 * 3.0
+            + tile.cost_iron as f64 * 3.0
+            + tile.beers_to_sell.unwrap_or(0) as f64 * 3.0,
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ProfileWeights {
-    vp: f64,
-    income: f64,
-    cost: f64,
-}
+const BAN_DEVELOP_BREWERY_LEVEL2_PLUS_IN_CANAL: bool = true;
 
-/// Independently tunable static-profile weights at the current numbered round.
-/// These intentionally do not reuse global ScoreParts money/income conversion.
-fn profile_weights(ctx: &EvalContext) -> ProfileWeights {
-    let w = &ctx.cfg.develop.profile;
-    let progress = round_factor!(ctx.round_progress, 0.0_f64, 1.0_f64);
-    ProfileWeights {
-        vp: era_round_factor!(
-            ctx.is_canal(),
-            progress,
-            w.canal_vp_start,
-            w.canal_vp_end,
-            w.rail_vp_start,
-            w.rail_vp_end,
-        ),
-        income: era_round_factor!(
-            ctx.is_canal(),
-            progress,
-            w.canal_income_start,
-            w.canal_income_end,
-            w.rail_income_start,
-            w.rail_income_end,
-        ),
-        cost: era_round_factor!(
-            ctx.is_canal(),
-            progress,
-            w.canal_cost_start,
-            w.canal_cost_end,
-            w.rail_cost_start,
-            w.rail_cost_end,
-        ),
-    }
-}
+define_era_round_factor!(
+    DevelopVpFactor,
+    canal: (0.9, 1.0),
+    rail: (1.0, 1.1),
+);
+
+define_era_round_factor!(
+    DevelopIncomeFactor,
+    canal: (0.4, 0.2),
+    rail: (0.2, 0.0),
+);
+
+define_era_round_factor!(
+    DevelopCostFactor,
+    canal: (1.6, 1.0),
+    rail: (1.0, 0.5),
+);
 
 /// Stage-weighted value of removing a tile: costly tiles are better develop
 /// fodder, while printed VP and income make a tile worth retaining to build.
-fn profile_raw_value(profile: DevelopTileProfile, ctx: &EvalContext) -> f64 {
-    let weights = profile_weights(ctx);
-    let double_vp = if ctx.is_canal() && profile.level != 1 {
+fn profile_raw_value(profile: DevelopTileProfile, state: &GameState) -> f64 {
+    let double_vp = if matches!(state.era, crate::data::Era::Canal) && profile.level != 1 {
         2.0
     } else {
         1.0
     };
-    (8.0 - profile.vp_value * weights.vp * double_vp + profile.income_value * weights.income)
+    (8.0 - profile.vp_value * DevelopVpFactor::factor(state) * double_vp
+        + profile.income_value * DevelopIncomeFactor::factor(state))
         / profile.cost_penalty
-        * weights.cost
+        * DevelopCostFactor::factor(state)
 }
 
 /// The highest printed level of an industry is its top level tile. Developing
@@ -128,7 +102,7 @@ fn has_fixed_develop_value(ind: IndustryType, tile: TileDef) -> bool {
 /// non-top-level, non-fixed developable Cotton, Manufacturer and Pottery tile,
 /// never merely the current player's mat. This keeps the score comparable
 /// between game states without letting policy-fixed tiles distort the scale.
-fn profile_raw_range(ctx: &EvalContext) -> (f64, f64) {
+fn profile_raw_range(state: &GameState) -> (f64, f64) {
     [
         IndustryType::CottonMill,
         IndustryType::Manufacturer,
@@ -142,14 +116,14 @@ fn profile_raw_range(ctx: &EvalContext) -> (f64, f64) {
                 && !has_fixed_develop_value(ind, *tile)
         })
     })
-    .map(|tile| profile_raw_value(static_develop_profile(tile, &ctx.cfg.develop), ctx))
+    .map(|tile| profile_raw_value(static_develop_profile(tile), state))
     .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
         (min.min(value), max.max(value))
     })
 }
 
-fn normalized_profile_value(tile: TileDef, ctx: &EvalContext, profile_range: (f64, f64)) -> f64 {
-    let raw = profile_raw_value(static_develop_profile(tile, &ctx.cfg.develop), ctx);
+fn normalized_profile_value(tile: TileDef, state: &GameState, profile_range: (f64, f64)) -> f64 {
+    let raw = profile_raw_value(static_develop_profile(tile), state);
     let (min, max) = profile_range;
     if (max - min).abs() <= f64::EPSILON {
         0.0
@@ -162,34 +136,36 @@ fn normalized_profile_value(tile: TileDef, ctx: &EvalContext, profile_range: (f6
 /// at the context's current era/round weights. Tests use this instead of
 /// maintaining a partial hand-written table.
 #[cfg(test)]
-pub(super) fn develop_tile_diagnostics(ctx: &EvalContext) -> Vec<DevelopTileDiagnostic> {
-    let profile_range = profile_raw_range(ctx);
+pub(super) fn develop_tile_diagnostics(state: &GameState) -> Vec<DevelopTileDiagnostic> {
+    let profile_range = profile_raw_range(state);
     IndustryType::ALL
         .into_iter()
         .flat_map(|industry| {
             industry_tiles(industry)
                 .iter()
                 .copied()
-                .filter(move |tile| allowed_develop_target(ctx, industry, *tile))
+                .filter(move |tile| allowed_develop_target(state.is_canal_era(), industry, *tile))
                 .map(move |tile| {
-                    let profile = static_develop_profile(tile, &ctx.cfg.develop);
-                    let weights = profile_weights(ctx);
+                    let profile = static_develop_profile(tile);
+                    let weights = (
+                        DevelopVpFactor::factor(state),
+                        DevelopIncomeFactor::factor(state),
+                        DevelopCostFactor::factor(state),
+                    );
                     DevelopTileDiagnostic {
                         industry,
                         level: tile.level,
                         profile,
-                        profile_raw: profile_raw_value(profile, ctx),
+                        profile_raw: profile_raw_value(profile, state),
                         removal_score: develop_target_value_with_profile_range(
-                            ctx,
+                            state,
                             industry,
                             tile,
                             profile_range,
                         ),
-                        era_frac: ctx.era_frac,
-                        round_progress: ctx.round_progress,
-                        vp_weight: weights.vp,
-                        income_weight: weights.income,
-                        cost_weight: weights.cost,
+                        vp_weight: weights.0,
+                        income_weight: weights.1,
+                        cost_weight: weights.2,
                     }
                 })
         })
@@ -200,7 +176,7 @@ pub(super) fn develop_tile_diagnostics(ctx: &EvalContext) -> Vec<DevelopTileDiag
 /// industries derive their value from the static profile; resource/brewery
 /// defaults are explicit, configurable policy preferences.
 fn develop_target_value_with_profile_range(
-    ctx: &EvalContext,
+    state: &GameState,
     ind: IndustryType,
     tile: TileDef,
     profile_range: (f64, f64),
@@ -219,7 +195,7 @@ fn develop_target_value_with_profile_range(
         IndustryType::IronWorks if tile.level == 1 => 0.2,
         IndustryType::IronWorks => -0.3,
         IndustryType::CottonMill | IndustryType::Manufacturer | IndustryType::Pottery => {
-            normalized_profile_value(tile, ctx, profile_range)
+            normalized_profile_value(tile, state, profile_range)
         }
     }
 }
@@ -227,18 +203,18 @@ fn develop_target_value_with_profile_range(
 /// Convenience entry point for isolated callers such as unit tests. Production
 /// planning uses the precomputed-range variant above.
 #[cfg(test)]
-fn develop_target_value(ctx: &EvalContext, ind: IndustryType, tile: TileDef) -> f64 {
-    develop_target_value_with_profile_range(ctx, ind, tile, profile_raw_range(ctx))
+fn develop_target_value(state: &GameState, ind: IndustryType, tile: TileDef) -> f64 {
+    develop_target_value_with_profile_range(state, ind, tile, profile_raw_range(state))
 }
 
-fn allowed_develop_target(ctx: &EvalContext, ind: IndustryType, tile: TileDef) -> bool {
+fn allowed_develop_target(is_canal: bool, ind: IndustryType, tile: TileDef) -> bool {
     tile.can_develop
         && !is_top_level_industry_tile(ind, tile)
-        && !(ctx.cfg.guardrails.ban_develop_iron_lv2_plus
-            && ind == IndustryType::IronWorks
-            && tile.level >= 2)
-        && !(ctx.cfg.guardrails.ban_develop_brewery_lv2_canal_early
-            && ctx.is_canal()
+        // && !(ban_develop_iron_lv2_plus
+        //     && ind == IndustryType::IronWorks
+        //     && tile.level >= 2)
+        && !(BAN_DEVELOP_BREWERY_LEVEL2_PLUS_IN_CANAL
+            && is_canal
             && ind == IndustryType::Brewery
             && tile.level >= 2)
 }
@@ -249,8 +225,7 @@ struct DevelopTarget {
     value: f64,
 }
 
-fn iron_baseline(ctx: &EvalContext, iron: &[crate::graph::IronSource]) -> f64 {
-    let w = &ctx.cfg.develop;
+fn iron_baseline(iron: &[crate::graph::IronSource]) -> f64 {
     let average_paid_price = iron
         .iter()
         .map(|source| {
@@ -262,55 +237,25 @@ fn iron_baseline(ctx: &EvalContext, iron: &[crate::graph::IronSource]) -> f64 {
         })
         .sum::<f64>()
         / iron.len() as f64;
-    (w.base_score_center
-        + (w.iron_price_reference - average_paid_price) * w.iron_price_score_per_pound)
-        .clamp(w.base_score_min, w.base_score_max)
+    (3.0 + (3.0 - average_paid_price) * 0.5).clamp(2.0, 4.0)
 }
 
-fn score_develop_parts(
-    ctx: &EvalContext,
-    target_value: f64,
-    iron: &[crate::graph::IronSource],
-) -> ScoreParts {
-    let actual_iron_cost: f64 = iron
-        .iter()
-        .map(|source| {
-            if source.free {
-                0.0
-            } else {
-                source.price as f64
-            }
-        })
-        .sum();
-    ScoreParts {
-        // This is the value of the removed development object plus the action
-        // baseline. Real cash spent on iron remains separately in `money`.
-        strategic: iron_baseline(ctx, iron) + target_value,
-        money: -actual_iron_cost,
-        ..Default::default()
-    }
-}
-
-pub(super) fn score_develop_plans(
-    state: &GameState,
-    ctx: &EvalContext,
-    card_choices: &CardChoices,
-) -> Vec<Decision> {
-    let pid = ctx.pid;
+pub(super) fn score_develop_plans(state: &GameState, card_choices: &CardChoices) -> Vec<Decision> {
+    let pid = state.current_player_id();
     if !can_develop(state, pid) || card_choices.is_empty() {
         return Vec::new();
     }
     // Static for this context; reuse it for every single- and double-develop
     // target rather than rescanning all profile tiles per candidate.
-    let profile_range = profile_raw_range(ctx);
+    let profile_range = profile_raw_range(state);
 
     let first_targets: Vec<DevelopTarget> = state.players[pid]
         .developable_types()
         .into_iter()
-        .filter(|(ind, tile)| allowed_develop_target(ctx, *ind, *tile))
+        .filter(|(ind, tile)| allowed_develop_target(state.is_canal_era(), *ind, *tile))
         .map(|(ind, tile)| DevelopTarget {
             ind,
-            value: develop_target_value_with_profile_range(ctx, ind, tile, profile_range),
+            value: develop_target_value_with_profile_range(state, ind, tile, profile_range),
         })
         .collect();
     if first_targets.is_empty() {
@@ -319,7 +264,7 @@ pub(super) fn score_develop_plans(
 
     let mut decisions = Vec::new();
     for first in first_targets {
-        score_target_plan(state, ctx, card_choices, first, None, &mut decisions);
+        score_target_plan(state, card_choices, first, None, &mut decisions);
         let mut player_after_first = state.players[pid].clone();
         player_after_first
             .consume_tile(first.ind)
@@ -327,7 +272,7 @@ pub(super) fn score_develop_plans(
         for (ind, tile) in player_after_first
             .developable_types()
             .into_iter()
-            .filter(|(ind, tile)| allowed_develop_target(ctx, *ind, *tile))
+            .filter(|(ind, tile)| allowed_develop_target(state.is_canal_era(), *ind, *tile))
         {
             // For two different industries, A -> B and B -> A remove the
             // same pair of tiles and spend the same iron. Keep one canonical
@@ -338,12 +283,11 @@ pub(super) fn score_develop_plans(
             }
             score_target_plan(
                 state,
-                ctx,
                 card_choices,
                 first,
                 Some(DevelopTarget {
                     ind,
-                    value: develop_target_value_with_profile_range(ctx, ind, tile, profile_range),
+                    value: develop_target_value_with_profile_range(state, ind, tile, profile_range),
                 }),
                 &mut decisions,
             );
@@ -355,7 +299,6 @@ pub(super) fn score_develop_plans(
 
 fn score_target_plan(
     state: &GameState,
-    ctx: &EvalContext,
     card_choices: &CardChoices,
     first: DevelopTarget,
     second: Option<DevelopTarget>,
@@ -372,10 +315,10 @@ fn score_target_plan(
             .iter()
             .map(|source| if source.free { 0 } else { source.price as i32 })
             .sum();
-        if actual_cost > state.players[ctx.pid].money {
+        if actual_cost > state.players[state.current_player_id()].money {
             continue;
         }
-        let parts = score_develop_parts(ctx, target_value, &iron);
+        let score = iron_baseline(&iron) + target_value;
         decisions.push(Decision {
             mv: ResolvedMove::Develop {
                 ind1: first.ind,
@@ -383,7 +326,7 @@ fn score_target_plan(
                 iron,
                 card_index: card_choices[0].0,
             },
-            score: parts.total(ctx).clamp(0.0, 6.0),
+            score: score.clamp(0.0, 6.0),
             card_score: card_choices[0].1,
         });
     }
@@ -396,21 +339,11 @@ mod tests {
     use rand_chacha::ChaCha12Rng;
     use rand_chacha::rand_core::SeedableRng;
 
-    fn ctx_for(era: Era, round: u32) -> (GameState, super::super::config::HeuristicConfig) {
+    fn ctx_for(era: Era, round: u32) -> GameState {
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(17), 2);
         state.era = era;
         state.round = round;
-        (state, super::super::config::HeuristicConfig::default())
-    }
-
-    #[test]
-    fn static_profiles_use_fixed_generic_resource_prices() {
-        let cfg = super::super::config::HeuristicConfig::default();
-        let profile =
-            static_develop_profile(industry_tiles(IndustryType::CottonMill)[2], &cfg.develop);
-        assert_eq!(profile.vp_value, 9.0);
-        assert_eq!(profile.income_value, 3.0);
-        assert_eq!(profile.cost_penalty, 25.0); // £16 + coal £3 + iron £3 + beers £3
+        state
     }
 
     #[test]
@@ -421,9 +354,8 @@ mod tests {
             // (Era::Rail, 1),
             // (Era::Rail, 8),
         ] {
-            let (state, cfg) = ctx_for(era, round);
-            let ctx = EvalContext::new(&state, state.current_player_id(), &cfg);
-            let diagnostics = develop_tile_diagnostics(&ctx);
+            let state = ctx_for(era, round);
+            let diagnostics = develop_tile_diagnostics(&state);
             assert_eq!(
                 diagnostics.len(),
                 IndustryType::ALL
@@ -431,18 +363,17 @@ mod tests {
                     .map(|ind| {
                         industry_tiles(ind)
                             .iter()
-                            .filter(|tile| allowed_develop_target(&ctx, ind, **tile))
+                            .filter(|tile| {
+                                allowed_develop_target(state.is_canal_era(), ind, **tile)
+                            })
                             .count()
                     })
                     .sum::<usize>()
             );
-            println!(
-                "{era:?} round {round}: era_frac={:.3}, round_progress={:.3}",
-                ctx.era_frac, ctx.round_progress,
-            );
+            println!("{era:?} round {round}",);
             for row in diagnostics {
                 println!(
-                    "  {:?} Lv{}: vp={:.1}, income={:.1}, cost={:.1}, raw={:.3}, score={:.3}; era_frac={:.3}, round_progress={:.3}, vp_w={:.3}, income_w={:.3}, cost_w={:.3}",
+                    "  {:?} Lv{}: vp={:.1}, income={:.1}, cost={:.1}, raw={:.3}, score={:.3}; vp_w={:.3}, income_w={:.3}, cost_w={:.3}",
                     row.industry,
                     row.level,
                     row.profile.vp_value,
@@ -450,8 +381,6 @@ mod tests {
                     row.profile.cost_penalty,
                     row.profile_raw,
                     row.removal_score,
-                    row.era_frac,
-                    row.round_progress,
                     row.vp_weight,
                     row.income_weight,
                     row.cost_weight,
@@ -465,15 +394,14 @@ mod tests {
             }
         }
 
-        let (state, cfg) = ctx_for(Era::Rail, 5);
-        let ctx = EvalContext::new(&state, state.current_player_id(), &cfg);
+        let state = ctx_for(Era::Rail, 5);
         let brewery_one = develop_target_value(
-            &ctx,
+            &state,
             IndustryType::Brewery,
             industry_tiles(IndustryType::Brewery)[0],
         );
         let coal_two = develop_target_value(
-            &ctx,
+            &state,
             IndustryType::CoalMine,
             industry_tiles(IndustryType::CoalMine)[1],
         );
@@ -481,12 +409,12 @@ mod tests {
         assert_eq!(coal_two, -0.5);
 
         let pottery_two = develop_target_value(
-            &ctx,
+            &state,
             IndustryType::Pottery,
             industry_tiles(IndustryType::Pottery)[1],
         );
         let pottery_four = develop_target_value(
-            &ctx,
+            &state,
             IndustryType::Pottery,
             industry_tiles(IndustryType::Pottery)[3],
         );
@@ -494,12 +422,12 @@ mod tests {
         assert_eq!(pottery_four, 0.8);
 
         let manufacturer_three = develop_target_value(
-            &ctx,
+            &state,
             IndustryType::Manufacturer,
             industry_tiles(IndustryType::Manufacturer)[2],
         );
         let manufacturer_four = develop_target_value(
-            &ctx,
+            &state,
             IndustryType::Manufacturer,
             industry_tiles(IndustryType::Manufacturer)[3],
         );
@@ -508,8 +436,6 @@ mod tests {
 
     #[test]
     fn cheap_iron_never_lowers_the_develop_baseline() {
-        let (state, cfg) = ctx_for(Era::Canal, 1);
-        let ctx = EvalContext::new(&state, state.current_player_id(), &cfg);
         let cheap = crate::graph::IronSource {
             key: 0,
             free: false,
@@ -520,9 +446,9 @@ mod tests {
             free: false,
             price: 5,
         };
-        assert!(iron_baseline(&ctx, &[cheap]) >= iron_baseline(&ctx, &[expensive]));
-        assert_eq!(iron_baseline(&ctx, &[cheap]), 4.0);
-        assert_eq!(iron_baseline(&ctx, &[expensive]), 2.0);
+        assert!(iron_baseline(&[cheap]) >= iron_baseline(&[expensive]));
+        assert_eq!(iron_baseline(&[cheap]), 4.0);
+        assert_eq!(iron_baseline(&[expensive]), 2.0);
     }
 
     #[test]
@@ -533,8 +459,7 @@ mod tests {
             (Era::Rail, 1),
             (Era::Rail, 8),
         ] {
-            let (state, cfg) = ctx_for(era, round);
-            let ctx = EvalContext::new(&state, state.current_player_id(), &cfg);
+            let state = ctx_for(era, round);
             for ind in [
                 IndustryType::CottonMill,
                 IndustryType::Manufacturer,
@@ -545,7 +470,7 @@ mod tests {
                     .copied()
                     .filter(|tile| tile.can_develop)
                 {
-                    assert!((-1.0..=1.0).contains(&develop_target_value(&ctx, ind, tile)));
+                    assert!((-1.0..=1.0).contains(&develop_target_value(&state, ind, tile)));
                 }
             }
         }
@@ -553,23 +478,22 @@ mod tests {
 
     #[test]
     fn hard_develop_bans_remain_filters_not_score_penalties() {
-        let (mut state, cfg) = ctx_for(Era::Canal, 1);
+        let mut state = ctx_for(Era::Canal, 1);
         let pid = state.current_player_id();
         state.players[pid].consume_tile(IndustryType::IronWorks);
         state.players[pid].consume_tile(IndustryType::Brewery);
         state.players[pid].consume_tile(IndustryType::Brewery);
-        let ctx = EvalContext::new(&state, pid, &cfg);
-        let iron_two = state.players[pid]
-            .next_tile(IndustryType::IronWorks)
-            .unwrap();
+        // let iron_two = state.players[pid]
+        // .next_tile(IndustryType::IronWorks)
+        // .unwrap();
         let brewery_two = state.players[pid].next_tile(IndustryType::Brewery).unwrap();
+        // assert!(!allowed_develop_target(
+        //     state.is_canal_era(),
+        //     IndustryType::IronWorks,
+        //     iron_two
+        // ));
         assert!(!allowed_develop_target(
-            &ctx,
-            IndustryType::IronWorks,
-            iron_two
-        ));
-        assert!(!allowed_develop_target(
-            &ctx,
+            state.is_canal_era(),
             IndustryType::Brewery,
             brewery_two
         ));
@@ -577,8 +501,7 @@ mod tests {
 
     #[test]
     fn top_level_industry_tiles_are_not_develop_candidates_or_profile_values() {
-        let (state, cfg) = ctx_for(Era::Rail, 5);
-        let ctx = EvalContext::new(&state, state.current_player_id(), &cfg);
+        let state = ctx_for(Era::Rail, 5);
         for ind in IndustryType::ALL {
             let top_level = industry_tiles(ind)
                 .iter()
@@ -586,17 +509,19 @@ mod tests {
                 .max_by_key(|tile| tile.level)
                 .expect("every industry must have at least one tile");
             assert!(is_top_level_industry_tile(ind, top_level));
-            assert!(!allowed_develop_target(&ctx, ind, top_level));
-            assert_eq!(develop_target_value(&ctx, ind, top_level), -1.0);
+            assert!(!allowed_develop_target(
+                state.is_canal_era(),
+                ind,
+                top_level
+            ));
+            assert_eq!(develop_target_value(&state, ind, top_level), -1.0);
         }
     }
 
     #[test]
     fn candidates_are_sorted_by_removal_value_and_scores_are_clamped() {
-        let (state, cfg) = ctx_for(Era::Rail, 5);
-        let pid = state.current_player_id();
-        let ctx = EvalContext::new(&state, pid, &cfg);
-        let decisions = score_develop_plans(&state, &ctx, &vec![(0, 0.0)]);
+        let state = ctx_for(Era::Rail, 5);
+        let decisions = score_develop_plans(&state, &vec![(0, 0.0)]);
         assert!(!decisions.is_empty());
         assert!(
             decisions

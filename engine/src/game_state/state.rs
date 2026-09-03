@@ -359,6 +359,11 @@ struct StateSnapshot {
 }
 
 impl GameState {
+    /// helper method to check if the current era is the Canal era.
+    pub fn is_canal_era(&self) -> bool {
+        matches!(self.era, Era::Canal)
+    }
+
     /// Serialize the complete current state. Derived resource/connectivity
     /// caches are intentionally omitted and rebuilt on restore.
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>, String> {
