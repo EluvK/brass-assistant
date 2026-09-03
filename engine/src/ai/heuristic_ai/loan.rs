@@ -1,7 +1,7 @@
 //! Loan action scoring.
 
-use super::context::{EvalContext, era_round_factor, round_factor};
 use super::{CardChoices, Decision};
+use crate::heuristic_ai::context::define_era_round_factor;
 use crate::map::LOAN_AMOUNT;
 use crate::rules::ResolvedMove;
 use crate::state::GameState;
@@ -16,34 +16,21 @@ struct LoanEvaluation {
     score: f64,
 }
 
+define_era_round_factor!(LoanFactorA, canal: (20.0, 40.0), rail: (36.0, 30.0));
+define_era_round_factor!(LoanFactorB, canal: (10.0, 10.0), rail: (10.0, 10.0));
+
 /// Evaluate the economic value of receiving one £30 loan at the current point
 /// in an era. The engine's income-floor rule remains a legality check outside
 /// this pure model.
-fn evaluate_loan(ctx: &EvalContext, cash: f64, income_level: f64) -> LoanEvaluation {
-    let w = &ctx.cfg.loan;
-    let progress = round_factor!(ctx.round_progress, 0.0_f64, 1.0_f64);
-    let a = era_round_factor!(
-        ctx.is_canal(),
-        progress,
-        w.canal_a_start,
-        w.canal_a_end,
-        w.rail_a_start,
-        w.rail_a_end,
-    );
-    let b = era_round_factor!(
-        ctx.is_canal(),
-        progress,
-        w.canal_b_start,
-        w.canal_b_end,
-        w.rail_b_start,
-        w.rail_b_end,
-    );
+fn evaluate_loan(state: &GameState, cash: f64, income_level: f64) -> LoanEvaluation {
+    let a = LoanFactorA::factor(state);
+    let b = LoanFactorB::factor(state);
     debug_assert!(b > 0.0, "loan income divisor b must be positive");
 
     let economic_value =
-        ((a - cash) / LOAN_AMOUNT as f64 - income_level / b) * ctx.rounds_left_in_era;
+        ((a - cash) / LOAN_AMOUNT as f64 - income_level / b) * state.round_left_in_era() as f64;
     let normalized_value = economic_value.clamp(0.0, 1.0);
-    let score = w.action_cost + w.economic_score_scale * normalized_value;
+    let score = -4.0 + 10.0 * normalized_value;
     LoanEvaluation {
         a,
         b,
@@ -60,17 +47,16 @@ fn evaluate_loan(ctx: &EvalContext, cash: f64, income_level: f64) -> LoanEvaluat
 /// rounds remaining make the option stronger.
 pub(super) fn score_loan_result(
     state: &GameState,
-    ctx: &EvalContext,
     _plan: &super::plan::Plan,
     card_choices: &CardChoices,
 ) -> Option<Decision> {
-    let pid = ctx.pid;
+    let pid = state.current_player_id();
     if !state.can_take_loan(pid) {
         return None;
     }
 
     let player = &state.players[pid];
-    let evaluation = evaluate_loan(ctx, player.money as f64, player.income_level() as f64);
+    let evaluation = evaluate_loan(state, player.money as f64, player.income_level() as f64);
     let card_index = card_choices.first().map(|(index, _)| *index)?;
     Some(Decision {
         mv: ResolvedMove::Loan { card_index },
@@ -85,19 +71,16 @@ pub(super) fn score_loan_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::heuristic_ai::HeuristicConfig;
     use crate::data::Era;
     use crate::income::income_highest_space_of_level;
     use rand_chacha::ChaCha12Rng;
     use rand_chacha::rand_core::SeedableRng;
 
-    fn evaluation(era: Era, round: u32, cash: f64, income: f64) -> LoanEvaluation {
+    fn evaluation(era: Era, round: usize, cash: f64, income: f64) -> LoanEvaluation {
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(7), 4);
         state.era = era;
         state.round = round;
-        let cfg = HeuristicConfig::default();
-        let ctx = EvalContext::new(&state, state.current_player_id(), &cfg);
-        evaluate_loan(&ctx, cash, income)
+        evaluate_loan(&state, cash, income)
     }
 
     #[test]
@@ -154,14 +137,11 @@ mod tests {
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(8), 4);
         let pid = state.current_player_id();
         state.players[pid].income_space = income_highest_space_of_level(-8);
-        let cfg = HeuristicConfig::default();
-        let ctx = EvalContext::new(&state, pid, &cfg);
         let no_cards = CardChoices::new();
         assert!(!state.can_take_loan(pid));
         assert!(
             score_loan_result(
                 &state,
-                &ctx,
                 &super::super::plan::compute_plan(&state, pid),
                 &no_cards,
             )

@@ -29,7 +29,7 @@ struct ReplayStatus {
 struct ReplayStepSummary {
     index: usize,
     kind: ReplayStepKind,
-    round: u32,
+    round: usize,
     player: usize,
     chosen: String,
     result: String,

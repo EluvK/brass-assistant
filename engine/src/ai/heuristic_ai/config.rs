@@ -256,26 +256,6 @@ pub struct NetworkWeights {
     pub double_surcharge_weight: f64,
 }
 
-/// Loan action scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct LoanWeights {
-    /// Base VP-equivalent opportunity cost of spending one action on a loan.
-    pub action_cost: f64,
-    /// Multiplier applied after economic value is normalised to 0..1.
-    pub economic_score_scale: f64,
-    /// Cash-need threshold `a`, linearly interpolated by numbered round.
-    pub canal_a_start: f64,
-    pub canal_a_end: f64,
-    pub rail_a_start: f64,
-    pub rail_a_end: f64,
-    /// Income penalty divisor `b`, also linearly interpolated by numbered
-    /// round so tuning can change its strength within each era.
-    pub canal_b_start: f64,
-    pub canal_b_end: f64,
-    pub rail_b_start: f64,
-    pub rail_b_end: f64,
-}
-
 /// Scout (and pass) scoring.
 #[derive(Debug, Clone, Copy)]
 pub struct ScoutWeights {
@@ -360,7 +340,6 @@ pub struct HeuristicConfig {
     pub flip: FlipWeights,
     pub build: BuildWeights,
     pub network: NetworkWeights,
-    pub loan: LoanWeights,
     pub scout: ScoutWeights,
     pub cards: CardWeights,
     pub lookahead: LookaheadParams,
@@ -495,18 +474,6 @@ impl Default for HeuristicConfig {
                 double_tempo_other: 0.6,
                 double_farm_lock_bonus: 0.8,
                 double_surcharge_weight: 1.0,
-            },
-            loan: LoanWeights {
-                action_cost: -4.0,
-                economic_score_scale: 10.0,
-                canal_a_start: 20.0,
-                canal_a_end: 40.0,
-                rail_a_start: 36.0,
-                rail_a_end: 30.0,
-                canal_b_start: 10.0,
-                canal_b_end: 10.0,
-                rail_b_start: 10.0,
-                rail_b_end: 10.0,
             },
             scout: ScoutWeights {
                 low_keep: 1.0,

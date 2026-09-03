@@ -384,7 +384,7 @@ pub struct MerchantDto {
 #[derive(Debug, Clone, Serialize)]
 pub struct StateDto {
     pub era: String,
-    pub round: u32,
+    pub round: usize,
     pub current_player: usize,
     pub turn_order: Vec<usize>,
     pub coal_market: usize,
@@ -565,7 +565,7 @@ pub struct ReplayStep {
     pub kind: ReplayStepKind,
     /// Round in which this replay event occurred. Actions belong to the
     /// round in which they were chosen, before `advance_turn` updates state.
-    pub round: u32,
+    pub round: usize,
     pub player: usize,
     pub before: StateDto,
     pub after: StateDto,

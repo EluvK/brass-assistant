@@ -65,7 +65,7 @@ impl RoundFactor {
     /// Evaluate this factor from the state's current numbered round.
     pub(crate) fn factor(&self, state: &GameState) -> f64 {
         let progress =
-            ((state.round.clamp(1, ERA_ROUNDS as u32) as f64) - 1.0) / (ERA_ROUNDS - 1.0);
+            ((state.round.clamp(1, ERA_ROUNDS as usize) as f64) - 1.0) / (ERA_ROUNDS - 1.0);
         self.start + (self.end - self.start) * progress
     }
 }
@@ -100,7 +100,7 @@ impl EraRoundFactor {
     /// Evaluate this factor using Canal/Rail parameters selected from state.
     pub(crate) fn factor(&self, state: &GameState) -> f64 {
         let progress =
-            ((state.round.clamp(1, ERA_ROUNDS as u32) as f64) - 1.0) / (ERA_ROUNDS - 1.0);
+            ((state.round.clamp(1, ERA_ROUNDS as usize) as f64) - 1.0) / (ERA_ROUNDS - 1.0);
         let (start, end) = if matches!(state.era, crate::data::Era::Canal) {
             (self.canal_start, self.canal_end)
         } else {
@@ -190,7 +190,7 @@ impl<'a> EvalContext<'a> {
         let phase = era_phase(state);
         let rounds_remaining = state.rounds_remaining();
         let era_frac = (rounds_remaining / ERA_ROUNDS).clamp(0.0, 1.0);
-        let era_round = state.round.clamp(1, ERA_ROUNDS as u32) as f64;
+        let era_round = state.round.clamp(1, ERA_ROUNDS as usize) as f64;
         let round_progress = (era_round - 1.0) / (ERA_ROUNDS - 1.0);
         let rounds_left_in_era = ERA_ROUNDS - era_round + 1.0;
         let params = cfg.era.params(phase);

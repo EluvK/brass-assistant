@@ -189,7 +189,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
 
     out.extend(score_sell_plans(state, &card_choices).into_iter().take(k));
     out.extend(
-        score_loan_result(state, &ctx, &plan, &card_choices)
+        score_loan_result(state, &plan, &card_choices)
             .into_iter()
             .take(k),
     );

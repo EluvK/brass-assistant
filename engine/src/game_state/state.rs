@@ -323,9 +323,14 @@ impl Player {
 
 pub struct GameState {
     rng: ChaCha12Rng,
+
+    // static game state (does not change during a turn)
+    // 10 for 2-players, 9 for 3-players, 8 for 4-players
+    round_per_era: usize,
+
     /// Only used during setup (deal/shuffle); engine logic is deterministic.
     pub era: Era,
-    pub round: u32,
+    pub round: usize,
     pub turn_order: Vec<usize>,
     pub current_index: usize,
     pub actions_this_turn: usize,
@@ -389,8 +394,9 @@ pub struct GameState {
 #[derive(Serialize, Deserialize)]
 struct StateSnapshot {
     rng: ChaCha12Rng,
+    round_per_era: usize,
     era: Era,
-    round: u32,
+    round: usize,
     turn_order: Vec<usize>,
     current_index: usize,
     actions_this_turn: usize,
@@ -412,16 +418,12 @@ struct StateSnapshot {
 }
 
 impl GameState {
-    /// helper method to check if the current era is the Canal era.
-    pub fn is_canal_era(&self) -> bool {
-        matches!(self.era, Era::Canal)
-    }
-
     /// Serialize the complete current state. Derived resource/connectivity
     /// caches are intentionally omitted and rebuilt on restore.
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>, String> {
         bincode::serialize(&StateSnapshot {
             rng: self.rng.clone(),
+            round_per_era: self.round_per_era,
             era: self.era,
             round: self.round,
             turn_order: self.turn_order.clone(),
@@ -454,6 +456,7 @@ impl GameState {
             // board field. A restored training position never needs to draw
             // cards; initialize a private stream for any later continuation.
             rng: data.rng,
+            round_per_era: data.round_per_era,
             era: data.era,
             round: data.round,
             turn_order: data.turn_order,
@@ -495,6 +498,7 @@ impl Clone for GameState {
             std::sync::RwLock::new(*self.network_cache.read().expect("network cache"));
         GameState {
             rng: self.rng.clone(),
+            round_per_era: self.round_per_era,
             era: self.era,
             round: self.round,
             turn_order: self.turn_order.clone(),
@@ -614,8 +618,10 @@ fn build_deck_composition(player_count: usize) -> Vec<Card> {
 impl GameState {
     pub fn new(rng: ChaCha12Rng, num_players: usize) -> Self {
         assert!(num_players >= 2 && num_players <= 4, "2-4 players");
+        let round_per_era = 10 - (num_players - 2);
         let mut state = GameState {
             rng,
+            round_per_era,
             era: Era::Canal,
             round: 1,
             turn_order: (0..num_players).collect(),
@@ -712,38 +718,47 @@ impl GameState {
     }
 
     // --- accessors ---------------------------------------------------------
+    /// helper method to check if the current era is the Canal era.
+    pub fn is_canal_era(&self) -> bool {
+        matches!(self.era, Era::Canal)
+    }
 
     pub fn player_count(&self) -> usize {
         self.players.len()
     }
 
     /// Estimated number of rounds (including the current one) until the era
-    /// runs out of playable cards. Cards in hands and the deck are the exact
-    /// remaining action budget; the first round is special because each
-    /// player gets one action instead of two.
+    /// Number of rounds (including the current one) remaining in this era.
+    /// Fractional progress is derived from the turn clock in O(1).
     pub fn rounds_remaining(&self) -> f64 {
-        let cards_remaining =
-            self.deck.len() + self.players.iter().map(|p| p.hand.len()).sum::<usize>();
-        if cards_remaining == 0 {
-            return 0.0;
-        }
-
         let players = self.player_count().max(1);
-        let actions_per_round = players * ACTIONS_PER_TURN;
         let rounds = if self.is_first_round {
-            // `current_index` points at the player whose action is next and
-            // `actions_this_turn` is that player's actions already completed.
-            let first_round_actions_left = players
-                .saturating_sub(self.current_index)
+            let first_round_actions_done = self
+                .current_index
                 .saturating_mul(FIRST_ROUND_ACTIONS)
-                .saturating_sub(self.actions_this_turn);
-            let after_first = cards_remaining.saturating_sub(first_round_actions_left);
-            1.0 + after_first as f64 / actions_per_round as f64
+                .saturating_add(self.actions_this_turn);
+            self.round_per_era as f64 - first_round_actions_done as f64 / players as f64
         } else {
-            cards_remaining as f64 / actions_per_round as f64
+            let rounds_left = self.round_per_era.saturating_sub(self.round) + 1;
+            let actions_done = self
+                .current_index
+                .saturating_mul(ACTIONS_PER_TURN)
+                .saturating_add(self.actions_this_turn);
+            rounds_left as f64 - actions_done as f64 / (players * ACTIONS_PER_TURN) as f64
         };
 
         rounds.max(0.0)
+    }
+
+    /// Returns the number of actions remaining in the current era for the current player.
+    pub fn current_player_actions_left(&self) -> usize {
+        self.round_per_era.saturating_sub(self.round) * ACTIONS_PER_TURN
+            + (self.actions_per_turn - self.actions_this_turn)
+    }
+
+    /// do not count the current round.
+    pub fn round_left_in_era(&self) -> usize {
+        self.round_per_era.saturating_sub(self.round)
     }
 
     pub fn current_player_id(&self) -> usize {
@@ -1552,22 +1567,35 @@ mod rounds_remaining_tests {
     use rand::SeedableRng;
 
     #[test]
-    fn accounts_for_first_round_and_player_count() {
-        let state = GameState::new(ChaCha12Rng::seed_from_u64(1), 2);
-        // 2p Canal: 38 playable cards, with two one-action first-round turns.
-        assert!((state.rounds_remaining() - 10.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
     fn decreases_with_actions_and_reaches_zero_without_cards() {
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(1), 4);
+        let mut rand_rng = rand_chacha::ChaCha12Rng::seed_from_u64(2);
         let initial = state.rounds_remaining();
-        state.players[0].hand.pop();
-        assert!(state.rounds_remaining() < initial);
-        state.deck.clear();
-        for player in &mut state.players {
-            player.hand.clear();
+        assert_eq!(initial, 8.0);
+        let mut all_step = 0;
+        while !state.game_over {
+            let mv =
+                crate::random_ai::choose_random_move(&mut state, &mut rand_rng).expect("no move?");
+            let (r, tr) = crate::engine::step(&mut state, &mv);
+            assert!(r.is_ok(), "apply_move failed");
+            all_step += 1;
+            println!(
+                "all_step: {all_step}, rounds_remaining: {}",
+                state.rounds_remaining()
+            );
+            match all_step {
+                1..=4 => assert_eq!(state.rounds_remaining(), initial - 0.25 * all_step as f64),
+                5..=60 => assert_eq!(
+                    state.rounds_remaining(),
+                    initial - 1.0 - 0.125 * (all_step - 4) as f64
+                ),
+                _ => assert_eq!(
+                    state.rounds_remaining(),
+                    initial - 0.125 * (all_step - 60) as f64
+                ),
+            }
+            crate::engine::handle_turn_result(&mut state, tr);
         }
-        assert_eq!(state.rounds_remaining(), 0.0);
+        assert_eq!(all_step, 124);
     }
 }

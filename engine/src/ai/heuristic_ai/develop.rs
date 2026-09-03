@@ -368,7 +368,7 @@ mod tests {
     use rand_chacha::ChaCha12Rng;
     use rand_chacha::rand_core::SeedableRng;
 
-    fn ctx_for(era: Era, round: u32) -> GameState {
+    fn ctx_for(era: Era, round: usize) -> GameState {
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(17), 2);
         state.era = era;
         state.round = round;
