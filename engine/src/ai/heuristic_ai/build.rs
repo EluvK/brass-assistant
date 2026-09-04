@@ -1,315 +1,284 @@
-//! Build action scoring.
+//! Build action scoring and candidate generation.
 //!
-//! `score_build_candidate` composes one [`ScoreParts`] from named factor
-//! functions; every factor maps 1:1 to a config group in
-//! `HeuristicConfig::build`, so tuning a coefficient means touching one
-//! named parameter instead of a magic literal.
+//! Build scores are already expressed in VP equivalents. The policy is kept
+//! local to this module so the action scorer can be read and tuned without
+//! chasing a shared evaluation context or an unrelated configuration structure.
 
-use super::Decision;
 use super::board::{
     beer_available, beer_barrels_reachable, merchant_reachable, own_overbuild_vp_loss,
     owned_beer_barrels, player_owns_link_touching, resource_source_ratio, sellable_beer_demand,
     unbuilt_neighbor_connections,
 };
-use super::context::EvalContext;
-use super::plan::{Phase, Plan};
+use super::context::define_era_round_factor;
+use super::plan::Plan;
 use super::probability::build_flip_probability;
-use super::value::{ScoreParts, market_scarcity, price_heat, simulate_market_sale};
+use super::value::{market_scarcity, price_heat, simulate_market_sale};
+use super::{Decision, SOURCE_VARIANTS};
 use crate::data::IndustryType;
 use crate::graph::count_beer_sources;
 use crate::rules::{BuildTarget, ResolvedMove, valid_build_cards};
 use crate::state::GameState;
 
-/// Market value of the cubes a new coal/iron works produces: immediate sale
-/// cash (money), sale tempo/spike/scarcity value (strategic), and the
-/// penalty for cubes that stay stuck on the tile (risk).
-///
-/// "If everything sells, it's a great move; the more that stays on the
-/// tile, the worse (unless spent on your very next action)."
-fn market_value(state: &GameState, ctx: &EvalContext, cand: &BuildTarget, cubes: u8) -> ScoreParts {
-    let w = &ctx.cfg.build;
+// ---------------------------------------------------------------------------
+// Local policy
+// ---------------------------------------------------------------------------
+
+const BAN_BUILD_LEVEL1_BREWERY: bool = true;
+
+const UNAFFORDABLE_PER_POUND: f64 = 0.3;
+const LINK_SELF_VALUE_SHARE: f64 = 0.5;
+const SELF_SUFFICIENCY_PER_CUBE: f64 = 0.15;
+const IRON_SCARCITY_SHARE: f64 = 0.6;
+const MARKET_CASH_BACK_SHARE: f64 = 0.4;
+const MARKET_SELLOUT_BONUS: f64 = 1.5;
+const COAL_SPIKE_PRICE_BASE: f64 = 5.0;
+const COAL_SPIKE_PRICE_SPAN: f64 = 3.0;
+const COAL_SPIKE_PER_SOLD: f64 = 1.9;
+const COAL_SPIKE_CANAL_MULTIPLIER: f64 = 1.25;
+const SCARCITY_VALUE_PER_UNIT: f64 = 0.6;
+const LEFTOVER_PER_CUBE: f64 = 0.5;
+const ISLAND_COAL_CANAL_PENALTY: f64 = -0.5;
+const ISLAND_COAL_RAIL_BASE: f64 = 1.2;
+const ISLAND_COAL_RAIL_PER_CUBE: f64 = 0.25;
+const ISLAND_IRON_VALUE: f64 = 1.2;
+const EXPANSION_PER_LINK: f64 = 0.1;
+const RAIL_COAL_SHORTAGE: f64 = 3.0;
+const RAIL_COAL_SHORTAGE_PER_LEVEL: f64 = 0.2;
+const RAIL_COAL_SHORTAGE_CUBES_BASE: f64 = 0.7;
+const RAIL_COAL_SHORTAGE_PER_CUBE: f64 = 0.15;
+const COST_EFFICIENCY_CAP: f64 = 2.0;
+const MERCHANT_REACHABLE_BONUS: f64 = 0.6;
+const BEER_AVAILABLE_BONUS: f64 = 0.8;
+const BEER_MISSING_PENALTY: f64 = -0.3;
+const BREWERY_SURPLUS_PENALTY_PER_BARREL: f64 = 0.6;
+const BREWERY_SELL_SUPPORT_WITH_DEMAND: f64 = 0.8;
+const BREWERY_SELL_SUPPORT_BASE: f64 = 0.4;
+const RAIL_BREWERY_VALUE: f64 = 2.0;
+const FREE_RIDING_THRESHOLD: f64 = 0.5;
+const FREE_RIDING_BONUS: f64 = 0.8;
+const PLAN_BONUS: f64 = 0.5;
+const RAIL_LATE_BEER_BONUS: f64 = 1.2;
+
+// Shared conversion constants for converting cash/income to VP equivalents.
+const MONEY_BASE: f64 = 0.12;
+const INCOME_BASE: f64 = 0.25;
+
+// Money becomes more important as an era closes. Income is valuable while
+// there is time for it to compound, and is worthless in Rail's last round.
+define_era_round_factor!(
+    BuildMoneyWeight,
+    canal: (MONEY_BASE * 0.55, MONEY_BASE * 0.55),
+    rail: (MONEY_BASE * 0.8, MONEY_BASE * (5.0 / 3.0)),
+);
+define_era_round_factor!(
+    BuildIncomeWeight,
+    canal: (
+        INCOME_BASE * (1.8 + 0.6),
+        INCOME_BASE * (1.8 + 0.6 / 8.0)
+    ),
+    rail: (INCOME_BASE * (1.2 + 0.5), 0.0),
+);
+
+fn market_value(state: &GameState, cand: &BuildTarget, cubes: u8) -> f64 {
     let is_coal = cand.ind == IndustryType::CoalMine;
-    // Coal demand is far higher than iron (every rail build/link eats it);
-    // iron demand is steadier and the market fills faster, so iron scarcity
-    // is discounted to avoid over-producing iron nobody will consume.
     let scarcity =
-        market_scarcity(state, is_coal) * if is_coal { 1.0 } else { w.iron_scarcity_share };
+        market_scarcity(state, is_coal) * if is_coal { 1.0 } else { IRON_SCARCITY_SHARE };
 
     // Iron works sell anywhere; coal needs a merchant in reach.
     let market_ok = !is_coal || merchant_reachable(state, cand.loc, cand.ind);
     if !market_ok {
-        // Not merchant-connected: cubes can't be sold today. For an ISLAND
-        // COAL MINE this is a strongly negative move in the canal era (tiles
-        // vanish at era end, nobody helps consume it) and merely speculative
-        // in the rail era (links will be built out). Iron needs no
-        // connection to be consumed, so it keeps a market-value floor.
-        let strategic = if is_coal {
-            if ctx.is_canal() {
-                w.island_coal_canal_penalty
+        return if is_coal {
+            if state.is_canal_era() {
+                ISLAND_COAL_CANAL_PENALTY
             } else {
-                scarcity * (w.island_coal_rail_base + w.island_coal_rail_per_cube * cubes as f64)
+                scarcity * (ISLAND_COAL_RAIL_BASE + ISLAND_COAL_RAIL_PER_CUBE * cubes as f64)
             }
         } else {
-            scarcity * w.island_iron_value
-        };
-        return ScoreParts {
-            strategic,
-            ..Default::default()
+            scarcity * ISLAND_IRON_VALUE
         };
     }
 
     let sale = simulate_market_sale(state, is_coal, cubes);
-    // Immediate cash from the auto-sale is real money.
-    let money = sale.cash;
-    let cash_back_bonus = if sale.cash > 0.0 {
-        sale.cash * w.market_cash_back_share
+    let money = sale.cash * BuildMoneyWeight::factor(state);
+    let cash_back = if sale.cash > 0.0 {
+        sale.cash * MARKET_CASH_BACK_SHARE
             + if sale.flips {
-                w.market_sellout_bonus
+                MARKET_SELLOUT_BONUS
             } else {
                 0.0
             }
     } else {
         0.0
     };
-    // Coal market spike prior: when the buy price is in the demand window
-    // (6/7/8), placing a connected coal mine that can auto-sell is typically
-    // a top-tier tempo play (cash now + flip income + future board demand).
-    let coal_spike_bonus = if is_coal && sale.sold > 0 {
+    let coal_spike = if is_coal && sale.sold > 0 {
         price_heat(
             state.coal_price(),
-            w.coal_spike_price_base,
-            w.coal_spike_price_span,
+            COAL_SPIKE_PRICE_BASE,
+            COAL_SPIKE_PRICE_SPAN,
         ) * sale.sold as f64
-            * w.coal_spike_per_sold
-            * if ctx.is_canal() {
-                w.coal_spike_canal_mult
+            * COAL_SPIKE_PER_SOLD
+            * if state.is_canal_era() {
+                COAL_SPIKE_CANAL_MULTIPLIER
             } else {
                 1.0
             }
     } else {
         0.0
     };
-    let scarcity_value = scarcity * (1.0 + sale.sold as f64) * w.scarcity_value_per_unit;
-    // In the rail era coal is consumed by nearly every build and rail link —
-    // a full market right now doesn't mean the cubes won't be eaten soon,
-    // so unsold rail coal is not punished.
-    let leftover_penalty = if is_coal && ctx.is_rail() {
+    let scarcity_value = scarcity * (1.0 + sale.sold as f64) * SCARCITY_VALUE_PER_UNIT;
+    // Rail coal is normally consumed quickly, so unsold cubes are not a risk
+    // there. In Canal they can remain stranded until the era ends.
+    let leftover = if is_coal && !state.is_canal_era() {
         0.0
     } else {
-        (sale.total - sale.sold) as f64 * w.leftover_per_cube
+        (sale.total - sale.sold) as f64 * LEFTOVER_PER_CUBE
     };
 
-    ScoreParts {
-        money,
-        strategic: cash_back_bonus + coal_spike_bonus + scarcity_value,
-        risk: -leftover_penalty,
-        ..Default::default()
-    }
+    money + cash_back + coal_spike + scarcity_value - leftover
 }
 
-/// Beer economy of the build: sellables need merchant + beer to flip, and
-/// breweries are worth a premium while they still have sellables to feed.
 fn beer_economy(
     state: &GameState,
-    ctx: &EvalContext,
+    pid: usize,
     cand: &BuildTarget,
     beers_to_sell: Option<u8>,
-) -> ScoreParts {
-    let w = &ctx.cfg.build;
-    let mut strategic = 0.0;
+) -> f64 {
     if cand.ind.is_sellable() {
-        if merchant_reachable(state, cand.loc, cand.ind) {
-            strategic += w.merchant_reachable_bonus;
-        }
-        if merchant_reachable(state, cand.loc, cand.ind)
-            && beer_available(
-                state,
-                cand.loc,
-                ctx.pid,
-                beers_to_sell.unwrap_or(0) as usize,
-            )
-        {
-            // We have the beer AND the merchant: a guaranteed sellable.
-            strategic += w.beer_available_bonus;
+        let merchant = merchant_reachable(state, cand.loc, cand.ind);
+        let beer =
+            merchant && beer_available(state, cand.loc, pid, beers_to_sell.unwrap_or(0) as usize);
+        return (if merchant {
+            MERCHANT_REACHABLE_BONUS
         } else {
-            // Don't punish too hard: a brewery can still be added later.
-            strategic += w.beer_missing_penalty;
-        }
-    } else if cand.ind == IndustryType::Brewery {
-        // Breweries feed sells AND rail links. The winning line develops
-        // level-1 away and builds level-2/3/4 (they survive to rail). Match
-        // output to need: barrels should cover our unflipped sellables'
-        // beer demand plus a small rail-network buffer.
-        let tile_cubes = state.players[ctx.pid]
-            .next_tile(cand.ind)
-            .map(|t| t.resource_cubes as f64)
-            .unwrap_or(0.0);
-        let barrels = owned_beer_barrels(state, ctx.pid) as f64 + tile_cubes;
-        let demand = sellable_beer_demand(state, ctx.pid) as f64;
-        let surplus = (barrels - demand).max(0.0);
-        let sell_support = if demand > 0.0 {
-            w.brewery_sell_support_with_demand
+            0.0
+        }) + if beer {
+            BEER_AVAILABLE_BONUS
         } else {
-            w.brewery_sell_support_base
+            BEER_MISSING_PENALTY
         };
-        strategic += sell_support
-            + if ctx.is_rail() {
-                w.rail_brewery_value
-            } else {
-                0.0
-            }
-            - w.brewery_surplus_penalty_per_barrel * surplus;
     }
-    ScoreParts {
-        strategic,
-        ..Default::default()
+
+    if cand.ind != IndustryType::Brewery {
+        return 0.0;
     }
+
+    let tile_cubes = state.players[pid]
+        .next_tile(cand.ind)
+        .map(|tile| tile.resource_cubes as f64)
+        .unwrap_or(0.0);
+    let barrels = owned_beer_barrels(state, pid) as f64 + tile_cubes;
+    let demand = sellable_beer_demand(state, pid) as f64;
+    let surplus = (barrels - demand).max(0.0);
+    let support = if demand > 0.0 {
+        BREWERY_SELL_SUPPORT_WITH_DEMAND
+    } else {
+        BREWERY_SELL_SUPPORT_BASE
+    };
+    support
+        + if state.is_canal_era() {
+            0.0
+        } else {
+            RAIL_BREWERY_VALUE
+        }
+        - BREWERY_SURPLUS_PENALTY_PER_BARREL * surplus
 }
 
-/// Rail-era emergency coal prior: when the coal market is near empty, any
-/// legal coal mine is strategically premium because the whole table must
-/// pay expensive market coal otherwise. Independent of immediate auto-sell.
-fn rail_coal_shortage(
-    state: &GameState,
-    ctx: &EvalContext,
-    cand: &BuildTarget,
-    level: u8,
-    cubes: u8,
-) -> f64 {
-    let w = &ctx.cfg.build;
-    if cand.ind != IndustryType::CoalMine || !ctx.is_rail() {
+fn rail_coal_shortage(state: &GameState, cand: &BuildTarget, level: u8, cubes: u8) -> f64 {
+    if cand.ind != IndustryType::CoalMine || state.is_canal_era() {
         return 0.0;
     }
     let shortage = market_scarcity(state, true);
-    let level_factor = 1.0 + w.rail_coal_shortage_per_level * (level.saturating_sub(1)) as f64;
-    let cubes_factor =
-        w.rail_coal_shortage_cubes_base + w.rail_coal_shortage_per_cube * cubes as f64;
-    shortage * level_factor * cubes_factor * w.rail_coal_shortage
+    let level_factor = 1.0 + RAIL_COAL_SHORTAGE_PER_LEVEL * level.saturating_sub(1) as f64;
+    let cubes_factor = RAIL_COAL_SHORTAGE_CUBES_BASE + RAIL_COAL_SHORTAGE_PER_CUBE * cubes as f64;
+    shortage * level_factor * cubes_factor * RAIL_COAL_SHORTAGE
 }
 
-/// Cost-efficiency factor: the build must be worth its price tag. Cheap
-/// builds (coal £5, iron £7, brewery £5) get a relative edge early.
-fn cost_efficiency(ctx: &EvalContext, income: u8, vp: u8, cost: f64) -> f64 {
-    let w = &ctx.cfg.build;
+fn cost_efficiency(income: u8, vp: u8, cost: f64) -> f64 {
     if cost > 0.0 {
-        ((income as f64 + vp as f64) / cost).min(w.cost_efficiency_cap)
+        ((income as f64 + vp as f64) / cost).min(COST_EFFICIENCY_CAP)
     } else {
         0.0
     }
 }
 
-/// Score one build candidate in VP-equivalent components.
+/// Score one legal build candidate directly in VP equivalents.
 pub(super) fn score_build_candidate(
     state: &GameState,
-    ctx: &EvalContext,
+    pid: usize,
     cand: &BuildTarget,
     plan: &Plan,
-) -> ScoreParts {
-    let Some(tile) = state.players[ctx.pid].next_tile(cand.ind) else {
-        return ScoreParts {
-            risk: f64::NEG_INFINITY,
-            ..Default::default()
-        };
+) -> f64 {
+    let Some(tile) = state.players[pid].next_tile(cand.ind) else {
+        return f64::NEG_INFINITY;
     };
-    if ctx.cfg.guardrails.ban_build_lv1_brewery
-        && cand.ind == IndustryType::Brewery
-        && tile.level == 1
-    {
-        return ScoreParts {
-            risk: f64::NEG_INFINITY,
-            ..Default::default()
-        };
+    if BAN_BUILD_LEVEL1_BREWERY && cand.ind == IndustryType::Brewery && tile.level == 1 {
+        return f64::NEG_INFINITY;
     }
 
-    // Cash is the hard constraint that drives the early economy. A build we
-    // cannot afford is heavily discounted (a loan remains a path, but is
-    // not a first choice).
-    let cash = state.players[ctx.pid].money as f64;
     let cost = cand.cost_total as f64;
+    let cash = state.players[pid].money as f64;
     if cost > cash {
-        return ScoreParts {
-            risk: -(cost - cash) * ctx.cfg.build.unaffordable_per_pound,
-            ..Default::default()
-        };
+        return -(cost - cash) * UNAFFORDABLE_PER_POUND;
     }
 
-    let flip_prob = build_flip_probability(state, ctx, cand.ind, cand.loc);
-
-    // Link icons this tile would add to a link we already own next to it.
-    let link_self_value = if player_owns_link_touching(state, ctx.pid, cand.loc) {
-        tile.link_vp as f64 * flip_prob * ctx.cfg.build.link_self_value_share
+    let flip_prob = build_flip_probability(state, pid, cand.ind, cand.loc);
+    let link_value = if player_owns_link_touching(state, pid, cand.loc) {
+        tile.link_vp as f64 * flip_prob * LINK_SELF_VALUE_SHARE
     } else {
         0.0
     };
-
     let is_resource = matches!(cand.ind, IndustryType::CoalMine | IndustryType::IronWorks);
-    let resource_self_sufficiency = if is_resource {
-        ctx.cfg.build.self_sufficiency_per_cube * tile.resource_cubes as f64
+    let self_supply = if is_resource {
+        SELF_SUFFICIENCY_PER_CUBE * tile.resource_cubes as f64
     } else {
         0.0
     };
 
-    let mut parts = ScoreParts {
-        // Expected VP: printed VP realised on flip, plus owned-link icons.
-        vp: tile.vp as f64 * flip_prob + link_self_value,
-        // Expected income advance on flip.
-        income: tile.income as f64 * flip_prob,
-        // The build itself costs money.
-        money: -(cand.cost_total as f64),
-        strategic: resource_self_sufficiency
-            + ctx.cfg.build.expansion_per_link
-                * unbuilt_neighbor_connections(state, cand.loc) as f64
-            + rail_coal_shortage(state, ctx, cand, tile.level, tile.resource_cubes)
-            + cost_efficiency(ctx, tile.income, tile.vp, cand.cost_total as f64),
-        ..Default::default()
-    };
+    let mut score = tile.vp as f64 * flip_prob
+        + link_value
+        + tile.income as f64 * flip_prob * BuildIncomeWeight::factor(state)
+        - cost * BuildMoneyWeight::factor(state)
+        + self_supply
+        + EXPANSION_PER_LINK * unbuilt_neighbor_connections(state, cand.loc) as f64
+        + rail_coal_shortage(state, cand, tile.level, tile.resource_cubes)
+        + cost_efficiency(tile.income, tile.vp, cost)
+        + beer_economy(state, pid, cand, tile.beers_to_sell);
 
     if is_resource {
-        parts.add(&market_value(state, ctx, cand, tile.resource_cubes));
+        score += market_value(state, cand, tile.resource_cubes);
     }
-    parts.add(&beer_economy(state, ctx, cand, tile.beers_to_sell));
 
-    // "Free-riding" efficiency: sourcing coal/iron from board mines/works is
-    // cheaper and faster, and consuming opponents' cubes keeps the shared
-    // pool cheap for everyone.
+    // Free-riding keeps the common resource pool cheap and avoids spending an
+    // action on a resource tile that opponents can supply for us.
     let ratio = resource_source_ratio(state, cand);
-    parts.strategic +=
-        (ratio - ctx.cfg.build.free_riding_threshold).max(0.0) * ctx.cfg.build.free_riding_bonus;
+    score += (ratio - FREE_RIDING_THRESHOLD).max(0.0) * FREE_RIDING_BONUS;
 
-    // Rebuilding over one of our own tiles forfeits that tile's end-game VP.
-    parts.risk -= own_overbuild_vp_loss(state, ctx.pid, cand, ctx.cfg.value.own_overbuild_vp_loss);
+    score -= own_overbuild_vp_loss(state, pid, cand, 1.0);
 
-    // Plan ("流派") soft bonus: building the plan industry aligns with the
-    // production plan. Only from Canal-Late onward — in Canal-Early the
-    // priority is the coal/iron economy engine, not committing to the
-    // sellable line yet.
-    if plan.count > 0 && plan.industry == cand.ind && ctx.phase != Phase::CanalEarly {
-        parts.strategic += ctx.cfg.build.plan_bonus;
+    // Canal-Early is reserved for establishing the coal/iron engine; from
+    // Canal-Late onward, follow the production plan.
+    if plan.count > 0 && plan.industry == cand.ind && (!state.is_canal_era() || state.round > 4) {
+        score += PLAN_BONUS;
     }
 
-    // Rail-Late beer-gated finish: the whole late game hinges on flipping
-    // sellables — "有酒才建产业". Reward the sellable build when beer is
-    // genuinely available; `flip_prob` already keeps it low when not.
-    if ctx.phase == Phase::RailLate
+    // In Rail-Late, a sellable with beer available is a preferred finisher.
+    if !state.is_canal_era()
+        && state.round > 4
         && cand.ind.is_sellable()
-        && beer_available_for_sellable(state, ctx, cand)
+        && beer_available_for_sellable(state, pid, cand)
     {
-        parts.strategic += ctx.cfg.build.rail_late_beer_bonus;
+        score += RAIL_LATE_BEER_BONUS;
     }
 
-    parts
+    score
 }
 
-/// Beer for a Rail-Late sellable finish: own board sources at the location,
-/// or reachable merchant barrels.
-fn beer_available_for_sellable(state: &GameState, ctx: &EvalContext, cand: &BuildTarget) -> bool {
-    count_beer_sources(state, cand.loc, ctx.pid, &[]) > 0 || beer_barrels_reachable(state, cand.loc)
+fn beer_available_for_sellable(state: &GameState, pid: usize, cand: &BuildTarget) -> bool {
+    count_beer_sources(state, cand.loc, pid, &[]) > 0 || beer_barrels_reachable(state, cand.loc)
 }
 
 /// Pick the cheapest-to-discard legal card for a build target. Consumes the
-/// precomputed hand keep-scores instead of re-deriving them (the target
-/// enumeration inside `card_keep_score` is expensive enough that calling it
-/// inside a sort comparator used to dominate scoring time).
+/// precomputed hand keep-scores instead of re-deriving them in a comparator.
 fn pick_build_card(
     state: &GameState,
     pid: usize,
@@ -320,12 +289,11 @@ fn pick_build_card(
         keep_scores
             .iter()
             .find(|(idx, _)| *idx == i)
-            .map(|(_, s)| *s)
+            .map(|(_, score)| *score)
             .unwrap_or(f64::INFINITY)
     };
     let player = &state.players[pid];
     let indices = valid_build_cards(state, player, pid, cand.loc, cand.ind);
-    // Prefer a non-wild matching card over a wild one.
     let non_wild: Vec<_> = indices
         .iter()
         .copied()
@@ -344,7 +312,6 @@ fn pick_build_card(
     let index = candidates
         .iter()
         .copied()
-        .into_iter()
         .min_by(|a, b| keep(*a).total_cmp(&keep(*b)).then(a.cmp(b)))?;
     Some((index, keep(index)))
 }
@@ -372,86 +339,81 @@ mod build_card_tests {
             },
             Card::WildIndustry,
         ];
-        // A deliberately lower Wild keep-score verifies that Build's explicit
-        // non-Wild preference, rather than incidental score ordering, wins.
         let chosen = pick_build_card(&state, pid, &target, &[(0, 2.0), (1, 0.0)]);
         assert_eq!(chosen, Some((0, 2.0)));
     }
 }
 
-/// Top-K build candidates by 1-ply score. Used by MCTS to get a wider prior.
+/// Top-K build candidates by one-ply score.
 pub(crate) fn score_top_builds(
     state: &mut GameState,
-    ctx: &EvalContext,
     k: usize,
     plan: &Plan,
     targets: &[BuildTarget],
     keep_scores: &[(usize, f64)],
 ) -> Vec<Decision> {
-    let pid = ctx.pid;
-    let mut scored: Vec<(BuildTarget, ScoreParts)> = targets
+    if k == 0 || keep_scores.is_empty() {
+        return Vec::new();
+    }
+    let pid = state.current_player_id();
+    let mut scored: Vec<(BuildTarget, f64)> = targets
         .iter()
         .cloned()
-        .map(|t| {
-            let s = score_build_candidate(state, ctx, &t, plan);
-            (t, s)
+        .map(|target| {
+            let score = score_build_candidate(state, pid, &target, plan);
+            (target, score)
         })
         .collect();
-    scored.sort_by(|a, b| b.1.total(ctx).total_cmp(&a.1.total(ctx)));
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(k);
+
     let mut out = Vec::new();
-    for (cand, parts) in scored {
-        let score = parts.total(ctx);
+    for (cand, score) in scored {
         if score == f64::NEG_INFINITY {
             continue;
         }
-        if let Some((card_index, card_score)) = pick_build_card(state, pid, &cand, keep_scores) {
-            let coal_needed = cand.cost_coal as usize;
-            let iron_needed = cand.cost_iron as usize;
-            // v4: emit up to SOURCE_VARIANTS variants of this geometry that
-            // differ in free-source identity; search resolves whose buildings
-            // flip, the generator only guarantees the alternatives exist.
-            let coal_opts = super::distinct_source_options(
-                crate::rules::coal_source_options(state, cand.loc, coal_needed),
-                |s: &crate::graph::CoalSource| (s.kind, s.key),
-                super::SOURCE_VARIANTS,
-            );
-            let iron_opts = super::distinct_source_options(
-                crate::rules::iron_source_options(state, iron_needed),
-                |s: &crate::graph::IronSource| (s.key, s.free),
-                super::SOURCE_VARIANTS,
-            );
-            let empty: Vec<crate::graph::CoalSource> = Vec::new();
-            let coal_opts: Vec<Vec<crate::graph::CoalSource>> = if coal_opts.is_empty() {
-                vec![empty]
-            } else {
-                coal_opts
-            };
-            let empty_iron: Vec<crate::graph::IronSource> = Vec::new();
-            let iron_opts: Vec<Vec<crate::graph::IronSource>> = if iron_opts.is_empty() {
-                vec![empty_iron]
-            } else {
-                iron_opts
-            };
-            let mut variants = 0usize;
-            'variants: for coal in &coal_opts {
-                for iron in &iron_opts {
-                    out.push(Decision {
-                        mv: ResolvedMove::Build {
-                            loc: cand.loc,
-                            slot_index: cand.slot_index,
-                            ind: cand.ind,
-                            coal: coal.clone(),
-                            iron: iron.clone(),
-                            card_index,
-                        },
-                        score,
-                        card_score,
-                    });
-                    variants += 1;
-                    if variants >= super::SOURCE_VARIANTS {
-                        break 'variants;
-                    }
+        let Some((card_index, card_score)) = pick_build_card(state, pid, &cand, keep_scores) else {
+            continue;
+        };
+        let coal_opts = super::distinct_source_options(
+            crate::rules::coal_source_options(state, cand.loc, cand.cost_coal as usize),
+            |source: &crate::graph::CoalSource| (source.kind, source.key),
+            SOURCE_VARIANTS,
+        );
+        let iron_opts = super::distinct_source_options(
+            crate::rules::iron_source_options(state, cand.cost_iron as usize),
+            |source: &crate::graph::IronSource| (source.key, source.free),
+            SOURCE_VARIANTS,
+        );
+        let coal_opts = if coal_opts.is_empty() {
+            vec![Vec::new()]
+        } else {
+            coal_opts
+        };
+        let iron_opts = if iron_opts.is_empty() {
+            vec![Vec::new()]
+        } else {
+            iron_opts
+        };
+
+        let mut variants = 0;
+        'variants: for coal in &coal_opts {
+            for iron in &iron_opts {
+                out.push(Decision {
+                    mv: ResolvedMove::Build {
+                        loc: cand.loc,
+                        slot_index: cand.slot_index,
+                        ind: cand.ind,
+                        coal: coal.clone(),
+                        iron: iron.clone(),
+                        card_index,
+                    },
+                    score,
+                    card_score,
+                });
+                variants += 1;
+                if variants >= SOURCE_VARIANTS {
+                    break 'variants;
                 }
             }
         }

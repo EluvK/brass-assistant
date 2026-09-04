@@ -7,7 +7,6 @@
 
 use super::config::HeuristicConfig;
 use super::plan::{Phase, era_phase};
-use super::value::ScoreParts;
 use crate::state::GameState;
 
 /// Rounds in one era (game rule; used only to normalise "how much era is
@@ -181,25 +180,10 @@ impl<'a> EvalContext<'a> {
         keep_scores * self.cfg.value.flex
     }
 
-    /// Composite conversion used by every scorer through
-    /// [`ScoreParts::total`].
-    pub(crate) fn total_of(&self, parts: &ScoreParts) -> f64 {
-        parts.vp
-            + self.money_value(parts.money)
-            + self.income_value(parts.income)
-            + self.flex_value(parts.flex)
-            + parts.strategic
-            + parts.risk
-    }
-
     // -- round / era predicates ------------------------------------------
 
     pub fn is_canal(&self) -> bool {
         matches!(self.phase, Phase::CanalEarly | Phase::CanalLate)
-    }
-
-    pub fn is_rail(&self) -> bool {
-        matches!(self.phase, Phase::RailEarly | Phase::RailLate)
     }
 }
 

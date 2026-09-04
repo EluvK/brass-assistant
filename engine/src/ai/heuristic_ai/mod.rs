@@ -5,12 +5,8 @@
 //! - [`config`]: every tunable weight/threshold/switch, grouped by topic.
 //! - [`context`]: `EvalContext`, built once per candidate batch — strategy
 //!   phase, per-phase currency weights, and shared convenience predicates.
-//! - [`value`]: the scoring currency. Every scorer emits a `ScoreParts`
-//!   breakdown (vp / money / income / flex / strategic / risk) and
-//!   `ScoreParts::total` is the single place where components are converted
-//!   into comparable VP equivalents. Also hosts the read-only board VP
-//!   estimate mirroring `gameplay::scoring::score_era`, and the market
-//!   model.
+//! - [`value`]: shared market/board-value helpers. Build and network scores
+//!   are emitted directly in VP equivalents.
 //! - [`board`] / [`probability`]: shared board queries (merchant reach,
 //!   beer availability, ...) and the single flip-probability model.
 //! - One scoring module per action type (`build`, `network`, `develop`,
@@ -158,7 +154,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     let mut out = Vec::new();
     let plan = compute_plan(state, pid);
 
-    for d in score_top_builds(state, &ctx, k, &plan, &build_targets, &card_choices) {
+    for d in score_top_builds(state, k, &plan, &build_targets, &card_choices) {
         if d.score != f64::NEG_INFINITY {
             out.push(d);
         }

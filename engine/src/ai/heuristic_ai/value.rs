@@ -1,55 +1,13 @@
 //! The scoring currency and board-value estimators.
 //!
-//! Action scorers that combine economic components produce a [`ScoreParts`]
-//! breakdown; [`ScoreParts::total`] converts those components into comparable
-//! VP equivalents. Network actions use their own local VP-equivalent policy
-//! because their inputs and time factors are self-contained. Board VP
-//! estimation lives here too (read-only mirror of
+//! Network and Build actions use local VP-equivalent policies because their
+//! inputs and time factors are self-contained. Board VP estimation lives here
+//! (read-only mirror of
 //! `gameplay::scoring::score_era`), so scorers and the MCTS leaf evaluator
 //! share one implementation.
 
-use super::context::EvalContext;
 use crate::map::{city_slots, connections};
 use crate::state::GameState;
-
-/// Score of one action, split by economic meaning.
-///
-/// Component semantics:
-/// - `vp`: expected victory points (flip expectation, link icons).
-/// - `money`: cash change in £ (negative = spent).
-/// - `income`: income-level change.
-/// - `flex`: change in summed hand keep-score (playing freedom).
-/// - `strategic`: position / tempo / synergy value already measured in VP
-///   equivalents (market spikes, beer locks, plan alignment, exploration).
-/// - `risk`: penalties for hazards (unsellable leftovers, overborrowing),
-///   stored as negative magnitudes.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ScoreParts {
-    pub vp: f64,
-    pub money: f64,
-    pub income: f64,
-    pub flex: f64,
-    pub strategic: f64,
-    pub risk: f64,
-}
-
-impl ScoreParts {
-    /// Convert into the single comparable score. The conversions behind
-    /// `money`/`income`/`flex` are phase-dependent (`EvalContext`).
-    pub fn total(&self, ctx: &EvalContext) -> f64 {
-        ctx.total_of(self)
-    }
-
-    /// Component-wise addition (for combining sub-action scores).
-    pub fn add(&mut self, other: &ScoreParts) {
-        self.vp += other.vp;
-        self.money += other.money;
-        self.income += other.income;
-        self.flex += other.flex;
-        self.strategic += other.strategic;
-        self.risk += other.risk;
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Board VP estimation (read-only mirror of gameplay::scoring::score_era)

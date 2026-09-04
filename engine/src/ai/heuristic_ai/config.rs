@@ -1,16 +1,16 @@
 //! Central tuning parameters for the heuristic AI.
 //!
-//! Tunable weights, thresholds, and policy switches used by the scoring
-//! pipeline live here, grouped by concern. Small scorer-local constants remain
-//! next to the scorer when they are not part of the configurable policy.
+//! Tunable weights, thresholds, and policy switches shared by multiple
+//! scorers live here, grouped by concern. Action-local policies stay next to
+//! their scorer so each action can be tuned independently.
 //! `Default` mirrors the historical constants so the refactor starts from the
 //! previous behaviour; tuning means overriding individual groups (same
 //! pattern as [`crate::ai::mcts_ai::MctsConfig`]).
 //!
-//! All scores are expressed in one currency: **VP equivalents** (see
-//! [`super::value::ScoreParts`]). Weights that convert raw quantities (cash,
-//! income levels, hand flexibility) into that currency are in
-//! [`ValueWeights`]; everything else scores one action type or sub-model.
+//! All scores are expressed in one currency: **VP equivalents**. Weights that
+//! convert raw quantities (cash, income levels, hand flexibility) into that
+//! currency are in [`ValueWeights`]; everything else scores one action type
+//! or sub-model.
 
 use super::plan::Phase;
 
@@ -74,88 +74,6 @@ pub struct EraWeights {
     pub canal_late: PhaseParams,
     pub rail_early: PhaseParams,
     pub rail_late: PhaseParams,
-}
-
-/// Build action scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct BuildWeights {
-    /// Score lost per £1 a build costs beyond current cash (soft constraint;
-    /// loan remains a path but is not a first choice).
-    pub unaffordable_per_pound: f64,
-    /// Share of a built tile's link VP credited when we already own an
-    /// adjacent link (the icon is only realised once the tile flips).
-    pub link_self_value_share: f64,
-    /// Strategic value per resource cube produced by a coal/iron works we
-    /// keep for ourselves (self-sufficiency).
-    pub self_sufficiency_per_cube: f64,
-    /// Iron market scarcity is discounted relative to coal: iron demand is
-    /// steadier and the market fills faster, so over-producing iron is risky.
-    pub iron_scarcity_share: f64,
-    /// Share of immediate market-sale cash credited a second time as a
-    /// tempo bonus (cash now beats cash later).
-    pub market_cash_back_share: f64,
-    /// Flat bonus when a resource build sells out completely on placement
-    /// (immediate flip for income).
-    pub market_sellout_bonus: f64,
-    /// Coal market "heat" price window: heat = (buy_price - base) / span,
-    /// clamped to 0..1. Buy prices inside the window mark a demand spike.
-    pub coal_spike_price_base: f64,
-    pub coal_spike_price_span: f64,
-    /// Bonus per sold cube during a coal price spike.
-    pub coal_spike_per_sold: f64,
-    /// Spike multiplier in the canal era (demand pressure is higher).
-    pub coal_spike_canal_mult: f64,
-    /// Strategic value of feeding a hungry market, per unit scarcity and
-    /// per cube actually sold.
-    pub scarcity_value_per_unit: f64,
-    /// Penalty per cube that cannot be sold on placement and stays on the
-    /// tile (rail-era coal is exempt — the table consumes it soon).
-    pub leftover_per_cube: f64,
-    /// Penalty for a canal-era island coal mine (no merchant reach: cannot
-    /// sell on placement, unlikely to ever flip).
-    pub island_coal_canal_penalty: f64,
-    /// Base + per-cube strategic value of a rail-era island coal mine under
-    /// scarcity (the table consumes it even without merchant reach).
-    pub island_coal_rail_base: f64,
-    pub island_coal_rail_per_cube: f64,
-    /// Market-value floor of an unconnected iron works under scarcity.
-    pub island_iron_value: f64,
-    /// Strategic value per unbuilt link adjacent to the build (expansion
-    /// potential).
-    pub expansion_per_link: f64,
-    /// Rail-era emergency coal prior: base bonus under full shortage,
-    /// scaled by `1 + per_level * (level-1)` and
-    /// `cubes_base + per_cube * cubes`.
-    pub rail_coal_shortage: f64,
-    pub rail_coal_shortage_per_level: f64,
-    pub rail_coal_shortage_cubes_base: f64,
-    pub rail_coal_shortage_per_cube: f64,
-    /// Cap on the cost-efficiency factor `(income + vp) / cost`.
-    pub cost_efficiency_cap: f64,
-    /// Sellable-tile placement bonuses: a reachable accepting merchant,
-    /// then beer actually available for the sell.
-    pub merchant_reachable_bonus: f64,
-    pub beer_available_bonus: f64,
-    pub beer_missing_penalty: f64,
-    /// Brewery oversupply: penalty per surplus barrel beyond the beer
-    /// demand of our unflipped sellables.
-    pub brewery_surplus_penalty_per_barrel: f64,
-    /// Brewery sale support when we do / don't yet have sellables to feed.
-    pub brewery_sell_support_with_demand: f64,
-    pub brewery_sell_support_base: f64,
-    /// Brewery strategic value in the rail era (double-rails consume beer).
-    pub rail_brewery_value: f64,
-    /// Free-riding bonus for sourcing build inputs from board mines/works:
-    /// `(ratio - threshold).max(0) * bonus`, where ratio is the free-source
-    /// share of required coal/iron.
-    pub free_riding_threshold: f64,
-    pub free_riding_bonus: f64,
-    /// Plan ("流派") alignment bonus when building the plan industry, from
-    /// Canal-Late onward.
-    pub plan_bonus: f64,
-    /// Rail-Late "beer-gated finish" bonus for a sellable with beer truly
-    /// available (the finishing move of the late game).
-    pub rail_late_beer_bonus: f64,
 }
 
 /// Flip-probability model (`probability.rs`). Probabilities are clamped to
@@ -296,7 +214,6 @@ pub struct HeuristicConfig {
     pub value: ValueWeights,
     pub era: EraWeights,
     pub flip: FlipWeights,
-    pub build: BuildWeights,
     pub scout: ScoutWeights,
     pub cards: CardWeights,
     pub lookahead: LookaheadParams,
@@ -375,41 +292,6 @@ impl Default for HeuristicConfig {
                 plan_no_merchant: 0.15,
                 plan_no_beer: 0.3,
                 plan_ready: 0.7,
-            },
-            build: BuildWeights {
-                unaffordable_per_pound: 0.3,
-                link_self_value_share: 0.5,
-                self_sufficiency_per_cube: 0.15,
-                iron_scarcity_share: 0.6,
-                market_cash_back_share: 0.4,
-                market_sellout_bonus: 1.5,
-                coal_spike_price_base: 5.0,
-                coal_spike_price_span: 3.0,
-                coal_spike_per_sold: 1.9,
-                coal_spike_canal_mult: 1.25,
-                scarcity_value_per_unit: 0.6,
-                leftover_per_cube: 0.5,
-                island_coal_canal_penalty: -0.5,
-                island_coal_rail_base: 1.2,
-                island_coal_rail_per_cube: 0.25,
-                island_iron_value: 1.2,
-                expansion_per_link: 0.1,
-                rail_coal_shortage: 3.0,
-                rail_coal_shortage_per_level: 0.2,
-                rail_coal_shortage_cubes_base: 0.7,
-                rail_coal_shortage_per_cube: 0.15,
-                cost_efficiency_cap: 2.0,
-                merchant_reachable_bonus: 0.6,
-                beer_available_bonus: 0.8,
-                beer_missing_penalty: -0.3,
-                brewery_surplus_penalty_per_barrel: 0.6,
-                brewery_sell_support_with_demand: 0.8,
-                brewery_sell_support_base: 0.4,
-                rail_brewery_value: 2.0,
-                free_riding_threshold: 0.5,
-                free_riding_bonus: 0.8,
-                plan_bonus: 0.5,
-                rail_late_beer_bonus: 1.2,
             },
             scout: ScoutWeights {
                 low_keep: 1.0,

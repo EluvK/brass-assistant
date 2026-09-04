@@ -38,25 +38,39 @@ pub fn flip_probability(
     loc: Option<Loc>,
 ) -> f64 {
     let cfg = &ctx.cfg.flip;
+    flip_probability_with(state, ctx.pid, ctx.is_canal(), cfg, ind, loc)
+}
+
+/// Context-free implementation shared by concrete Build scoring and the
+/// context-aware plan scorer. Keeping the policy parameters explicit avoids
+/// constructing an evaluation context for every build candidate.
+fn flip_probability_with(
+    state: &GameState,
+    pid: usize,
+    is_canal: bool,
+    cfg: &super::config::FlipWeights,
+    ind: IndustryType,
+    loc: Option<Loc>,
+) -> f64 {
     let base = if matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks) {
         let cubes = state
             .players
-            .get(ctx.pid)
+            .get(pid)
             .and_then(|p| p.next_tile(ind))
             .map(|t| t.resource_cubes)
             .unwrap_or(1);
-        resource_flip(state, ctx, ind, cubes, loc)
+        resource_flip(state, is_canal, cfg, ind, cubes, loc)
     } else if ind == IndustryType::Brewery {
         let next_cubes = state
             .players
-            .get(ctx.pid)
+            .get(pid)
             .and_then(|p| p.next_tile(ind))
             .map(|t| t.resource_cubes as usize)
             .unwrap_or(1);
-        brewery_flip(state, ctx, next_cubes)
+        brewery_flip(state, pid, is_canal, cfg, next_cubes)
     } else {
-        let hand_len = state.players[ctx.pid].hand.len();
-        sellable_flip(state, ctx, ind, loc, hand_len)
+        let hand_len = state.players[pid].hand.len();
+        sellable_flip(state, pid, cfg, ind, loc, hand_len)
     };
     base.clamp(cfg.floor, cfg.cap.max(cfg.floor))
 }
@@ -64,12 +78,12 @@ pub fn flip_probability(
 /// Resource flip model. See module docs for the regimes.
 fn resource_flip(
     state: &GameState,
-    ctx: &EvalContext,
+    is_canal: bool,
+    cfg: &super::config::FlipWeights,
     ind: IndustryType,
     cubes: u8,
     loc: Option<Loc>,
 ) -> f64 {
-    let cfg = &ctx.cfg.flip;
     let is_coal = ind == IndustryType::CoalMine;
     let scarcity = market_scarcity(state, is_coal);
     let can_sell = match loc {
@@ -85,7 +99,7 @@ fn resource_flip(
     // gives it a chance.
     if is_coal && !can_sell {
         let heat_price = state.coal_price();
-        return if ctx.is_canal() {
+        return if is_canal {
             let heat = price_heat(
                 heat_price,
                 cfg.island_coal_canal_price_base,
@@ -112,7 +126,7 @@ fn resource_flip(
 
     // Relies on consumption by the table. Coal demand is enormous in the
     // rail era (all builds and links consume it); iron demand is steadier.
-    let era_demand = match (is_coal, ctx.is_rail()) {
+    let era_demand = match (is_coal, !is_canal) {
         (true, true) => cfg.coal_demand_rail,
         (true, false) => cfg.coal_demand_canal,
         (false, true) => cfg.iron_demand_rail,
@@ -124,16 +138,21 @@ fn resource_flip(
 /// Brewery flip model: beer demand from our unflipped sellables (plus a
 /// rail-network buffer in the rail era) versus supply including this
 /// brewery's own barrels.
-fn brewery_flip(state: &GameState, ctx: &EvalContext, next_cubes: usize) -> f64 {
-    let cfg = &ctx.cfg.flip;
-    let demand = sellable_beer_demand(state, ctx.pid) as f64
-        + if ctx.is_rail() {
+fn brewery_flip(
+    state: &GameState,
+    pid: usize,
+    is_canal: bool,
+    cfg: &super::config::FlipWeights,
+    next_cubes: usize,
+) -> f64 {
+    let demand = sellable_beer_demand(state, pid) as f64
+        + if !is_canal {
             cfg.brewery_rail_demand_buffer
         } else {
             0.0
         };
-    let barrels = (owned_beer_barrels(state, ctx.pid) + next_cubes) as f64;
-    if demand <= 0.5 && ctx.is_canal() {
+    let barrels = (owned_beer_barrels(state, pid) + next_cubes) as f64;
+    if demand <= 0.5 && is_canal {
         cfg.brewery_canal_no_demand
     } else if barrels > demand {
         cfg.brewery_surplus
@@ -146,18 +165,18 @@ fn brewery_flip(state: &GameState, ctx: &EvalContext, next_cubes: usize) -> f64 
 /// reachable accepting merchant and beer to fuel the sale.
 fn sellable_flip(
     state: &GameState,
-    ctx: &EvalContext,
+    pid: usize,
+    cfg: &super::config::FlipWeights,
     ind: IndustryType,
     loc: Option<Loc>,
     hand_len: usize,
 ) -> f64 {
-    let cfg = &ctx.cfg.flip;
     let Some(loc) = loc else {
         // Plan-level view: judge board-wide feasibility only.
         if !state.merchants.iter().any(|mt| mt.accepts(ind)) {
             return cfg.plan_no_merchant;
         }
-        let beer_ok = owned_beer_barrels(state, ctx.pid) > 0
+        let beer_ok = owned_beer_barrels(state, pid) > 0
             || state
                 .merchants
                 .iter()
@@ -173,7 +192,7 @@ fn sellable_flip(
     if merchant_reachable(state, loc, ind) {
         // A merchant is only worth real flip credit if there is beer to
         // fuel the sale; without beer it's a dead end this era.
-        if beer_available(state, loc, ctx.pid, 1) {
+        if beer_available(state, loc, pid, 1) {
             b += cfg.sellable_merchant_with_beer;
         } else {
             b += cfg.sellable_merchant_only;
@@ -197,13 +216,12 @@ fn sellable_flip(
 }
 
 /// Probability that a build at `loc` flips, for the concrete-build path.
-pub fn build_flip_probability(
-    state: &GameState,
-    ctx: &EvalContext,
-    ind: IndustryType,
-    loc: Loc,
-) -> f64 {
-    flip_probability(state, ctx, ind, Some(loc))
+pub fn build_flip_probability(state: &GameState, pid: usize, ind: IndustryType, loc: Loc) -> f64 {
+    // Build scoring supplies only the state and player. The default flip
+    // policy is shared with the plan-level model, but no evaluation context is
+    // constructed on this hot path.
+    let cfg = super::config::HeuristicConfig::default();
+    flip_probability_with(state, pid, state.is_canal_era(), &cfg.flip, ind, Some(loc))
 }
 
 /// Probability that the plan industry flips at all (plan-level view).

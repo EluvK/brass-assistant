@@ -68,9 +68,9 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 ├─ ai/ AI 决策层
 │   ├─ heuristic_ai/    启发式候选生成与各类行动评分
 │   │   ├─ mod.rs       对外 API 门面（Decision / candidate_actions_k 等）+ 候选编排
-│   │   ├─ config.rs    HeuristicConfig：全部可调权重/阈值/开关（按主题分组）
+│   │   ├─ config.rs    HeuristicConfig：跨行动共享的权重/阈值/开关
 │   │   ├─ context.rs   EvalContext：每候选批一次的评估上下文（阶段/轮次/换算便捷函数）
-│   │   ├─ value.rs     统一量纲 ScoreParts + 只读 VP 估算（镜像 scoring.rs）+ 市场模型
+│   │   ├─ value.rs     只读 VP 估算（镜像 scoring.rs）+ 市场模型
 │   │   ├─ board.rs     公共盘面查询（merchant 可达 / 啤酒可用 / 自由资源比例等）
 │   │   ├─ probability.rs 唯一一套翻转概率模型（build 视角与 plan 视角共用）
 │   │   ├─ cards.rs     卡牌保留价值（独立卡牌选择头）
