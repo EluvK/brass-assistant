@@ -132,50 +132,6 @@ pub struct FlipWeights {
     pub plan_ready: f64,
 }
 
-/// Scout (and pass) scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct ScoutWeights {
-    /// Keep-score thresholds classifying retained cards as low/high value.
-    pub low_keep: f64,
-    pub high_keep: f64,
-    /// How many high-value cards the retained hand should ideally hold.
-    pub desired_high_value: usize,
-    /// Maximum hand-refresh score (all conditions perfect). Scaled so a
-    /// perfect refresh competes with a solid build instead of being
-    /// invisible next to one — Scout used to be un-selectable because its
-    /// whole score range sat an order of magnitude below build's.
-    pub max_refresh: f64,
-    /// Per-dead-card reward and per-alive-card cost of the discard trio.
-    pub dead_discard_value: f64,
-    pub alive_discard_penalty: f64,
-    /// Pass fallback score when no candidates were produced at all.
-    pub pass_fallback_score: f64,
-}
-
-/// Card keep-score parameters (`cards.rs`), all expressed on the 0..3 scale.
-#[derive(Debug, Clone, Copy)]
-pub struct CardWeights {
-    pub canal_iron_base: f64,
-    pub canal_sellable_base: f64,
-    pub canal_resource_base: f64,
-    pub rail_coal_base: f64,
-    pub rail_brewery_base: f64,
-    pub rail_iron_base: f64,
-    pub rail_sellable_base: f64,
-    pub canal_iron_third_penalty: f64,
-    pub canal_sellable_duplicate_penalty: f64,
-    pub canal_resource_duplicate_penalty: f64,
-    pub rail_coal_third_penalty: f64,
-    pub rail_industry_duplicate_penalty: f64,
-    pub canal_location_base: f64,
-    pub canal_resource_city_bonus: f64,
-    pub rail_location_base: f64,
-    pub occupied_city_slot_penalty: f64,
-    pub location_second_duplicate_penalty: f64,
-    pub location_third_duplicate_penalty: f64,
-    pub unconsumable_industry_penalty: f64,
-}
-
 /// 2-ply lookahead and turn-end safety parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct LookaheadParams {
@@ -213,8 +169,6 @@ pub struct HeuristicConfig {
     pub value: ValueWeights,
     pub era: EraWeights,
     pub flip: FlipWeights,
-    pub scout: ScoutWeights,
-    pub cards: CardWeights,
     pub lookahead: LookaheadParams,
     pub guardrails: Guardrails,
 }
@@ -291,36 +245,6 @@ impl Default for HeuristicConfig {
                 plan_no_merchant: 0.15,
                 plan_no_beer: 0.3,
                 plan_ready: 0.7,
-            },
-            scout: ScoutWeights {
-                low_keep: 1.0,
-                high_keep: 1.8,
-                desired_high_value: 2,
-                max_refresh: 5.0,
-                dead_discard_value: 0.96,
-                alive_discard_penalty: 0.48,
-                pass_fallback_score: -0.5,
-            },
-            cards: CardWeights {
-                canal_iron_base: 2.0,
-                canal_sellable_base: 1.8,
-                canal_resource_base: 1.5,
-                rail_coal_base: 2.5,
-                rail_brewery_base: 2.0,
-                rail_iron_base: 1.5,
-                rail_sellable_base: 1.8,
-                canal_iron_third_penalty: 0.5,
-                canal_sellable_duplicate_penalty: 0.3,
-                canal_resource_duplicate_penalty: 0.5,
-                rail_coal_third_penalty: 1.0,
-                rail_industry_duplicate_penalty: 0.3,
-                canal_location_base: 1.5,
-                canal_resource_city_bonus: 0.5,
-                rail_location_base: 2.0,
-                occupied_city_slot_penalty: 0.5,
-                location_second_duplicate_penalty: 0.5,
-                location_third_duplicate_penalty: 1.0,
-                unconsumable_industry_penalty: 1.5,
             },
             lookahead: LookaheadParams {
                 first_action_k: 3,

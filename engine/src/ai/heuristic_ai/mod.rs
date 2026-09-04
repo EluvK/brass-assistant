@@ -3,8 +3,9 @@
 //! Architecture (one concern per module):
 //!
 //! - [`config`]: every tunable weight/threshold/switch, grouped by topic.
-//! - [`context`]: `EvalContext`, built once per candidate batch — strategy
-//!   phase, per-phase currency weights, and shared convenience predicates.
+//! - [`context`]: shared strategy-phase data and declarative round/era
+//!   factors.  Action-local scorers read the state directly when no profile
+//!   is needed.
 //! - [`value`]: shared market/board-value helpers. Build and network scores
 //!   are emitted directly in VP equivalents.
 //! - [`board`] / [`probability`]: shared board queries (merchant reach,
@@ -45,9 +46,8 @@ pub use plan::{Phase, Plan, compute_plan, era_phase};
 pub use cards::{card_choices_for_move, card_keep_score, ranked_card_choices};
 
 use build::score_top_builds;
+use cards::CardChoices;
 pub(crate) use cards::move_card_score;
-use cards::{CardChoices, ranked_card_choices_with};
-use context::EvalContext;
 use develop::score_develop_plans;
 use loan::score_loan_result;
 use network::{score_top_network_doubles, score_top_networks};
@@ -144,13 +144,11 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // scoring path below enters before any direct `is_in_network` read — no
     // redundant ensure here (candidate generation is on the search hot path).
     let pid = state.current_player_id();
-    let cfg = HeuristicConfig::default();
-    let ctx = EvalContext::new(state, pid, &cfg);
 
     // Card utility is state-wide and independent of the concrete action type.
     // Compute it once for this candidate batch and share it with all consumers.
     let build_targets = crate::rules::get_valid_build_targets(state, pid);
-    let card_choices = ranked_card_choices_with(state, pid, &build_targets, &cfg);
+    let card_choices = ranked_card_choices(state, pid);
     let mut out = Vec::new();
     let plan = compute_plan(state, pid);
 
@@ -182,11 +180,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
             .into_iter()
             .take(k),
     );
-    out.extend(
-        score_scout_plan(state, &ctx, &card_choices)
-            .into_iter()
-            .take(k),
-    );
+    out.extend(score_scout_plan(state, &card_choices).into_iter().take(k));
     out.extend(score_pass_result(&card_choices).into_iter().take(k));
 
     // Candidate pruning must never turn a position with executable actions
@@ -208,14 +202,13 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
 
 /// Fallback "pass" decision
 pub fn pass_decision(state: &GameState) -> Decision {
-    let cfg = HeuristicConfig::default();
     let card_index = ranked_card_choices(state, state.current_player_id())
         .first()
         .map(|(card_index, _)| *card_index)
         .unwrap_or(0);
     Decision {
         mv: ResolvedMove::Pass { card_index },
-        score: cfg.scout.pass_fallback_score,
+        score: scout_pass::PASS_FALLBACK_SCORE,
         card_score: card_keep_score(state, state.current_player_id(), card_index),
     }
 }

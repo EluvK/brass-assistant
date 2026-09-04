@@ -163,23 +163,6 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    // -- currency conversions -------------------------------------------
-
-    /// Convert cash (£) into VP equivalents.
-    pub fn money_value(&self, pounds: f64) -> f64 {
-        pounds * self.profile.money_w
-    }
-
-    /// Convert income-level changes into VP equivalents.
-    pub fn income_value(&self, levels: f64) -> f64 {
-        levels * self.profile.income_w
-    }
-
-    /// Convert summed hand keep-score (flexibility) into VP equivalents.
-    pub fn flex_value(&self, keep_scores: f64) -> f64 {
-        keep_scores * self.cfg.value.flex
-    }
-
     // -- round / era predicates ------------------------------------------
 
     pub fn is_canal(&self) -> bool {
@@ -212,15 +195,5 @@ mod tests {
         assert!((TestEraFactor::factor(&state) - 4.571428571).abs() < 1e-8);
         state.era = crate::data::Era::Rail;
         assert!((TestEraFactor::factor(&state) - 104.571428571).abs() < 1e-8);
-    }
-
-    #[test]
-    fn currency_conversions_use_the_phase_profile() {
-        let state = GameState::new(rand_chacha::ChaCha12Rng::seed_from_u64(7), 2);
-        let cfg = HeuristicConfig::default();
-        let ctx = ctx_for(&state, &cfg);
-        assert!((ctx.money_value(10.0) - 10.0 * ctx.profile.money_w).abs() < 1e-9);
-        assert!((ctx.income_value(2.0) - 2.0 * ctx.profile.income_w).abs() < 1e-9);
-        assert!((ctx.flex_value(3.0) - 3.0 * cfg.value.flex).abs() < 1e-9);
     }
 }
