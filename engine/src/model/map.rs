@@ -377,7 +377,6 @@ pub(crate) fn loc_connections() -> &'static [Vec<usize>] {
     })
 }
 
-// Translated verbatim from CONNECTIONS in gameData.js.
 // via_farm only for kidderminster-worcester (via southern brewery).
 pub fn connections() -> &'static [Connection] {
     use Loc::*;
@@ -541,8 +540,6 @@ pub fn dual_cotton_manufacturer_cards(player_count: usize) -> u8 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Market / income / money constants (from gameData.js)
 // ---------------------------------------------------------------------------
 
 pub const COAL_MARKET_PRICES: [u8; 14] = [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7];

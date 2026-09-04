@@ -130,7 +130,7 @@ pub enum CardType {
 }
 
 // ---------------------------------------------------------------------------
-// Tile definitions (from INDUSTRY_DATA in gameData.js)
+// Tile definitions 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -171,7 +171,6 @@ macro_rules! tile {
     };
 }
 
-// Translated verbatim from INDUSTRY_DATA in gameData.js
 pub fn industry_tiles(ind: IndustryType) -> &'static [TileDef] {
     use IndustryType::*;
     match ind {

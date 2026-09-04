@@ -1,6 +1,4 @@
 //! Income track: progress-track SPACE (0-99) <-> income LEVEL (-10..30).
-//!
-//! Translated from gameData.js incomeLevelFromSpace / incomeHighestSpaceOfLevel.
 
 use crate::map::{MAX_INCOME_SPACE, MIN_INCOME};
 

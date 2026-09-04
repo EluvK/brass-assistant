@@ -1,8 +1,5 @@
 //! Network connectivity & resource-flow search.
 //!
-//! Translated from gameState.js isInNetwork / getConnectedLocations /
-//! findCoalSource / findIronSource / findBeerSources.
-//!
 //! Connectivity is NOT searched here: `GameState` maintains a lazily-rebuilt
 //! connected-component cache (bitmasks per location) plus cached lists of free
 //! coal/iron cubes, so the hot paths below are O(free sources + market slots).

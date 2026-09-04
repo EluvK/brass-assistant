@@ -1,6 +1,5 @@
-//! Era / end-game scoring. Translated from gameState.js calculateEraScore.
+//! Era / end-game scoring.
 
-use crate::data::Era;
 use crate::map::*;
 use crate::state::GameState;
 
@@ -99,5 +98,3 @@ pub fn final_ranking(state: &GameState) -> Vec<usize> {
     });
     order
 }
-
-pub fn _unused(_e: Era) {}

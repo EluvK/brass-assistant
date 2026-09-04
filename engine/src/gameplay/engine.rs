@@ -1,7 +1,4 @@
 //! Turn/round management, era transitions, scoring.
-//!
-//! Translated from gameState.js advanceTurn / endRound / endCanalEra /
-//! endGame / calculateEraScore / resolveShortfall.
 
 use crate::data::Era;
 use crate::map::*;
