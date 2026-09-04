@@ -1,6 +1,6 @@
 //! Network (link) action scoring: single links and double-rail combos.
 
-use super::board::{hand_access_gain, touches_merchant};
+use super::board::{connection_initial_vp, hand_access_gain, touches_merchant};
 use super::context::{define_era_round_factor, define_round_factor};
 use super::plan::Plan;
 use super::value::link_current_and_potential_vps;
@@ -22,6 +22,11 @@ const DOUBLE_FARM_LOCK_BONUS: f64 = 0.8;
 const CASH_VALUE_BASE: f64 = 0.12;
 const EARLY_PHASE_CASH_MULTIPLIER: f64 = 0.8;
 const RAIL_LATE_CASH_MULTIPLIER: f64 = 5.0 / 3.0;
+
+// Static route values in `board.rs` are priors, not printed VP.  Treating the
+// prior as a floor preserves a route's known strategic quality before any
+// adjacent industry has flipped, while allowing observed link icons to raise
+// the estimate when the current board is better than expected.
 
 // A future link icon has more time to be realised early in an era. Link
 // scoring is deliberately weak in Canal, then eases from the Rail expansion
@@ -105,6 +110,7 @@ fn score_network_candidate(
         + ind_cards as f64 * INDUSTRY_CARD_ACCESS_SCORE;
 
     let (current_link_vp, future_link_vp) = link_current_and_potential_vps(state, conn_id, &cities);
+    let current_link_vp = current_link_vp.max(connection_initial_vp(state.era, conn_id));
     let link_vp = (current_link_vp + FutureLinkVpDiscount::factor(state) * future_link_vp)
         * LinkVpWeight::factor(state);
 

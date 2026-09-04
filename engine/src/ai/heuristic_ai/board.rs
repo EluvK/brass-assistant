@@ -3,11 +3,124 @@
 //! Each predicate here used to be re-implemented inline in several scoring
 //! functions; they now live once. All functions are read-only.
 
-use crate::data::IndustryType;
+use crate::data::{Era, IndustryType};
 use crate::graph::{connected_locations, count_beer_sources, find_coal_sources, find_iron_sources};
 use crate::map::{Loc, connections};
 use crate::rules::BuildTarget;
 use crate::state::{Card, GameState};
+
+/// Static prior VP for each physical connection on the Brass board.
+///
+/// The values are intentionally kept in the heuristic board module rather
+/// than in the map/rules model: they are a strategy prior, not a rule
+/// property.  The index is the connection id from [`crate::map::connections`]
+/// (currently 0..=38).  The Canal table may contain calibrated values while
+/// the Rail table is initially zero-filled; both can be tuned independently
+/// without changing the rules engine.
+///
+/// Keep the comments next to each slot when tuning the table; this makes it
+/// much harder to accidentally shift a value to a different route.
+/// TODO
+pub const CANAL_CONNECTION_INITIAL_VPS: [f64; 39] = [
+    0.0, // 0  Belper-Derby
+    0.0, // 1  Belper-Leek
+    0.0, // 2  Birmingham-Coventry
+    0.0, // 3  Birmingham-Dudley
+    0.0, // 4  Birmingham-Nuneaton
+    0.0, // 5  Birmingham-Oxford
+    0.0, // 6  Birmingham-Redditch
+    0.0, // 7  Birmingham-Tamworth
+    0.0, // 8  Birmingham-Walsall
+    0.0, // 9  Birmingham-Worcester
+    0.0, // 10 Burton-Cannock
+    0.0, // 11 Burton-Derby
+    0.0, // 12 Burton-Stone
+    0.0, // 13 Burton-Tamworth
+    0.0, // 14 Burton-Walsall
+    0.0, // 15 Cannock-Stafford
+    0.0, // 16 Cannock-Brewery North
+    0.0, // 17 Cannock-Walsall
+    0.0, // 18 Cannock-Wolverhampton
+    0.0, // 19 Coalbrookdale-Kidderminster
+    0.0, // 20 Coalbrookdale-Shrewsbury
+    0.0, // 21 Coalbrookdale-Wolverhampton
+    0.0, // 22 Coventry-Nuneaton
+    0.0, // 23 Derby-Nottingham
+    0.0, // 24 Derby-Uttoxeter
+    0.0, // 25 Dudley-Kidderminster
+    0.0, // 26 Dudley-Wolverhampton
+    0.0, // 27 Gloucester-Redditch
+    0.0, // 28 Gloucester-Worcester
+    0.0, // 29 Kidderminster-Worcester (via Brewery South)
+    0.0, // 30 Leek-Stoke-on-Trent
+    0.0, // 31 Nuneaton-Tamworth
+    0.0, // 32 Redditch-Oxford
+    0.0, // 33 Stafford-Stone
+    0.0, // 34 Stoke-on-Trent-Stone
+    0.0, // 35 Stoke-on-Trent-Warrington
+    0.0, // 36 Stone-Uttoxeter
+    0.0, // 37 Tamworth-Walsall
+    0.0, // 38 Walsall-Wolverhampton
+];
+
+/// Static prior VP for each physical connection in the Rail era.
+///
+/// Keep this table independent from the Canal table: route priorities change
+/// substantially once rail links, coal and the second-era scoring window are
+/// in play. Values are placeholders until calibrated from game data.
+pub const RAIL_CONNECTION_INITIAL_VPS: [f64; 39] = [
+    5.5, // 0  Belper-Derby
+    2.5, // 1  Belper-Leek
+    5.5, // 2  Birmingham-Coventry
+    4.5, // 3  Birmingham-Dudley
+    5.5, // 4  Birmingham-Nuneaton
+    4.5, // 5  Birmingham-Oxford
+    4.5, // 6  Birmingham-Redditch
+    4.5, // 7  Birmingham-Tamworth
+    5.0, // 8  Birmingham-Walsall
+    3.5, // 9  Birmingham-Worcester
+    5.0, // 10 Burton-Cannock
+    6.5, // 11 Burton-Derby
+    6.0, // 12 Burton-Stone
+    5.0, // 13 Burton-Tamworth
+    5.0, // 14 Burton-Walsall // canal only
+    5.0, // 15 Cannock-Stafford
+    4.0, // 16 Cannock-Brewery North
+    4.5, // 17 Cannock-Walsall
+    3.0, // 18 Cannock-Wolverhampton
+    4.5, // 19 Coalbrookdale-Kidderminster
+    5.0, // 20 Coalbrookdale-Shrewsbury
+    4.0, // 21 Coalbrookdale-Wolverhampton
+    6.0, // 22 Coventry-Nuneaton
+    5.5, // 23 Derby-Nottingham
+    7.5, // 24 Derby-Uttoxeter
+    3.5, // 25 Dudley-Kidderminster
+    3.0, // 26 Dudley-Wolverhampton
+    3.5, // 27 Gloucester-Redditch
+    3.0, // 28 Gloucester-Worcester
+    4.5, // 29 Kidderminster-Worcester (via Brewery South)
+    2.0, // 30 Leek-Stoke-on-Trent
+    5.0, // 31 Nuneaton-Tamworth
+    3.5, // 32 Redditch-Oxford
+    6.0, // 33 Stafford-Stone
+    4.5, // 34 Stoke-on-Trent-Stone
+    3.5, // 35 Stoke-on-Trent-Warrington
+    7.0, // 36 Stone-Uttoxeter
+    4.5, // 37 Tamworth-Walsall
+    3.5, // 38 Walsall-Wolverhampton
+];
+/// Return the strategy prior for a connection in the specified era.
+///
+/// Legal move generation only supplies ids from `connections()`.  Returning
+/// zero for an out-of-range id keeps this read-only heuristic helper robust
+/// if a diagnostic caller passes an invalid id.
+pub fn connection_initial_vp(era: Era, conn_id: usize) -> f64 {
+    let table = match era {
+        Era::Canal => &CANAL_CONNECTION_INITIAL_VPS,
+        Era::Rail => &RAIL_CONNECTION_INITIAL_VPS,
+    };
+    table.get(conn_id).copied().unwrap_or(0.0)
+}
 
 /// A static physical board slot used by the heuristic's long-term card model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -311,5 +424,14 @@ mod tests {
             },
         );
         assert_eq!(empty_industry_slot_count(&state, IndustryType::Brewery), 10);
+    }
+
+    #[test]
+    fn connection_prior_table_tracks_static_map() {
+        assert_eq!(CANAL_CONNECTION_INITIAL_VPS.len(), connections().len());
+        assert_eq!(RAIL_CONNECTION_INITIAL_VPS.len(), connections().len());
+        assert_eq!(connection_initial_vp(Era::Canal, 0), CANAL_CONNECTION_INITIAL_VPS[0]);
+        assert_eq!(connection_initial_vp(Era::Rail, 0), RAIL_CONNECTION_INITIAL_VPS[0]);
+        assert_eq!(connection_initial_vp(Era::Rail, usize::MAX), 0.0);
     }
 }
