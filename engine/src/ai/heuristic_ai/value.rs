@@ -1,10 +1,12 @@
 //! The scoring currency and board-value estimators.
 //!
-//! Every action scorer produces a [`ScoreParts`] breakdown instead of a raw
-//! number; [`ScoreParts::total`] is the *only* place where components are
-//! converted into comparable VP equivalents. Board VP estimation lives here
-//! too (read-only mirror of `gameplay::scoring::score_era`), so scorers and
-//! the MCTS leaf evaluator share one implementation.
+//! Action scorers that combine economic components produce a [`ScoreParts`]
+//! breakdown; [`ScoreParts::total`] converts those components into comparable
+//! VP equivalents. Network actions use their own local VP-equivalent policy
+//! because their inputs and time factors are self-contained. Board VP
+//! estimation lives here too (read-only mirror of
+//! `gameplay::scoring::score_era`), so scorers and the MCTS leaf evaluator
+//! share one implementation.
 
 use super::context::EvalContext;
 use crate::map::{city_slots, connections};

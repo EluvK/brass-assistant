@@ -1,11 +1,9 @@
 //! Shared evaluation context: build one per candidate batch, pass it down.
 //!
 //! `EvalContext` collapses everything "what point of the game are we at"
-//! into a single object — strategy phase, per-phase weights, remaining
-//! rounds — and exposes the currency conversions and round-dependent
-//! convenience predicates every scorer needs. Round/era logic that used to
-//! be re-implemented per scorer now lives here (or in
-//! [`super::config::EraWeights`]) exactly once.
+//! into a single object — strategy phase and per-phase currency weights — and
+//! exposes the conversions and convenience predicates shared by scorers.
+//! Declarative round/era factors used by individual scorers live here too.
 
 use super::config::HeuristicConfig;
 use super::plan::{Phase, era_phase};
@@ -134,8 +132,6 @@ pub struct EvalContext<'a> {
     pub phase: Phase,
     /// Per-phase weights derived from [`HeuristicConfig::era`].
     pub profile: EraProfile,
-    /// Fraction of the era still ahead, clamped to 0..1.
-    pub era_frac: f64,
 }
 
 /// Per-phase evaluation weights resolved from the config.
@@ -145,7 +141,6 @@ pub struct EraProfile {
     pub phase: Phase,
     pub income_w: f64,
     pub money_w: f64,
-    pub network_w: f64,
     pub alpha: f64,
 }
 
@@ -159,7 +154,6 @@ impl<'a> EvalContext<'a> {
             phase,
             income_w: cfg.value.income_base * (params.income_add + params.income_frac * era_frac),
             money_w: cfg.value.money_base * params.money_mult,
-            network_w: params.network_w,
             alpha: params.alpha,
         };
         Self {
@@ -167,7 +161,6 @@ impl<'a> EvalContext<'a> {
             pid,
             phase,
             profile,
-            era_frac,
         }
     }
 
@@ -200,13 +193,6 @@ impl<'a> EvalContext<'a> {
     }
 
     // -- round / era predicates ------------------------------------------
-
-    /// Discount for value realised later than the current action (future
-    /// link VP, early sells, hand access used on later turns). Continuous
-    /// in the remaining era fraction.
-    pub fn future_discount(&self) -> f64 {
-        self.cfg.discount.floor + self.cfg.discount.span * self.era_frac
-    }
 
     pub fn is_canal(&self) -> bool {
         matches!(self.phase, Phase::CanalEarly | Phase::CanalLate)
@@ -252,17 +238,5 @@ mod tests {
         assert!((ctx.money_value(10.0) - 10.0 * ctx.profile.money_w).abs() < 1e-9);
         assert!((ctx.income_value(2.0) - 2.0 * ctx.profile.income_w).abs() < 1e-9);
         assert!((ctx.flex_value(3.0) - 3.0 * cfg.value.flex).abs() < 1e-9);
-    }
-
-    #[test]
-    fn future_discount_is_continuous_and_bounded() {
-        let state = GameState::new(rand_chacha::ChaCha12Rng::seed_from_u64(7), 2);
-        let cfg = HeuristicConfig::default();
-        let ctx = ctx_for(&state, &cfg);
-        let d = ctx.future_discount();
-        assert!(d >= cfg.discount.floor && d <= cfg.discount.floor + cfg.discount.span);
-        // Early era: with a full era ahead, the future is worth near the top.
-        assert!(ctx.era_frac > 0.9);
-        assert!(d > cfg.discount.floor + cfg.discount.span * 0.9);
     }
 }

@@ -69,8 +69,6 @@ mod tests {
         assert!(income_full > income_empty);
         // Rail-late drops income weighting entirely (no time to compound).
         assert_eq!(cfg.era.params(Phase::RailLate).income_add, 0.0);
-        // The future discount is continuous in the remaining era fraction.
-        assert!(cfg.discount.floor + cfg.discount.span > cfg.discount.floor);
     }
 }
 

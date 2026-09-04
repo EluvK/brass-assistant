@@ -193,8 +193,7 @@ pub fn own_overbuild_vp_loss(
 
 /// Hand-access value of connecting `cand_cities`: location cards newly in
 /// network and industry cards generally become playable. Returns
-/// `(location_cards, industry_cards)` counts; the weights live in
-/// `NetworkWeights`.
+/// `(location_cards, industry_cards)` counts;
 pub fn hand_access_gain(state: &GameState, pid: usize, cand_cities: &[Loc; 2]) -> (usize, usize) {
     let player = &state.players[pid];
     let mut location_cards = 0usize;

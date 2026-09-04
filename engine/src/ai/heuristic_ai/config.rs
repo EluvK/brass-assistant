@@ -38,8 +38,7 @@ pub struct ValueWeights {
 }
 
 /// Per-phase evaluation profile parameters. `EraProfile` values are derived
-/// from these instead of hard-coded formulas, and the future-income discount
-/// for link/plan scoring is continuous in remaining rounds.
+/// from these instead of hard-coded formulas.
 #[derive(Debug, Clone, Copy)]
 pub struct PhaseParams {
     /// `income_w = income_base * (income_add + income_frac * era_frac)`
@@ -48,8 +47,6 @@ pub struct PhaseParams {
     pub income_frac: f64,
     /// `money_w = money_base * money_mult`.
     pub money_mult: f64,
-    /// Scale for strategic (non-cash) link value this phase.
-    pub network_w: f64,
     /// 2-ply lookahead blending factor for a second own action.
     pub alpha: f64,
     /// "Era endgame" cash-rescue rounds: era-end urgency triggers when
@@ -64,7 +61,6 @@ impl PhaseParams {
             income_add,
             income_frac,
             money_mult,
-            network_w: 0.0,
             alpha: 0.0,
             endgame_rounds: 0.0,
         }
@@ -78,16 +74,6 @@ pub struct EraWeights {
     pub canal_late: PhaseParams,
     pub rail_early: PhaseParams,
     pub rail_late: PhaseParams,
-}
-
-/// Continuous discount applied to value realised *later* than the current
-/// action (future link VP, early sells, hand access gained for later turns).
-/// `discount = floor + span * era_frac`: with a full era ahead the future is
-/// worth almost as much as now; with none left it degrades to the floor.
-#[derive(Debug, Clone, Copy)]
-pub struct DiscountWeights {
-    pub floor: f64,
-    pub span: f64,
 }
 
 /// Build action scoring.
@@ -229,33 +215,6 @@ pub struct FlipWeights {
     pub plan_ready: f64,
 }
 
-/// Network (link) action scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct NetworkWeights {
-    /// Hand-access value: location cards newly in network / industry cards
-    /// generally, as flexibility (not raw VP).
-    pub access_per_location_card: f64,
-    pub access_per_industry_card: f64,
-    /// Bonus when the link reaches a merchant location.
-    pub merchant_bonus: f64,
-    /// Exploration prior: `base - per_link * links_left_in_era`, floored at 0.
-    pub exploration_base: f64,
-    pub exploration_per_link: f64,
-    /// Plan-alignment bonus when a link opens a vacant slot for the plan
-    /// industry (Canal-Late onward).
-    pub plan_bonus: f64,
-    /// Rail-Early brewery-farm lock bonus.
-    pub beer_lock_bonus: f64,
-    /// Double-rail action-economy bonus (two links for one action), by phase
-    /// tempo, plus an extra farm-lock synergy bonus.
-    pub double_tempo_rail_early: f64,
-    pub double_tempo_other: f64,
-    pub double_farm_lock_bonus: f64,
-    /// Penalty per £ of the double-rail surcharge (base £15 vs 2×£5),
-    /// converted through `money_value`.
-    pub double_surcharge_weight: f64,
-}
-
 /// Scout (and pass) scoring.
 #[derive(Debug, Clone, Copy)]
 pub struct ScoutWeights {
@@ -336,10 +295,8 @@ pub struct Guardrails {
 pub struct HeuristicConfig {
     pub value: ValueWeights,
     pub era: EraWeights,
-    pub discount: DiscountWeights,
     pub flip: FlipWeights,
     pub build: BuildWeights,
-    pub network: NetworkWeights,
     pub scout: ScoutWeights,
     pub cards: CardWeights,
     pub lookahead: LookaheadParams,
@@ -360,19 +317,16 @@ impl Default for HeuristicConfig {
             },
             era: EraWeights {
                 canal_early: PhaseParams {
-                    network_w: 0.1,
                     alpha: 0.6,
                     endgame_rounds: 2.0,
                     ..PhaseParams::scaled(1.8, 0.6, 0.55)
                 },
                 canal_late: PhaseParams {
-                    network_w: 0.1,
                     alpha: 0.6,
                     endgame_rounds: 2.0,
                     ..PhaseParams::scaled(1.8, 0.6, 0.55)
                 },
                 rail_early: PhaseParams {
-                    network_w: 1.0,
                     alpha: 0.6,
                     endgame_rounds: 1.0,
                     ..PhaseParams::scaled(1.2, 0.5, 0.8)
@@ -383,14 +337,9 @@ impl Default for HeuristicConfig {
                     income_add: 0.0,
                     income_frac: 0.0,
                     money_mult: 5.0 / 3.0,
-                    network_w: 0.85,
                     alpha: 0.35,
                     endgame_rounds: 1.0,
                 },
-            },
-            discount: DiscountWeights {
-                floor: 0.3,
-                span: 0.5,
             },
             flip: FlipWeights {
                 floor: 0.05,
@@ -461,19 +410,6 @@ impl Default for HeuristicConfig {
                 free_riding_bonus: 0.8,
                 plan_bonus: 0.5,
                 rail_late_beer_bonus: 1.2,
-            },
-            network: NetworkWeights {
-                access_per_location_card: 0.6,
-                access_per_industry_card: 0.1,
-                merchant_bonus: 1.5,
-                exploration_base: 1.6,
-                exploration_per_link: 0.3,
-                plan_bonus: 0.5,
-                beer_lock_bonus: 1.2,
-                double_tempo_rail_early: 1.2,
-                double_tempo_other: 0.6,
-                double_farm_lock_bonus: 0.8,
-                double_surcharge_weight: 1.0,
             },
             scout: ScoutWeights {
                 low_keep: 1.0,

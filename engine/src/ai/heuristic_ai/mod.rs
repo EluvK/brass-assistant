@@ -4,8 +4,7 @@
 //!
 //! - [`config`]: every tunable weight/threshold/switch, grouped by topic.
 //! - [`context`]: `EvalContext`, built once per candidate batch — strategy
-//!   phase, per-phase weights, remaining rounds, and the round-dependent
-//!   convenience predicates every scorer shares.
+//!   phase, per-phase currency weights, and shared convenience predicates.
 //! - [`value`]: the scoring currency. Every scorer emits a `ScoreParts`
 //!   breakdown (vp / money / income / flex / strategic / risk) and
 //!   `ScoreParts::total` is the single place where components are converted
@@ -164,14 +163,8 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
             out.push(d);
         }
     }
-    out.extend(score_top_networks(state, &ctx, k, &plan, &card_choices));
-    out.extend(score_top_network_doubles(
-        state,
-        &ctx,
-        k,
-        &plan,
-        &card_choices,
-    ));
+    out.extend(score_top_networks(state, k, &plan, &card_choices));
+    out.extend(score_top_network_doubles(state, k, &plan, &card_choices));
     // These scorers emit up to SOURCE_VARIANTS alternative plans per type.
     // Keep the iterator-based shape here so each branch obeys the same Top-K
     // contract and can grow to emit alternatives without changing this dispatcher.
