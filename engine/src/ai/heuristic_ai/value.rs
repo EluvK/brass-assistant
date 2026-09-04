@@ -3,8 +3,8 @@
 //! Network and Build actions use local VP-equivalent policies because their
 //! inputs and time factors are self-contained. Board VP estimation lives here
 //! (read-only mirror of
-//! `gameplay::scoring::score_era`), so scorers and the MCTS leaf evaluator
-//! share one implementation.
+//! `gameplay::scoring::score_era`), so scorers and value estimators share one
+//! implementation.
 
 use crate::map::{city_slots, connections};
 use crate::state::GameState;

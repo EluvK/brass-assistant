@@ -13,10 +13,10 @@ use std::time::Instant;
 use rand_chacha::ChaCha12Rng;
 use rand_chacha::rand_core::SeedableRng;
 
+use _engine::ai::determinize::determinize;
 use _engine::bridge::action_features;
 use _engine::encode;
 use _engine::heuristic_ai;
-use _engine::mcts_ai::MctsConfig;
 use _engine::rules::{apply_move, legal_resolved_moves};
 use _engine::state::GameState;
 
@@ -88,8 +88,7 @@ fn main() {
         });
         bench("determinize", iters, || {
             let mut rng = ChaCha12Rng::seed_from_u64(1);
-            let cfg = MctsConfig::default();
-            let _ = _engine::mcts_ai::determinize_for_test(&work, &mut rng, &cfg);
+            let _ = determinize(&work, &mut rng);
         });
         bench("GameState::clone", iters, || {
             let _ = work.clone();

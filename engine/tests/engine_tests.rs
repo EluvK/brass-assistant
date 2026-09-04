@@ -1144,32 +1144,12 @@ fn deck_composition_matches_era_card_count() {
 }
 
 #[test]
-fn mcts_returns_a_legal_pass_fallback_on_empty_hand() {
-    use _engine::mcts_ai::{self, MctsConfig};
-    let mut state = setup(2);
-    // Empty the current player's hand: only Pass (and no legal moves) remains.
-    let pid = state.current_player_id();
-    let hand = state.players[pid].hand.clone();
-    for (i, c) in hand.iter().enumerate() {
-        state.players[pid].hand[i] = c.clone();
-    }
-    let cfg = MctsConfig {
-        simulations: 50,
-        ..Default::default()
-    };
-    // Should not panic; returns a Decision.
-    let d = mcts_ai::choose_action_mcts(&mut state, &cfg);
-    assert!(d.score.is_finite());
-}
-
-#[test]
-fn mcts_determinize_keeps_own_hand_and_hand_size() {
-    use _engine::mcts_ai::MctsConfig;
+fn determinize_keeps_own_hand_and_hand_size() {
     let state = setup(4);
     let pid = state.current_player_id();
     let own = state.players[pid].hand.clone();
     let mut rng = ChaCha12Rng::seed_from_u64(123);
-    let det = _engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    let det = _engine::determinize::determinize(&state, &mut rng);
     // Our own hand is preserved.
     assert_eq!(det.players[pid].hand, own);
     // Opponent hands keep their size.
@@ -1183,10 +1163,9 @@ fn mcts_determinize_keeps_own_hand_and_hand_size() {
 /// The determinized world must be a consistent multiset: every non-wild card
 /// of the era composition appears exactly once across hands + deck + discard
 /// pile, and nothing else. This guards the discard-pile subtraction in
-/// `mcts_ai::determinize` (a played card must never reappear in a hand/deck).
+/// `ai::determinize` (a played card must never reappear in a hand/deck).
 #[test]
-fn mcts_determinize_pool_is_multiset_consistent() {
-    use _engine::mcts_ai::MctsConfig;
+fn determinize_pool_is_multiset_consistent() {
     let mut state = setup(4);
     // Discard one card per player so the pool actually has out-of-circulation
     // cards to subtract.
@@ -1204,7 +1183,7 @@ fn mcts_determinize_pool_is_multiset_consistent() {
     }
 
     let mut rng = ChaCha12Rng::seed_from_u64(7);
-    let det = _engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    let det = _engine::determinize::determinize(&state, &mut rng);
     let comp = _engine::state::deck_composition(state.player_count());
     let mut all: Vec<Card> = Vec::new();
     for p in &det.players {
@@ -1234,7 +1213,6 @@ fn mcts_determinize_pool_is_multiset_consistent() {
 /// must not reappear in any opponent hand or the deck after determinization.
 #[test]
 fn determinize_excludes_discarded_cards_from_opponent_hands() {
-    use _engine::mcts_ai::MctsConfig;
     let mut state = setup(4);
     let pid = state.current_player_id();
     let idx = state.players[pid]
@@ -1250,7 +1228,7 @@ fn determinize_excludes_discarded_cards_from_opponent_hands() {
     );
 
     let mut rng = ChaCha12Rng::seed_from_u64(99);
-    let det = _engine::mcts_ai::determinize_for_test(&state, &mut rng, &MctsConfig::default());
+    let det = _engine::determinize::determinize(&state, &mut rng);
     for (i, p) in det.players.iter().enumerate() {
         if i != pid {
             assert!(

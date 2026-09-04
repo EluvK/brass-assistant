@@ -216,7 +216,6 @@ fn main() -> Result<(), String> {
     let mut seed = 7u64;
     let mut players = 4usize;
     let mut port = 8787u16;
-    let mut sims = 500usize;
     let mut python_bin = "python".to_string();
     let mut worker_timeout = 300u64;
     let mut policy_args = Vec::new();
@@ -242,11 +241,6 @@ fn main() -> Result<(), String> {
                     .parse()
                     .map_err(|_| "bad --port")?
             }
-            "--sims" => {
-                sims = value(&mut args, "--sims")?
-                    .parse()
-                    .map_err(|_| "bad --sims")?
-            }
             "--python-bin" => python_bin = value(&mut args, "--python-bin")?,
             "--worker-timeout" => {
                 worker_timeout = value(&mut args, "--worker-timeout")?
@@ -255,7 +249,7 @@ fn main() -> Result<(), String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "replay-web --seed 7 --players 4 --player heuristic [--player \"python:--ckpt net.pt --sims 200\" ...] [--sims 500] [--port 8787] [--python-bin python] [--worker-timeout 300]"
+                    "replay-web --seed 7 --players 4 --player heuristic [--player \"python:--ckpt net.pt --sims 200\" ...] [--port 8787] [--python-bin python] [--worker-timeout 300]"
                 );
                 return Ok(());
             }
@@ -270,7 +264,7 @@ fn main() -> Result<(), String> {
     }
     let specs = policy_args
         .iter()
-        .map(|p| StrategySpec::parse(p, sims))
+        .map(|p| StrategySpec::parse(p))
         .collect::<Result<Vec<_>, _>>()?;
     let worker = WorkerSettings {
         python_bin,

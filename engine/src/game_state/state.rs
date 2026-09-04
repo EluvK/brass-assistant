@@ -380,7 +380,7 @@ pub struct GameState {
     pub deck: Vec<Card>,
     /// Face-down discard pile (non-wild cards only; wilds return to piles).
     /// Every card here is OUT of circulation this era (seeded face-down burns
-    /// plus non-wild discards). `mcts_ai::determinize` subtracts it from the
+    /// plus non-wild discards). `ai::determinize` subtracts it from the
     /// hidden pool so a played card can never reappear in an opponent hand or
     /// the deck. Reset to empty at the era transition in
     /// `engine::handle_turn_result` (all canal cards are reshuffled into the rail
@@ -571,13 +571,13 @@ fn loc_from_key_table() -> &'static [(Loc, usize)] {
 }
 
 // ---------------------------------------------------------------------------
-// Card pool reconstruction (for MCTS determinization)
+// Card pool reconstruction (for hidden-information determinization)
 // ---------------------------------------------------------------------------
 
 /// Full multiset of cards dealt this era for `player_count` (before shuffling).
 /// Deterministic in `player_count` only (no era dependence); the composition is
 /// cached once per player count and cloned on every call — `init_deck` and
-/// each MCTS determinization (`mcts_ai::determinize`) share the cache instead
+/// each determinization (`ai::determinize`) share the cache instead
 /// of rebuilding the ~64-card Vec from the static tables every time.
 pub fn deck_composition(player_count: usize) -> Vec<Card> {
     static CACHE: OnceLock<[Vec<Card>; 5]> = OnceLock::new();

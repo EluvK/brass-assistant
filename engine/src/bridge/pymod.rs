@@ -32,9 +32,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 // use rand_core::SeedableRng;
 
+use crate::ai::determinize;
 use crate::encode;
 use crate::heuristic_ai;
-use crate::mcts_ai;
 use crate::move_codec;
 use crate::rules::{apply_move, legal_moves, legal_resolved_moves};
 use crate::state::GameState;
@@ -103,7 +103,7 @@ impl PyGame {
         self.state.current_player().money
     }
 
-    /// Independent deep clone of the game state (for MCTS child nodes).
+    /// Independent deep clone of the game state (for search child nodes).
     fn clone(&self) -> Self {
         PyGame {
             state: self.state.clone(),
@@ -318,7 +318,8 @@ impl PyGame {
     /// Return a bounded, scored teacher shortlist and the 2-ply selected move.
     /// Training does not retain every legal concrete action: that would make a
     /// large replay buffer grow with the full combinatorial action space. The
-    /// MCTS inference path still evaluates every legal candidate.
+    /// network-guided search inference path still evaluates every legal
+    /// candidate.
     ///
     /// Returns `(features (K,301), scores (K,), card_scores (K,), canonical,
     /// teacher_index, score, card_score, count)`; the first three are numpy
@@ -645,11 +646,11 @@ impl PyGame {
     }
 
     /// Determinize: sample opponent hands from the hidden card pool. The
-    /// resulting state's RNG is seeded from the sampling stream (same pattern
-    /// as `mcts_ai`), so subsequent draws vary per determinization.
+    /// resulting state's RNG is seeded from the sampling stream, so subsequent
+    /// draws vary per determinization.
     fn determinize(&self) -> Self {
         let mut rng = ChaCha12Rng::from_rng(&mut rand::rng());
-        let state = mcts_ai::determinize(&self.state, &mut rng);
+        let state = determinize::determinize(&self.state, &mut rng);
         PyGame { state }
     }
 

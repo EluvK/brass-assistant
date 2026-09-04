@@ -5,8 +5,8 @@
 //! All functions are **pure read-only**: they take `&GameState` and never mutate
 //! it, so they are safe to call from the Python replay driver between the
 //! stepwise move/advance calls. They are also NOT on any training/search hot
-//! path (never called by `nn_mcts` / `rules` / `mcts_ai`), so exposing them
-//! costs nothing for training or inference performance.
+//! path (never called by `nn_mcts` / `rules`), so exposing them costs nothing
+//! for training or inference performance.
 
 use crate::data::{CardType, Era, IndustryType};
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, Loc, city_slots, connections};

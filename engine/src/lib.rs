@@ -23,7 +23,7 @@ pub mod move_codec;
 pub mod replay_fmt;
 
 pub use ai::replay;
-pub use ai::{heuristic_ai, mcts_ai, random_ai};
+pub use ai::{determinize, heuristic_ai, random_ai};
 #[cfg(feature = "python")]
 pub use ai::{nn_mcts, python_worker};
 #[cfg(feature = "python")]

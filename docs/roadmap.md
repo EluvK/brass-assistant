@@ -69,7 +69,8 @@
    中隐蔽读取公共盘面 + 己方手牌，POST 到 localhost。对手手牌不可读——推荐
    引擎须在对手手牌隐藏的真实约束下工作（与训练时 determinization 的假设一致）。
 2. **推荐服务**：复用 replay worker 已验证的链路（`replay_worker.py` 加载
-   checkpoint + `RustISMCTS`）；延迟预算 10~15 秒，用 `mcts_lab bench` 校准
+   checkpoint + `RustISMCTS`）；延迟预算 10~15 秒，用 Python 端 NN-MCTS
+   基准（`evaluate.py` 的 `benchmark_*`、`RustISMCTS.search` 单步计时）校准
    模拟数与批推理参数。
 3. **UI 悬浮窗**：PySide6 透明置顶窗口，展示 Top-3 建议与预估收益；数据源为
    推荐服务输出的结构化证据（可参考 replay-web 的 evidence 形态）。

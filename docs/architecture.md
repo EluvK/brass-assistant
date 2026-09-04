@@ -82,7 +82,7 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   │   ├─ sell.rs      Sell 评分与候选生成
 │   │   ├─ loan.rs      Loan 评分
 │   │   └─ scout_pass.rs Scout / Pass 评分
-│   ├─ mcts_ai.rs       启发式引导 ISMCTS（determinize + PUCT + MaxN 值向量）
+│   ├─ determinize.rs   隐藏信息 determinize（保己方手牌、重洗对手手牌；共享模块）
 │   ├─ nn_mcts.rs       网络引导 ISMCTS（具体候选动作树、批量 Python 推理、4 玩家 value）
 │   ├─ replay.rs        replay-web 内存会话：快照/完整合法集/DecisionTrace 记录 + StrategyAdapter 策略契约
 │   ├─ python_worker.rs PythonWorkerStrategy：replay-web 网络座位（子进程 worker + stdin/stdout JSON 协议）

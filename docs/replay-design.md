@@ -10,9 +10,9 @@
 
 ## 策略契约
 
-`StrategyAdapter` 的输入是当前状态及完整规则合法集，输出实际动作和 `DecisionTrace`。原生 `heuristic`、`random` 和 `mcts` 均通过该契约接入。策略返回不在完整合法集中的 canonical 动作会终止会话并留下失败原因。
+`StrategyAdapter` 的输入是当前状态及完整规则合法集，输出实际动作和 `DecisionTrace`。原生 `heuristic`、`random` 与 `python:<worker-config>` 网络座位均通过该契约接入。策略返回不在完整合法集中的 canonical 动作会终止会话并留下失败原因。
 
-启发式 evidence 记录其 shortlist 分数和所有卡牌保留分；完整合法表中不在 shortlist 的动作会明确标为“未被此策略评分”。随机策略不做评分，其完整合法表同样逐行列出并标注“未被此策略评分”。原生 mcts 座位的 evidence 来自 `mcts_ai::search_with_root_stats` 导出的真实根节点统计：score 列为根访问次数，note 给出该结构操作下的累计访问数与平均价值 q，未被搜索展开的动作标注“未被搜索展开”；`root_value` 为最优子节点对行动玩家的平均价值。
+启发式 evidence 记录其 shortlist 分数和所有卡牌保留分；完整合法表中不在 shortlist 的动作会明确标为“未被此策略评分”。随机策略不做评分，其完整合法表同样逐行列出并标注“未被此策略评分”。
 
 `python:<worker-config>` 通过 `PythonWorkerStrategy` 实现：每个此类座位启动一个独立的 Python worker 子进程（`python -u -m brass_ai.replay_worker <worker-config>`，`PYTHONPATH` 指向仓库 `python/`；worker-config 按空白切分，含空格的参数可用单/双引号包裹），worker 持有一个网络 checkpoint 并通过 stdin/stdout 的逐行 JSON 协议应答：
 

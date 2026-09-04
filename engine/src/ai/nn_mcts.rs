@@ -2,8 +2,8 @@
 //!
 //! The tree lives in Rust as an arena. Its children are concrete legal moves,
 //! each assigned a node-local candidate id for policy outputs. Per simulation
-//! the root is determinized by sampling opponent hands via
-//! `mcts_ai::determinize`.
+//! the root is determinized by sampling opponent hands via the shared
+//! `ai::determinize` helper.
 //!
 //! The callback returns one logit per padded concrete legal-action candidate
 //! plus a four-player value vector. Rust masks by construction and applies
@@ -182,7 +182,7 @@ pub fn search_net(
     // small sims budgets) wave would park at the root and no child would ever
     // be visited.
     {
-        let mut work = crate::mcts_ai::determinize(state, &mut sim_rng);
+        let mut work = crate::ai::determinize::determinize(state, &mut sim_rng);
         let mut root_reqs = Vec::new();
         let mut root_by_node = std::collections::HashMap::new();
         match descend(
@@ -225,7 +225,7 @@ pub fn search_net(
         while sims_left > 0 && parked.len() < cfg.batch_size {
             sims_left -= 1;
             let _ = sim_rng.random::<u64>(); // vary determinization per simulation
-            let mut work = crate::mcts_ai::determinize(state, &mut sim_rng);
+            let mut work = crate::ai::determinize::determinize(state, &mut sim_rng);
             match descend(
                 &mut work,
                 &mut arena,

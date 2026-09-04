@@ -6,7 +6,7 @@
 //! driver (`python/experiments/replay_net.py`) uses, so both produce
 //! byte-identical log structure.
 //!
-//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [sims] [canal-only] [full|summary] [trace] [candidate-k] [max-moves]
+//! Usage: cargo run --release --bin replay -- <seed> <players> [policy] [canal-only] [full|summary] [trace] [candidate-k] [max-moves]
 //!   canal-only: "1"/"true" stops after the canal era (no rail era played).
 //!   trace: "1"/"true"/"trace" enables scored heuristic candidates before each
 //!     heuristic decision (off by default).
@@ -108,25 +108,23 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(7);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
-    // policy: "heuristic" (default) | "mcts" | "random"
-    //       | "mcts-vs-heur" | "mcts-vs-random"
+    // policy: "heuristic" (default) | "random"
     let policy = args
         .get(3)
         .cloned()
         .unwrap_or_else(|| "heuristic".to_string());
-    let sims: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(300);
     let canal_only = args
-        .get(5)
+        .get(4)
         .map(|s| matches!(s.as_str(), "1" | "true" | "canal"))
         .unwrap_or(false);
     // `summary` retains the era-end diagnostics without printing every move.
-    let verbose = args.get(6).map(|s| s.as_str()).unwrap_or("full") == "full";
+    let verbose = args.get(5).map(|s| s.as_str()).unwrap_or("full") == "full";
     let trace_enabled = args
-        .get(7)
+        .get(6)
         .map(|s| matches!(s.as_str(), "1" | "true" | "trace"))
         .unwrap_or(false);
-    let candidate_k: usize = args.get(8).and_then(|s| s.parse().ok()).unwrap_or(30);
-    let max_moves: usize = args.get(9).and_then(|s| s.parse().ok()).unwrap_or(200_000);
+    let candidate_k: usize = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(30);
+    let max_moves: usize = args.get(8).and_then(|s| s.parse().ok()).unwrap_or(200_000);
 
     let rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
@@ -254,47 +252,11 @@ fn main() {
             prev_round = state.round;
         }
 
-        let pid = state.current_player_id();
         Some(match policy.as_str() {
             "random" => random_ai::choose_random_move(state, &mut rand_rng)
                 .unwrap_or_else(|| heuristic_ai::pass_decision(state).mv),
-            "mcts-vs-random" => {
-                let mcts_seat = (seed as usize) % players;
-                if pid == mcts_seat {
-                    use _engine::mcts_ai::{self, MctsConfig};
-                    let cfg = MctsConfig {
-                        simulations: sims,
-                        ..Default::default()
-                    };
-                    mcts_ai::choose_action_mcts(state, &cfg).mv
-                } else {
-                    random_ai::choose_random_move(state, &mut rand_rng)
-                        .unwrap_or_else(|| heuristic_ai::pass_decision(state).mv)
-                }
-            }
-            "mcts-vs-heur" => {
-                let mcts_seat = (seed as usize) % players;
-                if pid == mcts_seat {
-                    use _engine::mcts_ai::{self, MctsConfig};
-                    let cfg = MctsConfig {
-                        simulations: sims,
-                        ..Default::default()
-                    };
-                    mcts_ai::choose_action_mcts(state, &cfg).mv
-                } else {
-                    choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get())
-                }
-            }
             "heuristic" => {
                 choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get())
-            }
-            "mcts" => {
-                use _engine::mcts_ai::{self, MctsConfig};
-                let cfg = MctsConfig {
-                    simulations: sims,
-                    ..Default::default()
-                };
-                mcts_ai::choose_action_mcts(state, &cfg).mv
             }
             _ => choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get()),
         })

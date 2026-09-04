@@ -4,8 +4,7 @@
 //! scorers live here, grouped by concern. Action-local policies stay next to
 //! their scorer so each action can be tuned independently.
 //! `Default` mirrors the historical constants so the refactor starts from the
-//! previous behaviour; tuning means overriding individual groups (same
-//! pattern as [`crate::ai::mcts_ai::MctsConfig`]).
+//! previous behaviour; tuning means overriding individual groups by topic.
 //!
 //! All scores are expressed in one currency: **VP equivalents**. Weights that
 //! convert raw quantities (cash, income levels, hand flexibility) into that
@@ -28,11 +27,11 @@ pub struct ValueWeights {
     /// VP forfeited when a build replaces one of our own tiles (its end-game
     /// VP leaves the board with the old tile).
     pub own_overbuild_vp_loss: f64,
-    /// Share of printed VP credited to an unflipped tile in the MCTS leaf
-    /// evaluator (it may still flip later).
+    /// Share of printed VP credited to an unflipped tile when estimating
+    /// board value (it may still flip later).
     pub unflipped_vp_share: f64,
-    /// Extra weight on income levels in the MCTS leaf evaluator: income is
-    /// a recurring stream, so a leaf snapshot values it above one turn's
+    /// Extra weight on income levels when converting them into VP: income is
+    /// a recurring stream, so a position snapshot values it above one turn's
     /// worth (`income_value`).
     pub leaf_income_scale: f64,
 }

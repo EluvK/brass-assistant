@@ -41,7 +41,10 @@ rank 头预测的 `1−rank` 与真实终局名次的偏差分布（04 章的 ra
 
 ### ④ 引擎侧批量评测工具
 
-`docs/engine-tools.md` 里有两个现成工具：`sweep_scores`（批量 seed 扫描出 CSV）和 `mcts_lab`（MCTS 基准 / 局面检查 / 参数 sweep）。**固定 seed 区间 + 大样本**的版本对比就用它们——比手工跑 benchmark 严谨得多（roadmap 中期第 3 条的"评估纪律"）。
+`docs/engine-tools.md` 里的 `sweep_scores`（批量 heuristic seed 扫描出 CSV）负责纯启发式回归；NN-MCTS 的对抗基准在 Python 端（`evaluate.py` 的
+`benchmark_mcts_vs_heuristic` / `benchmark_net_vs_heuristic`，或
+`bootstrap_imitation.py --eval-*`）。**固定 seed 区间 + 大样本**的版本对比
+就用它们——比手工跑 benchmark 严谨得多（roadmap 中期第 3 条的"评估纪律"）。
 
 ### ⑤ 更远：Elo / 联赛（未建）
 
@@ -100,7 +103,7 @@ rank 头预测的 `1−rank` 与真实终局名次的偏差分布（04 章的 ra
 
 ### 参数杠杆（便宜，先用尽）
 
-`sims`（质量单价）、`candidate_k`（候选宽度，0 = 全合法）、`batch_size`（GPU 攒批）、`c_puct`（探索系数）、`max_depth`——`mcts_lab` 的 sweep 模式（9.2 ④）就是为扫这些参数准备的。**注意 sims 与训练阶段的联动**（8.8 反模式 4）：先低后高。
+`sims`（质量单价）、`candidate_k`（候选宽度，0 = 全合法）、`batch_size`（GPU 攒批）、`c_puct`（探索系数）、`max_depth`——这些是 NN-MCTS 搜索参数，用 Python harness（`RustISMCTS` 配置 + 9.2 ④ 的 benchmark 协议）扫描。**注意 sims 与训练阶段的联动**（8.8 反模式 4）：先低后高。
 
 ### 算法升级（当前代码库没有，方向性知识）
 
@@ -121,7 +124,9 @@ rank 头预测的 `1−rank` 与真实终局名次的偏差分布（04 章的 ra
 `replay_worker.py`（06 章 6.7）已验证"checkpoint → 决策服务"的完整链路：加载 checkpoint → stdin/stdout JSON 应答 Rust 的 `choose` 请求（[replay-design.md](../replay-design.md) 的协议），支持 `mcts` / `policy` 两种模式并返回 evidence。产品化（roadmap 阶段 4/5）就是三步：
 
 1. **TTS 数据抽取**：Lua 脚本读公共盘面 + 己方手牌 POST 到 localhost（对手手牌不可读——与训练时 determinize 的隐藏信息假设一致，见 05 章 5.2）；
-2. **推荐服务**：复用 replay_worker 链路，**延迟预算 10~15 秒**——用 `mcts_lab bench` 校准"预算内能跑多少 sims"（sims 就是 8.8 说的质量单价，这里变成了实时约束）；
+2. **推荐服务**：复用 replay_worker 链路，**延迟预算 10~15 秒**——用
+   Python 端 NN-MCTS 单步计时（`RustISMCTS.search` + `perf_counter`）校准
+   "预算内能跑多少 sims"（sims 就是 8.8 说的质量单价，这里变成了实时约束）；
 3. **UI 悬浮窗**：PySide6 置顶窗展示 Top-3 建议 + 预估收益，数据源是 evidence。
 
 注意训练↔服务的角色差异：训练要的是吞吐（慢点无妨、批越大越好），服务要的是延迟（单局面、预算硬约束）。同一个网络，两种调参。

@@ -1,9 +1,9 @@
 //! Shared full-game driver.
 //!
-//! Every binary that plays a game (`main.rs`, replay, stat_game, sweep_scores,
-//! sweep_canal, bench_mcts, sweep_mcts, debug_mcts) used to hand-write the same
-//! loop — guard check, `apply_move`, `advance_turn`, `handle_turn_result`...
-//! This module owns that loop once; binaries supply only
+//! Every binary that plays a game (`main.rs`, replay, sweep_scores,
+//! sweep_north_brewery, train_bench) used to hand-write the same loop —
+//! guard check, `apply_move`, `advance_turn`, `handle_turn_result`... This
+//! module owns that loop once; binaries supply only
 //! the move policy and the (optional) per-move / era hooks they need.
 //!
 //! Hooks run at fixed points:

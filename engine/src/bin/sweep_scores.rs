@@ -2,14 +2,13 @@
 //! VP plus economic columns (final income, final money, canal-era income).
 //!
 //! Usage:
-//!   cargo run --release --bin sweep_scores -- <start_seed> <end_seed> <policy> [sims] [full|canal] > out.csv
+//!   cargo run --release --bin sweep_scores -- <start_seed> <end_seed> [policy] [full|canal] > out.csv
 //!
-//!   policy: heuristic | mcts
-//!   mcts uses sims (default 200); heuristic ignores sims.
+//!   policy: heuristic (default; the only swept policy)
+//!   range:  full (default) or canal
 
 use _engine::data::Era;
 use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
-use _engine::mcts_ai::{self, MctsConfig};
 use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
 use rayon::prelude::*;
@@ -30,7 +29,7 @@ struct SweepResult {
     stuck: bool,
 }
 
-fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bool) -> SweepResult {
+fn play_one(seed: u64, players: usize, canal_only: bool) -> SweepResult {
     let started = Instant::now();
     let rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
@@ -94,17 +93,7 @@ fn play_one(seed: u64, players: usize, policy: &str, sims: usize, canal_only: bo
         ..Default::default()
     };
     let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
-        Some(match policy {
-            "heuristic" => _engine::heuristic_ai::choose_action(state).mv,
-            "mcts" => {
-                let cfg = MctsConfig {
-                    simulations: sims,
-                    ..Default::default()
-                };
-                mcts_ai::choose_action_mcts(state, &cfg).mv
-            }
-            _ => _engine::heuristic_ai::choose_action(state).mv,
-        })
+        Some(_engine::heuristic_ai::choose_action(state).mv)
     });
     if !canal_only {
         game_loop::finish_game(&mut state);
@@ -158,17 +147,16 @@ fn main() {
         .get(3)
         .cloned()
         .unwrap_or_else(|| "heuristic".to_string());
-    if !matches!(policy.as_str(), "heuristic" | "mcts") {
-        eprintln!("unknown policy {policy:?}; use heuristic or mcts");
+    if policy != "heuristic" {
+        eprintln!("unknown policy {policy:?}; only heuristic is supported");
         std::process::exit(2);
     }
-    let sims: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(200);
-    let canal_only = matches!(args.get(5).map(String::as_str), Some("canal"));
+    let canal_only = matches!(args.get(4).map(String::as_str), Some("canal"));
     let players: usize = 4;
 
     let results: Vec<SweepResult> = (start..end)
         .into_par_iter()
-        .map(|seed| play_one(seed, players, &policy, sims, canal_only))
+        .map(|seed| play_one(seed, players, canal_only))
         .collect();
 
     if canal_only {

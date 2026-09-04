@@ -1,6 +1,5 @@
 use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use _engine::heuristic_ai;
-use _engine::mcts_ai::{self, MctsConfig};
 use _engine::random_ai::choose_random_move;
 use _engine::rules::ResolvedMove;
 use _engine::scoring;
@@ -28,14 +27,9 @@ struct GameStats {
     passes: u64,
     /// Final income level per player.
     final_income: [i64; 4],
-    /// Mixed mode: MCTS-seat outcome.
-    mcts_games: u64,
-    mcts_wins: u64,
-    mcts_vp: i64,
-    other_vp: i64,
 }
 
-fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameStats {
+fn play_one_game(players: usize, policy: &str, seed: u64) -> GameStats {
     let rng = rand_chacha::ChaCha12Rng::seed_from_u64(seed);
     let mut state = GameState::new(rng, players);
     // RNG for the random baseline (state.rng is setup-only).
@@ -49,18 +43,6 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
     let mut sells = 0u64;
     let mut loans = 0u64;
     let mut passes = 0u64;
-
-    // "mcts-vs-heur": exactly one seat plays MCTS, the rest heuristic. The
-    // MCTS seat rotates per game to cancel seat bias.
-    let mcts_vs_heur = policy == "mcts-vs-heur";
-    let mcts_vs_random = policy == "mcts-vs-random";
-    let mcts_mixed = mcts_vs_heur || mcts_vs_random;
-    let policy = if mcts_mixed { "mixed" } else { policy };
-    let mcts_seat = if mcts_mixed {
-        (seed as usize) % players
-    } else {
-        usize::MAX
-    };
 
     let mut on_move = |_state: &mut GameState, mv: &ResolvedMove| match mv {
         ResolvedMove::Build { .. } => builds += 1,
@@ -99,34 +81,10 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
         on_era: Some(&mut on_era),
         ..Default::default()
     };
-    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
-        let pid = state.current_player_id();
-        if mcts_mixed {
-            if pid == mcts_seat {
-                let cfg = MctsConfig {
-                    simulations: sims,
-                    ..Default::default()
-                };
-                Some(mcts_ai::choose_action_mcts(state, &cfg).mv)
-            } else if mcts_vs_heur {
-                Some(heuristic_ai::choose_action(state).mv)
-            } else {
-                choose_random_move(state, &mut rand_rng)
-            }
-        } else {
-            match policy {
-                "random" => choose_random_move(state, &mut rand_rng),
-                "heuristic" => Some(heuristic_ai::choose_action(state).mv),
-                "mcts" => {
-                    let cfg = MctsConfig {
-                        simulations: sims,
-                        ..Default::default()
-                    };
-                    Some(mcts_ai::choose_action_mcts(state, &cfg).mv)
-                }
-                _ => Some(heuristic_ai::choose_action(state).mv),
-            }
-        }
+    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| match policy {
+        "random" => choose_random_move(state, &mut rand_rng),
+        "heuristic" => Some(heuristic_ai::choose_action(state).mv),
+        _ => Some(heuristic_ai::choose_action(state).mv),
     });
     if outcome == LoopOutcome::IllegalMove {
         illegal_move = true;
@@ -159,23 +117,6 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
         }
     }
 
-    let mut mcts_games = 0;
-    let mut mcts_wins = 0;
-    let mut mcts_vp = 0;
-    let mut other_vp = 0;
-    if mcts_mixed {
-        mcts_games = 1;
-        if winner == Some(mcts_seat) {
-            mcts_wins = 1;
-        }
-        mcts_vp = vp[mcts_seat];
-        other_vp = (0..players)
-            .filter(|&i| i != mcts_seat)
-            .map(|i| vp[i])
-            .sum::<i64>()
-            / (players.saturating_sub(1) as i64);
-    }
-
     let mut final_income = [0i64; 4];
     for (i, p) in state.players.iter().enumerate() {
         if i < final_income.len() {
@@ -199,10 +140,6 @@ fn play_one_game(players: usize, policy: &str, seed: u64, sims: usize) -> GameSt
         loans,
         passes,
         final_income,
-        mcts_games,
-        mcts_wins,
-        mcts_vp,
-        other_vp,
     }
 }
 
@@ -210,16 +147,13 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let games: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let players: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
-    // policy: "random" | "heuristic" | "mcts" | "mcts-vs-heur"
+    // policy: "random" | "heuristic"
     let policy = args
         .get(3)
         .cloned()
         .unwrap_or_else(|| "heuristic".to_string());
-    let mcts_vs_heur = policy == "mcts-vs-heur";
     // threads: optional 4th arg to override rayon default pool size
     let threads: Option<usize> = args.get(4).and_then(|s| s.parse().ok());
-    // mcts sims: optional 5th arg
-    let sims: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
 
     let pool = match threads {
         Some(t) => rayon::ThreadPoolBuilder::new()
@@ -233,7 +167,7 @@ fn main() {
     let total: GameStats = pool.install(|| {
         (0..games)
             .into_par_iter()
-            .map(|g| play_one_game(players, &policy, g as u64, sims))
+            .map(|g| play_one_game(players, &policy, g as u64))
             .reduce(GameStats::default, |a, b| GameStats {
                 wins: [
                     a.wins[0] + b.wins[0],
@@ -265,10 +199,6 @@ fn main() {
                     a.final_income[2] + b.final_income[2],
                     a.final_income[3] + b.final_income[3],
                 ],
-                mcts_games: a.mcts_games + b.mcts_games,
-                mcts_wins: a.mcts_wins + b.mcts_wins,
-                mcts_vp: a.mcts_vp + b.mcts_vp,
-                other_vp: a.other_vp + b.other_vp,
             })
     });
     let elapsed = start.elapsed();
@@ -287,18 +217,6 @@ fn main() {
     }
     println!("Canal-era transitions: {}", total.canal_events);
 
-    if mcts_vs_heur {
-        let g = total.mcts_games.max(1);
-        let opp = "heuristic";
-        println!(
-            "  [MCTS vs {opp}, seat rotated] MCTS seat: {:.1}% wins ({}/{}), avg VP {:.1} vs {opp} avg {:.1}",
-            total.mcts_wins as f64 * 100.0 / g as f64,
-            total.mcts_wins,
-            g,
-            total.mcts_vp as f64 / g as f64,
-            total.other_vp as f64 / g as f64
-        );
-    }
     println!(
         "Avg final VP per player: {:?}",
         total

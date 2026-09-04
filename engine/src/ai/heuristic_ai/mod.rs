@@ -15,8 +15,8 @@
 //! - [`plan`]: the "流派" production-plan selection; [`lookahead`]: the
 //!   deterministic 2-ply action policy on top of the scored candidates.
 //!
-//! Public entry points are consumed by `mcts_ai`, `replay`, the binaries
-//! and the PyO3 bridge; their signatures are a stability contract.
+//! Public entry points are consumed by replay, the binaries, the PyO3 bridge
+//! and network-guided search; their signatures are a stability contract.
 
 use crate::rules::ResolvedMove;
 use crate::state::GameState;
@@ -135,14 +135,14 @@ pub(crate) fn operation_key(mv: &ResolvedMove) -> String {
     }
 }
 
-/// Top-K candidates per action type, for MCTS to get a wider prior.
+/// Top-K candidates per action type, for consumers that want a wider prior.
 /// Build, single Network, and double-Rail Network get up to `k` candidates
 /// each; other action types keep their single best (develop/sell/loan/scout/pass).
 pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // Network masks are (re)validated inside `get_valid_build_targets` /
     // `get_valid_network_targets` / `get_second_rail_options`, which every
     // scoring path below enters before any direct `is_in_network` read — no
-    // redundant ensure here (hot path: MCTS calls this once per tree node).
+    // redundant ensure here (candidate generation is on the search hot path).
     let pid = state.current_player_id();
     let cfg = HeuristicConfig::default();
     let ctx = EvalContext::new(state, pid, &cfg);
@@ -190,8 +190,8 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     out.extend(score_pass_result(&card_choices).into_iter().take(k));
 
     // Candidate pruning must never turn a position with executable actions
-    // into a dead end (for example callers passing k=0). Keep one legal fallback
-    // so MCTS always has a path to explore.
+    // into a dead end (for example callers passing k=0). Keep one legal
+    // fallback so callers always have a path to explore.
     if out.is_empty()
         && let Some(mv) = crate::rules::legal_resolved_moves(state).into_iter().next()
     {
@@ -206,7 +206,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     out
 }
 
-/// Fallback "pass" decision (safe even on an empty hand).
+/// Fallback "pass" decision
 pub fn pass_decision(state: &GameState) -> Decision {
     let cfg = HeuristicConfig::default();
     let card_index = ranked_card_choices(state, state.current_player_id())
@@ -218,28 +218,4 @@ pub fn pass_decision(state: &GameState) -> Decision {
         score: cfg.scout.pass_fallback_score,
         card_score: card_keep_score(state, state.current_player_id(), card_index),
     }
-}
-
-/// Position-value estimator for player `pid`, used as the MCTS leaf evaluator.
-///
-/// Combines board VP (estimated with the same settlement rules the era-end
-/// scoring uses), the income stream, and cash — all in VP equivalents via
-/// the shared `EvalContext` — plus hand flexibility, which reflects
-/// actionable potential better than a pure board snapshot.
-pub(crate) fn evaluate_position(state: &GameState, pid: usize) -> f64 {
-    let cfg = HeuristicConfig::default();
-    let ctx = EvalContext::new(state, pid, &cfg);
-    let p = &state.players[pid];
-
-    let vp = value::estimate_player_vp(state, pid, cfg.value.unflipped_vp_share);
-    let flex: f64 = ranked_card_choices(state, pid)
-        .into_iter()
-        .map(|(_, keep_score)| keep_score)
-        .sum();
-
-    p.vp as f64 * cfg.value.vp
-        + (vp.flipped_industry + vp.unflipped_expected + vp.link_current) * cfg.value.vp
-        + ctx.money_value(p.money as f64)
-        + ctx.income_value(p.income_level() as f64 * cfg.value.leaf_income_scale)
-        + ctx.flex_value(flex)
 }
