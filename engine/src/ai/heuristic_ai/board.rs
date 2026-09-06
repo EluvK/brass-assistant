@@ -430,8 +430,14 @@ mod tests {
     fn connection_prior_table_tracks_static_map() {
         assert_eq!(CANAL_CONNECTION_INITIAL_VPS.len(), connections().len());
         assert_eq!(RAIL_CONNECTION_INITIAL_VPS.len(), connections().len());
-        assert_eq!(connection_initial_vp(Era::Canal, 0), CANAL_CONNECTION_INITIAL_VPS[0]);
-        assert_eq!(connection_initial_vp(Era::Rail, 0), RAIL_CONNECTION_INITIAL_VPS[0]);
+        assert_eq!(
+            connection_initial_vp(Era::Canal, 0),
+            CANAL_CONNECTION_INITIAL_VPS[0]
+        );
+        assert_eq!(
+            connection_initial_vp(Era::Rail, 0),
+            RAIL_CONNECTION_INITIAL_VPS[0]
+        );
         assert_eq!(connection_initial_vp(Era::Rail, usize::MAX), 0.0);
     }
 }

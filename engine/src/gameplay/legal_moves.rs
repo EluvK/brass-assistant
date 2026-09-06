@@ -63,7 +63,7 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
                         card_index: *ci,
                     });
                 } else {
-                            let c = &connections()[*conn];
+                    let c = &connections()[*conn];
                     let coal_opts = coal_options_for_connection(state, c, 1);
                     for coal in &coal_opts {
                         moves.push(ResolvedMove::Network {
@@ -83,7 +83,8 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
     {
         // For each valid first link, find valid second links (double rail) and
         // enumerate every legal coal/beer source choice for the second link.
-        for candidate in enumerate_double_rail_candidates_from_firsts(state, pid, &network_targets) {
+        for candidate in enumerate_double_rail_candidates_from_firsts(state, pid, &network_targets)
+        {
             for ci in &cards {
                 moves.push(candidate.to_move(*ci));
             }

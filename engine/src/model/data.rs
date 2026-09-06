@@ -130,7 +130,7 @@ pub enum CardType {
 }
 
 // ---------------------------------------------------------------------------
-// Tile definitions 
+// Tile definitions
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
