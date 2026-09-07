@@ -96,12 +96,14 @@ pub trait StrategyAdapter: Send {
 pub struct NativeStrategy {
     spec: StrategySpec,
     random: ChaCha12Rng,
+    pending: Option<ResolvedMove>,
 }
 impl NativeStrategy {
     pub fn new(spec: StrategySpec, seed: u64) -> Self {
         Self {
             spec,
             random: ChaCha12Rng::seed_from_u64(seed),
+            pending: None,
         }
     }
 }
@@ -209,8 +211,20 @@ impl StrategyAdapter for NativeStrategy {
         }
         match self.spec.clone() {
             StrategySpec::Heuristic => {
+                if let Some(mv) = self.pending.take() {
+                    let trace = trace_for(
+                        state,
+                        legal,
+                        mv.clone(),
+                        self.name(),
+                        "heuristic-follow-up",
+                        Vec::new(),
+                    );
+                    return Ok((mv, trace));
+                }
                 let scored = heuristic_ai::candidate_actions_k(state, 30);
                 let decision = heuristic_ai::choose_action(state);
+                self.pending = decision.second.map(|d| d.mv);
                 let trace = trace_for(
                     state,
                     legal,
@@ -720,6 +734,24 @@ mod tests {
                 score.total_vp
             );
         }
+    }
+
+    #[test]
+    fn heuristic_pending_follow_up_is_consumed_on_the_next_step() {
+        let mut s =
+            ReplaySession::new(7, 2, vec![StrategySpec::Heuristic, StrategySpec::Random]).unwrap();
+        for _ in 0..80 {
+            if !s.step().unwrap() {
+                break;
+            }
+            if s.steps
+                .iter()
+                .any(|step| step.trace.evidence_kind == "heuristic-follow-up")
+            {
+                return;
+            }
+        }
+        panic!("heuristic adapter never executed a planned follow-up action");
     }
 
     #[test]

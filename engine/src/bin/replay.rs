@@ -47,7 +47,7 @@ fn choose_heuristic_action(
     trace_enabled: bool,
     candidate_k: usize,
     move_no: usize,
-) -> ResolvedMove {
+) -> _engine::heuristic_ai::RoundDecision {
     if trace_enabled {
         let pid = state.current_player_id();
         println!(
@@ -101,7 +101,7 @@ fn choose_heuristic_action(
             println!("  {marker} 手牌[{index}] {label} keep_score={score:.3}");
         }
     }
-    decision.mv
+    decision
 }
 
 fn main() {
@@ -232,6 +232,7 @@ fn main() {
         on_era: Some(&mut on_era),
         after_era: Some(&mut on_era_after),
     };
+    let mut pending_second: Option<_engine::heuristic_ai::Decision> = None;
     let outcome = game_loop::play(&mut state, max_moves, hooks, |state| {
         // Era / round header change
         if verbose && state.era != prev_era {
@@ -252,14 +253,32 @@ fn main() {
             prev_round = state.round;
         }
 
-        Some(match policy.as_str() {
-            "random" => random_ai::choose_random_move(state, &mut rand_rng)
-                .unwrap_or_else(|| heuristic_ai::pass_decision(state).mv),
-            "heuristic" => {
-                choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get())
+        if policy.as_str() == "random" {
+            return Some(
+                random_ai::choose_random_move(state, &mut rand_rng)
+                    .unwrap_or_else(|| heuristic_ai::pass_decision(state).mv),
+            );
+        }
+        if let Some(second) = pending_second.take() {
+            if trace_enabled {
+                let pid = state.current_player_id();
+                println!(
+                    "\n--- [玩家{pid}]|{:?}时代|第{}轮|决策追踪:第{}步 |  ---",
+                    state.era,
+                    state.round,
+                    move_no.get() + 1,
+                );
+                println!(
+                    "    本轮第二动: {} score={:.2}",
+                    second.mv.describe(state),
+                    second.score
+                );
             }
-            _ => choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get()),
-        })
+            return Some(second.mv);
+        }
+        let decision = choose_heuristic_action(state, trace_enabled, candidate_k, move_no.get());
+        pending_second = decision.second;
+        Some(decision.mv)
     });
     if outcome == LoopOutcome::StoppedByEraEnd {
         return;

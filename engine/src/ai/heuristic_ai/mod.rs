@@ -68,6 +68,33 @@ pub struct Decision {
     pub card_score: f64,
 }
 
+/// Actions selected for one round.  The compatibility fields (`mv`, `score`,
+/// and `card_score`) mirror the first action so existing one-action callers
+/// can keep executing the plan incrementally.
+pub struct RoundDecision {
+    pub mv: ResolvedMove,
+    pub score: f64,
+    pub card_score: f64,
+    /// The second action selected for the same round, when the turn permits
+    /// two actions.  A last-position four-link is used only for evaluation;
+    /// actions from the next round are intentionally not returned here.
+    /// `choose_action` only fills this when the caller is at the start of a
+    /// two-action block; callers that advance action-by-action inside the
+    /// block receive a one-move plan and should re-plan on each action.
+    pub second: Option<Decision>,
+}
+
+impl RoundDecision {
+    /// Consume the plan as executable moves in round order.
+    pub fn into_moves(self) -> Vec<ResolvedMove> {
+        let mut moves = vec![self.mv];
+        if let Some(second) = self.second {
+            moves.push(second.mv);
+        }
+        moves
+    }
+}
+
 /// First `m` source options that differ in free-source identity, judged by
 /// `key` over each option's sources (market-only re-pricings collapse). The
 /// first entry is the engine-default option; `T` is the option, `S` the source.

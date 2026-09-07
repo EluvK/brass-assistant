@@ -47,8 +47,8 @@ fn one(seed: u64) -> R {
         on_era: Some(&mut on_era),
         ..Default::default()
     };
-    let outcome = game_loop::play(&mut state, 200_000, hooks, |s| {
-        Some(_engine::heuristic_ai::choose_action(s).mv)
+    let outcome = game_loop::play_rounds(&mut state, 200_000, hooks, |s| {
+        _engine::heuristic_ai::choose_action(s).into_moves()
     });
     if !state.game_over {
         game_loop::finish_game(&mut state);

@@ -46,10 +46,15 @@ fn main() {
     let mut snapshots: Vec<Vec<u8>> = Vec::new();
     snapshots.push(state.snapshot_bytes().unwrap());
     while snapshots.len() < positions && !state.game_over {
-        let mv = heuristic_ai::choose_action(&mut state).mv;
-        apply_move(&mut state, &mv).unwrap();
+        let plan = heuristic_ai::choose_action(&mut state);
+        apply_move(&mut state, &plan.mv).unwrap();
         let tr = _engine::engine::advance_turn(&mut state);
         _engine::engine::handle_turn_result(&mut state, tr);
+        if let Some(second) = plan.second {
+            apply_move(&mut state, &second.mv).unwrap();
+            let tr = _engine::engine::advance_turn(&mut state);
+            _engine::engine::handle_turn_result(&mut state, tr);
+        }
         snapshots.push(state.snapshot_bytes().unwrap());
     }
     let n = snapshots.len();

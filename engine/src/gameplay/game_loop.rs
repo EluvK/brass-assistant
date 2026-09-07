@@ -140,6 +140,28 @@ pub fn play(
     }
 }
 
+/// Play a game with a policy that plans all actions for the current round.
+/// The loop owns the pending-action queue, so callers do not need to carry
+/// state between callbacks just to execute a second action.
+pub fn play_rounds(
+    state: &mut GameState,
+    max_moves: usize,
+    hooks: GameHooks<'_>,
+    mut choose_round: impl FnMut(&mut GameState) -> Vec<ResolvedMove>,
+) -> LoopOutcome {
+    let mut pending = std::collections::VecDeque::new();
+    play(state, max_moves, hooks, |state| {
+        if let Some(mv) = pending.pop_front() {
+            return Some(mv);
+        }
+        let mut planned = choose_round(state);
+        if planned.len() > 1 {
+            pending.extend(planned.drain(1..));
+        }
+        planned.pop()
+    })
+}
+
 /// Force the end-of-game scoring if the loop ended before the game was over
 /// (e.g. guard exceeded). Mirrors the `if !state.game_over { end_game }`
 /// epilogue the old hand-written loops repeated.

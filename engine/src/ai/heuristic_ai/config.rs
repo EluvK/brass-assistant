@@ -132,27 +132,16 @@ pub struct FlipWeights {
     pub plan_ready: f64,
 }
 
-/// 2-ply lookahead and turn-end safety parameters.
+/// 2-ply lookahead parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct LookaheadParams {
     pub first_action_k: usize,
     pub second_action_k: usize,
-    /// Cash line below which the turn-end penalty engages.
-    pub low_money_threshold: i32,
-    /// Overall turn-end penalty scale.
-    pub end_turn_penalty_scale: f64,
-    /// Income gained this turn that exempts the position from the penalty.
-    pub end_turn_income_exempt: f64,
-    /// Income-term weight by whether income is negative.
-    pub end_turn_negative_income_weight: f64,
-    pub end_turn_income_weight: f64,
-    /// Rail-era term (canal scales down by the canal factor).
-    pub end_turn_rail_era_term: f64,
-    pub end_turn_canal_era_term: f64,
-    /// Runway term `base + span * (1 - runway)` penalises low cash early
-    /// in the era (many rounds left to survive).
-    pub end_turn_runway_base: f64,
-    pub end_turn_runway_span: f64,
+    /// Up to four own actions when the player can chain across a round
+    /// boundary (last in order while spending less than every predecessor).
+    pub four_action_k: usize,
+    /// Discount applied to the two actions obtained in the following round.
+    pub four_action_alpha: f64,
 }
 
 /// Hard policy constraints (temporary strategic guardrails).
@@ -249,15 +238,8 @@ impl Default for HeuristicConfig {
             lookahead: LookaheadParams {
                 first_action_k: 3,
                 second_action_k: 2,
-                low_money_threshold: 15,
-                end_turn_penalty_scale: 6.5,
-                end_turn_income_exempt: 2.5,
-                end_turn_negative_income_weight: 1.4,
-                end_turn_income_weight: 0.9,
-                end_turn_rail_era_term: 1.0,
-                end_turn_canal_era_term: 0.8,
-                end_turn_runway_base: 0.6,
-                end_turn_runway_span: 0.4,
+                four_action_k: 2,
+                four_action_alpha: 0.35,
             },
             guardrails: Guardrails {
                 ban_build_lv1_brewery: true,

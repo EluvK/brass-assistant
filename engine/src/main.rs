@@ -81,10 +81,11 @@ fn play_one_game(players: usize, policy: &str, seed: u64) -> GameStats {
         on_era: Some(&mut on_era),
         ..Default::default()
     };
-    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| match policy {
-        "random" => choose_random_move(state, &mut rand_rng),
-        "heuristic" => Some(heuristic_ai::choose_action(state).mv),
-        _ => Some(heuristic_ai::choose_action(state).mv),
+    let outcome = game_loop::play_rounds(&mut state, 200_000, hooks, |state| match policy {
+        "random" => choose_random_move(state, &mut rand_rng)
+            .into_iter()
+            .collect(),
+        "heuristic" | _ => heuristic_ai::choose_action(state).into_moves(),
     });
     if outcome == LoopOutcome::IllegalMove {
         illegal_move = true;

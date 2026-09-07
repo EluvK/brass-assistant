@@ -74,7 +74,7 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   │   ├─ board.rs     公共盘面查询（merchant 可达 / 啤酒可用 / 自由资源比例等）
 │   │   ├─ probability.rs 唯一一套翻转概率模型（build 视角与 plan 视角共用）
 │   │   ├─ cards.rs     卡牌保留价值（独立卡牌选择头）
-│   │   ├─ lookahead.rs 确定性 2-ply 同回合 combo 前瞻
+│   │   ├─ lookahead.rs 确定性 2-ply 前瞻；末位低花费时支持跨轮四联动，并含首轮模板
 │   │   ├─ plan.rs      时代分档与生产计划选择
 │   │   ├─ build.rs     Build 评分与候选生成
 │   │   ├─ network.rs   Network / Double-Rail 评分与候选生成

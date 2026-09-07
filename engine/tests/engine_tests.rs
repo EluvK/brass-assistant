@@ -67,6 +67,66 @@ fn heuristic_candidates_are_legal_and_never_dead_end() {
 }
 
 #[test]
+fn heuristic_round_plan_returns_and_executes_a_second_action() {
+    let mut state = setup(4);
+    // Advance through the one-action first round so the next player starts a
+    // normal two-action block.
+    loop {
+        if !state.is_first_round && state.actions_this_turn == 0 {
+            break;
+        }
+        assert!(!state.game_over);
+        let decision = _engine::heuristic_ai::choose_action(&mut state);
+        apply_move(&mut state, &decision.mv).expect("first-round decision must apply");
+        let tr = advance_turn(&mut state);
+        handle_turn_result(&mut state, tr);
+    }
+
+    let plan = _engine::heuristic_ai::choose_action(&mut state);
+    assert!(
+        plan.second.is_some(),
+        "a two-action block should plan a follow-up: round={}",
+        state.round
+    );
+    assert!(
+        apply_move(&mut state, &plan.mv).is_ok(),
+        "the first move of a round plan must be legal"
+    );
+    let tr = advance_turn(&mut state);
+    handle_turn_result(&mut state, tr);
+
+    // Already inside the same action block: the policy must not invent a
+    // follow-up that belongs to the next round.
+    let mid_block = _engine::heuristic_ai::choose_action(&mut state);
+    assert!(
+        mid_block.second.is_none(),
+        "choose_action inside a two-action block must not plan a second action"
+    );
+    assert!(
+        apply_move(&mut state, &mid_block.mv).is_ok(),
+        "the final action of the block must be legal"
+    );
+    let tr = advance_turn(&mut state);
+    handle_turn_result(&mut state, tr);
+}
+
+#[test]
+fn play_rounds_executes_heuristic_plans_without_illegal_moves() {
+    let mut state = setup(4);
+    let outcome = _engine::game_loop::play_rounds(
+        &mut state,
+        1_000,
+        _engine::game_loop::GameHooks::default(),
+        |state| _engine::heuristic_ai::choose_action(state).into_moves(),
+    );
+    assert_ne!(
+        outcome,
+        _engine::game_loop::LoopOutcome::IllegalMove,
+        "queued round-plan moves must never be applied to an incompatible state"
+    );
+}
+
+#[test]
 fn snapshot_restore_rebuilds_network_masks() {
     use _engine::rules::{apply_move, legal_resolved_moves};
 

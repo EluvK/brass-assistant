@@ -92,8 +92,8 @@ fn play_one(seed: u64, players: usize, canal_only: bool) -> SweepResult {
         after_era: Some(&mut after_era),
         ..Default::default()
     };
-    let outcome = game_loop::play(&mut state, 200_000, hooks, |state| {
-        Some(_engine::heuristic_ai::choose_action(state).mv)
+    let outcome = game_loop::play_rounds(&mut state, 200_000, hooks, |state| {
+        _engine::heuristic_ai::choose_action(state).into_moves()
     });
     if !canal_only {
         game_loop::finish_game(&mut state);
@@ -122,21 +122,14 @@ fn play_one(seed: u64, players: usize, canal_only: bool) -> SweepResult {
     res
 }
 
-fn mean_variance(values: impl Iterator<Item = f64>) -> (f64, f64) {
+fn mean(values: impl Iterator<Item = f64>) -> f64 {
     let mut count = 0.0;
-    let mut mean = 0.0;
-    let mut m2 = 0.0;
+    let mut sum = 0.0;
     for value in values {
         count += 1.0;
-        let delta = value - mean;
-        mean += delta / count;
-        m2 += delta * (value - mean);
+        sum += value;
     }
-    if count == 0.0 {
-        (0.0, 0.0)
-    } else {
-        (mean, m2 / count)
-    }
+    if count == 0.0 { 0.0 } else { sum / count }
 }
 
 fn main() {
@@ -170,30 +163,18 @@ fn main() {
     }
     let mut illegal = 0;
     let mut stuck = 0;
-    let (game_mean, game_variance) = mean_variance(
+    let game_mean = mean(
         results
             .iter()
             .map(|r| r.vp.iter().sum::<i64>() as f64 / players as f64),
     );
-    let (player_mean, player_variance) = mean_variance(
-        results
-            .iter()
-            .flat_map(|r| r.vp.iter().map(|&vp| vp as f64)),
-    );
-    let (winner_mean, winner_variance) = mean_variance(
+    let winner_mean = mean(
         results
             .iter()
             .map(|r| r.vp.iter().max().copied().unwrap_or(0) as f64),
     );
-    let (time_mean_us, time_variance_us) =
-        mean_variance(results.iter().map(|r| r.elapsed_us as f64));
-    let unique_winners = results
-        .iter()
-        .filter(|r| {
-            let max = r.vp.iter().max().copied().unwrap_or(0);
-            r.vp.iter().filter(|&&vp| vp == max).count() == 1
-        })
-        .count();
+    let time_mean = mean(results.iter().map(|r| r.elapsed_us as f64));
+
     for r in &results {
         if r.illegal {
             illegal += 1;
@@ -247,20 +228,14 @@ fn main() {
         }
     }
     eprintln!(
-        "[sweep_scores]:\n\nscope={} games={} policy={} illegal={} stuck={}\nunique_winner_rate={:.3} winner_mean={:.3} winner_variance={:.3}\nplayer_mean={:.3} player_variance={:.3}\ngame_mean={:.3} game_variance={:.3}\ntime_mean_us={:.1} time_variance_us={:.1}",
+        "[sweep_scores]:\n\nscope={} games={} policy={} illegal={} stuck={}\nwinner_mean={:.3}\ngame_mean={:.3}\ntime_mean_us={:.1}",
         if canal_only { "canal" } else { "full" },
         results.len(),
         policy,
         illegal,
         stuck,
-        unique_winners as f64 / results.len().max(1) as f64,
         winner_mean,
-        winner_variance,
-        player_mean,
-        player_variance,
         game_mean,
-        game_variance,
-        time_mean_us,
-        time_variance_us
+        time_mean,
     );
 }
