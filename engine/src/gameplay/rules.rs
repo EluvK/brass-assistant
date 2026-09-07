@@ -14,7 +14,7 @@ pub use crate::gameplay::actions::{
     execute_sell_with_free_develop, get_valid_build_targets, get_valid_network_targets,
     iron_source_options, sell_identity, valid_build_cards, validate_sell_plan,
 };
-pub use crate::gameplay::legal_moves::{legal_moves, legal_resolved_moves};
+pub use crate::gameplay::legal_moves::{legal_moves, legal_resolved_moves, legal_sell_plans};
 pub use crate::r#move::{Move, ResolvedMove};
 pub fn apply_move(state: &mut GameState, mv: &ResolvedMove) -> Result<String, String> {
     // The public canonical-move boundary accepts decoded, potentially stale

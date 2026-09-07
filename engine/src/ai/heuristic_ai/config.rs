@@ -140,6 +140,11 @@ pub struct LookaheadParams {
     /// Up to four own actions when the player can chain across a round
     /// boundary (last in order while spending less than every predecessor).
     pub four_action_k: usize,
+    /// Only this many top standalone second actions are expanded through the
+    /// expensive cross-round continuation. Lower-ranked second actions are
+    /// ignored for the round plan; this bounds the four-link fan-out without
+    /// changing the normal two-action path.
+    pub four_link_second_keep: usize,
     /// Discount applied to the two actions obtained in the following round.
     pub four_action_alpha: f64,
 }
@@ -239,6 +244,7 @@ impl Default for HeuristicConfig {
                 first_action_k: 3,
                 second_action_k: 2,
                 four_action_k: 2,
+                four_link_second_keep: 2,
                 four_action_alpha: 0.35,
             },
             guardrails: Guardrails {

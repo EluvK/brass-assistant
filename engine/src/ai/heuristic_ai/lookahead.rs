@@ -57,11 +57,24 @@ fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDeci
         let mut best_second_decision = None;
         let value = if continues_same_turn(&after_first, pid) {
             let mut best_second = f64::NEG_INFINITY;
-            for c2 in candidate_actions_k(&mut after_first, cfg.lookahead.second_action_k) {
+            // Expanding every second action through the cross-round
+            // continuation would re-score the next round for each of them.
+            // The second action of the round is selected on its standalone
+            // score; only the top few candidates are worth paying for the
+            // four-link continuation, which is what this bounded sweep does.
+            let mut second_candidates =
+                candidate_actions_k(&mut after_first, cfg.lookahead.second_action_k);
+            second_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+            let mut evaluated = 0usize;
+            for c2 in second_candidates {
+                if evaluated >= cfg.lookahead.four_link_second_keep {
+                    break;
+                }
                 let mut after_second = after_first.clone();
                 if apply_move(&mut after_second, &c2.mv).is_err() {
                     continue;
                 }
+                evaluated += 1;
 
                 let spend_still_low = spend_lead(&after_second, pid);
                 let tr = advance_turn(&mut after_second);

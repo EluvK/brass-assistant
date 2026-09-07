@@ -138,18 +138,16 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
     }
 
     // SELL
-    let sell_plans = build_sell_plans(state, pid);
+    let sell_plans = legal_sell_plans(state, pid);
     if !sell_plans.is_empty() {
         for ci in &cards {
-            for plan in &sell_plans {
-                for free_develop in sell_free_develop_options(state, pid, &plan.0, &plan.1) {
-                    moves.push(ResolvedMove::Sell {
-                        keys: plan.0.clone(),
-                        beer_sources: plan.1.clone(),
-                        free_develop,
-                        card_index: *ci,
-                    });
-                }
+            for (keys, beer_sources, free_develop) in &sell_plans {
+                moves.push(ResolvedMove::Sell {
+                    keys: keys.clone(),
+                    beer_sources: beer_sources.clone(),
+                    free_develop: *free_develop,
+                    card_index: *ci,
+                });
             }
         }
     }
@@ -186,6 +184,28 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
     }
 
     moves
+}
+
+/// Enumerate every legal sell plan as `(tile keys, beer sources, optional
+/// free develop)`, independent of the card choice. Concrete card selection is
+/// left to callers, which lets heuristic scoring avoid re-enumerating every
+/// other action type just to find the sell options.
+pub fn legal_sell_plans(
+    state: &mut GameState,
+    pid: usize,
+) -> Vec<(
+    Vec<usize>,
+    Vec<crate::graph::BeerSource>,
+    Option<IndustryType>,
+)> {
+    state.ensure_network_masks();
+    let mut out = Vec::new();
+    for (keys, sources) in build_sell_plans(state, pid) {
+        for free_develop in sell_free_develop_options(state, pid, &keys, &sources) {
+            out.push((keys.clone(), sources.clone(), free_develop));
+        }
+    }
+    out
 }
 
 /// Enumerate structural actions once, with their legal card choices attached.
@@ -385,7 +405,7 @@ fn structural_from_resolved(mv: &ResolvedMove) -> (String, Move, Vec<usize>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{legal_moves, legal_resolved_moves};
+    use super::{legal_moves, legal_resolved_moves, legal_sell_plans};
     use crate::rules::apply_move;
     use crate::state::GameState;
     use rand_chacha::ChaCha12Rng;
@@ -416,6 +436,33 @@ mod tests {
             let mut sim = state.clone();
             assert!(apply_move(&mut sim, &resolved).is_ok());
         }
+    }
+
+    #[test]
+    fn sell_plan_helper_matches_resolved_sell_moves() {
+        use crate::gameplay::actions::{SellIdentity, sell_identity};
+        use crate::rules::ResolvedMove;
+        use std::collections::HashSet;
+
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(8), 4);
+        let pid = state.current_player_id();
+        let helper: HashSet<SellIdentity> = legal_sell_plans(&mut state, pid)
+            .into_iter()
+            .map(|(keys, sources, free_develop)| sell_identity(&keys, &sources, free_develop))
+            .collect();
+        let resolved: HashSet<SellIdentity> = legal_resolved_moves(&mut state)
+            .into_iter()
+            .filter_map(|mv| match mv {
+                ResolvedMove::Sell {
+                    keys,
+                    beer_sources,
+                    free_develop,
+                    ..
+                } => Some(sell_identity(&keys, &beer_sources, free_develop)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(helper, resolved);
     }
 }
 

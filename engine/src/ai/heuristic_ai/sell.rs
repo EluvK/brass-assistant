@@ -1,7 +1,7 @@
 //! Sell scoring consumes the validated canonical sell candidates.
 use super::{CardChoices, Decision};
 use crate::heuristic_ai::context::define_era_round_factor;
-use crate::rules::{ResolvedMove, legal_resolved_moves};
+use crate::rules::ResolvedMove;
 use crate::state::GameState;
 
 /// Fraction of a flipped industry's printed income credited when ranking
@@ -24,33 +24,24 @@ define_era_round_factor!(
     rail: (0.2, 0.2),
 );
 
-pub(super) fn score_sell_plans(state: &GameState, cards: &CardChoices) -> Vec<Decision> {
-    let Some(card_index) = cards.first().map(|x| x.0) else {
+pub(super) fn score_sell_plans(state: &mut GameState, cards: &CardChoices) -> Vec<Decision> {
+    let Some((card_index, card_score)) = cards.first().copied() else {
         return Vec::new();
     };
-    let mut work = state.clone();
-    let mut out: Vec<_> = legal_resolved_moves(&mut work)
+    let pid = state.current_player_id();
+    let mut out: Vec<_> = crate::rules::legal_sell_plans(state, pid)
         .into_iter()
-        .filter_map(|mv| {
-            let ResolvedMove::Sell {
-                keys,
-                beer_sources,
-                free_develop,
-                ..
-            } = &mv
-            else {
-                return None;
-            };
+        .map(|(keys, beer_sources, free_develop)| {
             let mut score_vp = 0.0;
             let mut score_income = 0.0;
             let mut other_bonus = 0.0;
-            for &key in keys {
+            for &key in &keys {
                 if let Some(tile) = state.city_tiles[key].as_ref() {
                     score_vp += tile.def.vp as f64;
                     score_income += tile.def.income as f64 * TILE_INCOME_SHARE;
                 }
             }
-            for source in beer_sources {
+            for source in &beer_sources {
                 if source.kind == crate::graph::BeerSourceKind::Merchant {
                     if let Some(i) = source.merchant_idx {
                         match crate::map::merchant_bonus_at(state.merchants[i].loc) {
@@ -67,16 +58,16 @@ pub(super) fn score_sell_plans(state: &GameState, cards: &CardChoices) -> Vec<De
             let score = score_vp * SellVpFactor::factor(state)
                 + score_income * SellIncomeFactor::factor(state)
                 + other_bonus;
-            Some(Decision {
+            Decision {
                 mv: ResolvedMove::Sell {
-                    keys: keys.clone(),
-                    beer_sources: beer_sources.clone(),
-                    free_develop: *free_develop,
+                    keys,
+                    beer_sources,
+                    free_develop,
                     card_index,
                 },
                 score,
-                card_score: cards.first().map(|x| x.1).unwrap_or(f64::INFINITY),
-            })
+                card_score,
+            }
         })
         .collect();
     out.sort_by(|a, b| b.score.total_cmp(&a.score));
