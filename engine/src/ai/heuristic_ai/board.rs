@@ -157,9 +157,34 @@ const BREWERY_SLOTS: [IndustrySlot; 11] = [
     IndustrySlot { loc: Loc::BrewerySouth, slot_index: 0 },
 ];
 
-/// Static slots relevant to Iron/Brewery hand capacity.
+/// Static slots of the resource industries the board model tracks.
+///
+/// Iron/Brewery are used for hand capacity (`cards.rs`) and for the static
+/// map queries shared by scorers. Coal is tracked here as well because the
+/// first-round opening policy classifies routes/hands by coal cities too; it
+/// is not a hand-capacity constraint, so card scorers never consume it.
+#[rustfmt::skip]
+const COAL_SLOTS: [IndustrySlot; 15] = [
+    IndustrySlot { loc: Loc::Belper, slot_index: 1 },
+    IndustrySlot { loc: Loc::Leek, slot_index: 1 },
+    IndustrySlot { loc: Loc::Stone, slot_index: 1 },
+    IndustrySlot { loc: Loc::BurtonOnTrent, slot_index: 0 },
+    IndustrySlot { loc: Loc::Cannock, slot_index: 0 },
+    IndustrySlot { loc: Loc::Cannock, slot_index: 1 },
+    IndustrySlot { loc: Loc::Tamworth, slot_index: 0 },
+    IndustrySlot { loc: Loc::Tamworth, slot_index: 1 },
+    IndustrySlot { loc: Loc::Wolverhampton, slot_index: 1 },
+    IndustrySlot { loc: Loc::Coalbrookdale, slot_index: 2 },
+    IndustrySlot { loc: Loc::Dudley, slot_index: 0 },
+    IndustrySlot { loc: Loc::Kidderminster, slot_index: 0 },
+    IndustrySlot { loc: Loc::Coventry, slot_index: 1 },
+    IndustrySlot { loc: Loc::Nuneaton, slot_index: 1 },
+    IndustrySlot { loc: Loc::Redditch, slot_index: 0 },
+];
+
 pub fn industry_slots(ind: IndustryType) -> &'static [IndustrySlot] {
     match ind {
+        IndustryType::CoalMine => &COAL_SLOTS,
         IndustryType::IronWorks => &IRON_SLOTS,
         IndustryType::Brewery => &BREWERY_SLOTS,
         _ => &[],
@@ -254,6 +279,25 @@ pub fn player_owns_link_touching(state: &GameState, pid: usize, city_id: Loc) ->
             false
         }
     })
+}
+
+/// Does a static connection touch a city (not a brewery farm) that can host
+/// `ind`?  Used by the first-round network templates, which want to reach a
+/// coal/iron city without spending the opening link on a merchant route.
+pub fn connection_touches_city_for_industry(conn_id: usize, ind: IndustryType) -> bool {
+    let Some(conn) = connections().get(conn_id) else {
+        return false;
+    };
+    (conn.a.is_city() && city_supports_industry(conn.a, ind))
+        || (conn.b.is_city() && city_supports_industry(conn.b, ind))
+}
+
+/// Does a static connection touch a merchant location directly?
+pub fn connection_touches_merchant(conn_id: usize) -> bool {
+    let Some(conn) = connections().get(conn_id) else {
+        return false;
+    };
+    conn.a.is_merchant() || conn.b.is_merchant()
 }
 
 /// Fraction of the coal/iron needed by a build that can come from free board
@@ -396,6 +440,7 @@ mod tests {
     fn industry_slot_queries_cover_static_and_current_empty_capacity() {
         assert_eq!(industry_slots(IndustryType::IronWorks).len(), 9);
         assert_eq!(industry_slots(IndustryType::Brewery).len(), 11);
+        assert_eq!(industry_slots(IndustryType::CoalMine).len(), 15);
         assert!(city_supports_industry(
             Loc::Birmingham,
             IndustryType::IronWorks
@@ -424,6 +469,51 @@ mod tests {
             },
         );
         assert_eq!(empty_industry_slot_count(&state, IndustryType::Brewery), 10);
+    }
+
+    #[test]
+    fn coal_slot_table_tracks_static_map_slots() {
+        let mut from_map: Vec<IndustrySlot> = Vec::new();
+        for loc in crate::map::ALL_LOCATIONS
+            .iter()
+            .take(crate::map::CITY_COUNT)
+        {
+            for (slot_index, allowed) in crate::map::city_slots(*loc).iter().enumerate() {
+                if allowed.contains(&IndustryType::CoalMine) {
+                    from_map.push(IndustrySlot {
+                        loc: *loc,
+                        slot_index,
+                    });
+                }
+            }
+        }
+        let mut table: Vec<IndustrySlot> = COAL_SLOTS.to_vec();
+        from_map.sort_by_key(|slot| (slot.loc as usize, slot.slot_index));
+        table.sort_by_key(|slot| (slot.loc as usize, slot.slot_index));
+        assert_eq!(table, from_map);
+    }
+
+    #[test]
+    fn connection_classifiers_cover_resource_and_merchant_routes() {
+        let resource = connections()
+            .iter()
+            .filter(|c| c.a.is_city() || c.b.is_city())
+            .any(|c| {
+                connection_touches_city_for_industry(c.id, IndustryType::CoalMine)
+                    && connection_touches_city_for_industry(c.id, IndustryType::IronWorks)
+            });
+        // Cannock-Walsall connects the coal city Cannock to the iron city
+        // Walsall in one opening link.
+        assert!(resource);
+
+        let merchant = connections()
+            .iter()
+            .any(|c| connection_touches_merchant(c.id) && c.id == 20);
+        assert!(merchant, "Coalbrookdale-Shrewsbury is a merchant route");
+        let non_merchant = connections()
+            .iter()
+            .any(|c| !connection_touches_merchant(c.id) && c.id == 17);
+        assert!(non_merchant, "Cannock-Walsall is not a merchant route");
     }
 
     #[test]

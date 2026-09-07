@@ -2,7 +2,7 @@
 
 use crate::data::{Era, IndustryType};
 use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots};
-use crate::state::{Card, GameState};
+use crate::state::GameState;
 
 use super::board::owned_beer_barrels;
 
@@ -99,27 +99,11 @@ fn vacant_board_slots(state: &GameState) -> [usize; 6] {
 }
 
 fn hand_support(state: &GameState, pid: usize, ind: IndustryType) -> usize {
-    let mut support = 0usize;
-    for card in &state.players[pid].hand {
-        match card {
-            Card::Location(loc) if !loc.is_farm() => {
-                for (slot_idx, allowed) in city_slots(*loc).iter().enumerate() {
-                    if !allowed.contains(&ind) {
-                        continue;
-                    }
-                    if state
-                        .city_slot_key(*loc, slot_idx)
-                        .is_some_and(|key| state.city_tiles[key].is_none())
-                    {
-                        support += 1;
-                        break;
-                    }
-                }
-            }
-            Card::Industry { .. } if card.is_industry(ind) => support += 1,
-            Card::WildIndustry => support += 1,
-            _ => {}
-        }
+    let hand = super::cards::analyze_hand(state, pid);
+    let idx = ind as usize;
+    let mut support = hand.industry[idx] + hand.location[idx];
+    if hand.wild_industry {
+        support += 1;
     }
     support.min(3)
 }

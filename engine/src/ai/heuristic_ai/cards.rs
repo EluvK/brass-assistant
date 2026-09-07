@@ -9,6 +9,76 @@ use crate::state::{Card, GameState};
 
 pub type CardChoices = Vec<(usize, f64)>;
 
+/// Hand facts the first-round opening policy reads, split by the card kind
+/// that grants each industry's support.
+///
+/// A `Card::Location` only supports an industry while its city still has an
+/// empty slot that allows that industry.  Each location card is counted at
+/// most once per industry even when the city has several empty slots for it;
+/// a dual industry card is counted once per industry it names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HandIndustrySupport {
+    /// `Card::Industry` cards (including dual cards) naming each industry.
+    pub industry: [usize; 6],
+    /// `Card::Location` cards whose city has an empty slot for each industry.
+    pub location: [usize; 6],
+    /// Whether the player holds a wild industry card.
+    pub wild_industry: bool,
+    /// Whether the player holds a wild location card.
+    pub wild_location: bool,
+}
+
+impl HandIndustrySupport {
+    /// Total cards that can unlock a build of `ind`.  Wild industry always
+    /// counts; wild location only counts while an empty buildable slot for
+    /// `ind` still exists somewhere on the board (a wild location cannot be
+    /// played on a brewery farm).
+    pub fn support_total(&self, state: &GameState, ind: IndustryType) -> usize {
+        let idx = ind as usize;
+        let mut total = self.industry[idx] + self.location[idx];
+        if self.wild_industry {
+            total += 1;
+        }
+        if self.wild_location && empty_industry_slot_count(state, ind) > 0 {
+            total += 1;
+        }
+        total
+    }
+}
+
+/// Read-only analysis of one player's hand for the opening templates.
+pub(crate) fn analyze_hand(state: &GameState, pid: usize) -> HandIndustrySupport {
+    let mut out = HandIndustrySupport::default();
+    for card in &state.players[pid].hand {
+        match card {
+            Card::Industry { industries, n } => {
+                for ind in industries[..*n as usize].iter().copied() {
+                    out.industry[ind as usize] += 1;
+                }
+            }
+            Card::Location(loc) => {
+                let mut touched = [false; 6];
+                for (slot_index, allowed) in city_slots(*loc).iter().enumerate() {
+                    if state.tile_at(*loc, slot_index).is_some() {
+                        continue;
+                    }
+                    for ind in allowed.iter().copied() {
+                        touched[ind as usize] = true;
+                    }
+                }
+                for (idx, supported) in touched.into_iter().enumerate() {
+                    if supported {
+                        out.location[idx] += 1;
+                    }
+                }
+            }
+            Card::WildIndustry => out.wild_industry = true,
+            Card::WildLocation => out.wild_location = true,
+        }
+    }
+    out
+}
+
 // Keep-scores are an independent policy head.  These values intentionally
 // live next to the model instead of in the general action configuration:
 // card utility does not depend on the operation being scored.
@@ -279,5 +349,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![4, 1, 3]
         );
+    }
+
+    #[test]
+    fn hand_analysis_counts_each_location_card_once_per_industry() {
+        let mut game = state(Era::Canal, Vec::new());
+        // Tamworth has two coal slots: the card must still count as one
+        // coal support, and as no iron support.
+        game.players[0].hand = vec![
+            Card::Location(Loc::Tamworth),
+            Card::Industry {
+                industries: [IndustryType::CottonMill, IndustryType::Manufacturer],
+                n: 2,
+            },
+            Card::WildIndustry,
+            Card::WildLocation,
+        ];
+        let analyzed = analyze_hand(&game, 0);
+        assert_eq!(analyzed.location[IndustryType::CoalMine as usize], 1);
+        assert_eq!(analyzed.location[IndustryType::IronWorks as usize], 0);
+        assert_eq!(analyzed.industry[IndustryType::CottonMill as usize], 1);
+        assert_eq!(analyzed.industry[IndustryType::Manufacturer as usize], 1);
+        assert_eq!(analyzed.industry[IndustryType::IronWorks as usize], 0);
+        assert!(analyzed.wild_industry && analyzed.wild_location);
+
+        let coal_total = analyzed.support_total(&game, IndustryType::CoalMine);
+        assert_eq!(coal_total, 3);
+        let iron_total = analyzed.support_total(&game, IndustryType::IronWorks);
+        // No concrete iron cards, but both wilds can unlock an iron build
+        // while empty iron slots remain on the board.
+        assert_eq!(iron_total, 2);
     }
 }
