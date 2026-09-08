@@ -48,7 +48,7 @@ fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDeci
 
     let ctx = super::context::EvalContext::new(state, pid, cfg);
     let first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
-    let mut best: Option<(ResolvedMove, Option<Decision>, f64)> = None;
+    let mut best: Option<(ResolvedMove, Option<Decision>, f64, f64)> = None;
 
     for c1 in first_candidates {
         let mut after_first = state.clone();
@@ -102,15 +102,15 @@ fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDeci
             c1.score
         };
 
-        if best.as_ref().is_none_or(|(_, _, score)| value > *score) {
-            best = Some((c1.mv, best_second_decision, value));
+        if best.as_ref().is_none_or(|(_, _, score, _)| value > *score) {
+            best = Some((c1.mv, best_second_decision, value, c1.score));
         }
     }
 
-    best.map(|(mv, second, score)| RoundDecision {
+    best.map(|(mv, second, _value, first_score)| RoundDecision {
         card_score: super::move_card_score(state, &mv),
         mv,
-        score,
+        score: first_score,
         second,
     })
     .unwrap_or_else(|| round_from_first(pass_decision(state)))
@@ -122,7 +122,7 @@ fn choose_lookahead(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDecisi
     let ctx = super::context::EvalContext::new(state, pid, &cfg);
     let first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
 
-    let mut best: Option<(ResolvedMove, Option<Decision>, f64)> = None;
+    let mut best: Option<(ResolvedMove, Option<Decision>, f64, f64)> = None;
     for c1 in first_candidates {
         let mut s1 = state.clone();
         if apply_move(&mut s1, &c1.mv).is_err() {
@@ -156,16 +156,16 @@ fn choose_lookahead(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDecisi
             c1.score
         };
 
-        if best.as_ref().is_none_or(|(_, _, score)| value > *score) {
-            best = Some((c1.mv, best_second_decision, value));
+        if best.as_ref().is_none_or(|(_, _, score, _)| value > *score) {
+            best = Some((c1.mv, best_second_decision, value, c1.score));
         }
     }
 
-    best.map(|(mv, second, score)| {
+    best.map(|(mv, second, _value, first_score)| {
         let card_score = super::move_card_score(state, &mv);
         RoundDecision {
             mv,
-            score,
+            score: first_score,
             card_score,
             second,
         }

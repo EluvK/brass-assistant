@@ -14,6 +14,8 @@
 
 启发式 evidence 记录其 shortlist 分数和所有卡牌保留分；完整合法表中不在 shortlist 的动作会明确标为“未被此策略评分”。随机策略不做评分，其完整合法表同样逐行列出并标注“未被此策略评分”。
 
+双动计划的第二动沿用计划中选定的动作及其单动评分，同时根据第二动执行前的局面生成诊断 shortlist，供页面比较其他选择；诊断评分不会重新选择第二动。即使计划动作不在诊断 shortlist 中，也会保留其评分。
+
 `python:<worker-config>` 通过 `PythonWorkerStrategy` 实现：每个此类座位启动一个独立的 Python worker 子进程（`python -u -m brass_ai.replay_worker <worker-config>`，`PYTHONPATH` 指向仓库 `python/`；worker-config 按空白切分，含空格的参数可用单/双引号包裹），worker 持有一个网络 checkpoint 并通过 stdin/stdout 的逐行 JSON 协议应答：
 
 - 启动握手：worker 加载 checkpoint 后输出 `{"type":"ready","name":...,"meta":{ckpt, mode, sims, device, action/state feature schema 版本}}`；Rust 在会话创建时等待握手，坏 checkpoint 或解释器缺失会在 HTTP 服务启动前报错退出。

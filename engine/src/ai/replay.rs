@@ -96,7 +96,7 @@ pub trait StrategyAdapter: Send {
 pub struct NativeStrategy {
     spec: StrategySpec,
     random: ChaCha12Rng,
-    pending: Option<ResolvedMove>,
+    pending: Option<heuristic_ai::Decision>,
 }
 impl NativeStrategy {
     pub fn new(spec: StrategySpec, seed: u64) -> Self {
@@ -211,20 +211,35 @@ impl StrategyAdapter for NativeStrategy {
         }
         match self.spec.clone() {
             StrategySpec::Heuristic => {
-                if let Some(mv) = self.pending.take() {
+                let mut scored = heuristic_ai::candidate_actions_k(state, 30);
+                if let Some(second) = self.pending.take() {
+                    let mv = second.mv.clone();
+                    // Keep the planned action and its original score, including
+                    // when it falls outside the diagnostic shortlist.
+                    scored.push(second);
                     let trace = trace_for(
                         state,
                         legal,
                         mv.clone(),
                         self.name(),
                         "heuristic-follow-up",
-                        Vec::new(),
+                        scored,
                     );
                     return Ok((mv, trace));
                 }
-                let scored = heuristic_ai::candidate_actions_k(state, 30);
                 let decision = heuristic_ai::choose_action(state);
-                self.pending = decision.second.map(|d| d.mv);
+                self.pending = decision.second;
+                // The lookahead shortlist is only a diagnostic subset.  The
+                // selected first action may be outside that subset (and its
+                // score is the blended two-ply value), so always retain the
+                // actual decision in the trace.  Otherwise the replay UI
+                // shows the first action as unscored and the follow-up step
+                // appears to have lost the plan's scores.
+                scored.push(heuristic_ai::Decision {
+                    mv: decision.mv.clone(),
+                    score: decision.score,
+                    card_score: decision.card_score,
+                });
                 let trace = trace_for(
                     state,
                     legal,
@@ -744,10 +759,27 @@ mod tests {
             if !s.step().unwrap() {
                 break;
             }
-            if s.steps
+            if let Some(step) = s.steps
                 .iter()
-                .any(|step| step.trace.evidence_kind == "heuristic-follow-up")
+                .find(|step| step.trace.evidence_kind == "heuristic-follow-up")
             {
+                let mut before = GameState::from_snapshot_bytes(&s.snapshots[step.index]).unwrap();
+                let expected = heuristic_ai::candidate_actions_k(&mut before, 30);
+                assert!(expected.len() > 1);
+                for decision in expected {
+                    let key = heuristic_ai::operation_key(&decision.mv);
+                    let row = step.legal_actions.iter().find(|row| {
+                        heuristic_ai::operation_key(&move_codec::decode(&row.canonical).unwrap())
+                            == key
+                    }).unwrap();
+                    assert!(row.evaluated);
+                    assert_eq!(row.score, Some(decision.score));
+                    assert_eq!(row.card_score, Some(decision.card_score));
+                    assert!(row.note.is_none());
+                }
+                let selected = step.legal_actions.iter().find(|row| row.selected).unwrap();
+                assert!(selected.evaluated);
+                assert!(selected.score.is_some());
                 return;
             }
         }
