@@ -221,15 +221,6 @@ fn score_sellable_build(
         + tile.income as f64 * flip_prob * BuildIncomeWeight::factor(state)
         + sellable_economy(state, pid, cand, tile.beers_to_sell);
 
-    // In Rail-Late, a sellable with beer available is a preferred finisher.
-    if !state.is_canal_era()
-        && state.round > 4
-        && cand.ind.is_sellable()
-        && beer_available_for_sellable(state, pid, cand)
-    {
-        score += RAIL_LATE_BEER_BONUS;
-    }
-
     score
 }
 

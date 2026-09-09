@@ -110,6 +110,69 @@ fn heuristic_round_plan_returns_and_executes_a_second_action() {
     handle_turn_result(&mut state, tr);
 }
 
+/// Manual breakpoint harness for inspecting the heuristic score calculation
+/// at a deterministic mid-game position. Run with:
+///
+///     cargo test --profile fast-release debug_heuristic_score_after_seeded_prefix -- --ignored --nocapture
+///
+/// The first `PREFIX_STEPS` decisions advance one seeded game. The final
+/// `choose_action` call is deliberately kept separate so a debugger can stop
+/// there and inspect the per-action scoring details without replaying setup by
+/// hand. Increase/decrease `PREFIX_STEPS` when a different position is useful.
+#[test]
+#[ignore = "manual score-debug breakpoint harness"]
+fn debug_heuristic_score_after_seeded_prefix() {
+    const SEED: u64 = 21;
+    const PLAYERS: usize = 4;
+    const PREFIX_STEPS: usize = 5;
+
+    let mut state = GameState::new(ChaCha12Rng::seed_from_u64(SEED), PLAYERS);
+
+    for step_index in 0..PREFIX_STEPS {
+        assert!(
+            !state.game_over,
+            "game ended during debug prefix at step {step_index}"
+        );
+        let decision = _engine::heuristic_ai::choose_action(&mut state);
+        apply_move(&mut state, &decision.mv).expect("seeded prefix decision must apply");
+        let turn_result = advance_turn(&mut state);
+        handle_turn_result(&mut state, turn_result);
+    }
+
+    eprintln!(
+        "debug checkpoint: seed={SEED}, prefix_steps={PREFIX_STEPS}, era={:?}, round={}, player={}, actions_left={}",
+        state.era,
+        state.round,
+        state.current_player_id(),
+        state.current_player_actions_left(),
+    );
+
+    // This is the intentional breakpoint: candidate_actions_k enters the
+    // action-specific scorers, while choose_action additionally exercises the
+    // normal lookahead path used by the live policy.
+    let mut candidate_state = state.clone();
+    let candidates = _engine::heuristic_ai::candidate_actions_k(&mut candidate_state, 30);
+    eprintln!(
+        "scored candidate count before next step: {}",
+        candidates.len()
+    );
+    for (index, candidate) in candidates.iter().take(5).enumerate() {
+        eprintln!(
+            "candidate[{index}] score={} card_score={} move={:?}",
+            candidate.score, candidate.card_score, candidate.mv
+        );
+    }
+
+    let next = _engine::heuristic_ai::choose_action(&mut state);
+    eprintln!(
+        "next decision: score={} card_score={} move={:?}",
+        next.score, next.card_score, next.mv
+    );
+    assert!(next.score.is_finite());
+    assert!(next.card_score.is_finite());
+    assert!(apply_move(&mut state, &next.mv).is_ok());
+}
+
 #[test]
 fn play_rounds_executes_heuristic_plans_without_illegal_moves() {
     let mut state = setup(4);
