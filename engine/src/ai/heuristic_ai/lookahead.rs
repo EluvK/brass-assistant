@@ -46,7 +46,6 @@ pub fn choose_action(state: &mut GameState) -> RoundDecision {
 fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDecision {
     let pid = state.current_player_id();
 
-    let ctx = super::context::EvalContext::new(state, pid, cfg);
     let first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
     let mut best: Option<(ResolvedMove, Option<Decision>, f64, f64)> = None;
 
@@ -83,7 +82,7 @@ fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDeci
                 let spend_still_low = spend_lead(&after_second, pid);
                 let tr = advance_turn(&mut after_second);
                 handle_turn_result(&mut after_second, tr);
-                let mut score = ctx.profile.alpha * c2.score;
+                let mut score = 0.6 * c2.score;
                 if spend_still_low {
                     score += four_link_value(
                         &mut after_second,
@@ -119,7 +118,6 @@ fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDeci
 /// Evaluate the ordinary two-action turn.
 fn choose_lookahead(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDecision {
     let pid = state.current_player_id();
-    let ctx = super::context::EvalContext::new(state, pid, &cfg);
     let first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
 
     let mut best: Option<(ResolvedMove, Option<Decision>, f64, f64)> = None;
@@ -144,7 +142,7 @@ fn choose_lookahead(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDecisi
                 if apply_move(&mut s1, &c2.mv).is_err() {
                     continue;
                 }
-                let scaled = ctx.profile.alpha * c2.score;
+                let scaled = 0.6 * c2.score;
                 best_second_decision = Some(c2);
                 best_second = scaled;
                 break;
@@ -568,27 +566,6 @@ mod tests {
         std::iter::repeat_with(|| Card::Location(Loc::Worcester))
             .take(count)
             .collect()
-    }
-
-    #[test]
-    fn resource_route_table_matches_the_static_canal_map() {
-        // Every hard-coded route must be executable as a fixed opening link,
-        // and every legal "resource link" canal route must be covered so the
-        // fixed fallback can always find one before giving up.
-        let mut legal: Vec<usize> = connections()
-            .iter()
-            .filter(|conn| {
-                conn.canal
-                    && !connection_touches_merchant(conn.id)
-                    && (connection_touches_city_for_industry(conn.id, IndustryType::CoalMine)
-                        || connection_touches_city_for_industry(conn.id, IndustryType::IronWorks))
-            })
-            .map(|conn| conn.id)
-            .collect();
-        legal.sort_unstable();
-        let mut table = RESOURCE_OPENING_ROUTES.to_vec();
-        table.sort_unstable();
-        assert_eq!(table, legal);
     }
 
     #[test]

@@ -413,7 +413,7 @@ fn build_targets_should_not_include_slot_that_allow_multi_icon_builds_when_singl
     let pid = state.current_player_id();
     state.players[pid].money = 100;
     state.players[pid].hand = vec![Card::Location(Loc::StokeOnTrent)];
-    state.players[pid].consume_tile(IndustryType::Manufacturer); // remove level one.
+    state.players[pid].develop_tile(IndustryType::Manufacturer, Era::Canal); // remove level one.
 
     let targets = get_valid_build_targets(&state, pid);
 
@@ -518,7 +518,7 @@ fn build_targets_should_include_rebuild_other_iron_if_market_run_out() {
     );
 
     state.iron_market = 0;
-    state.players[pid].consume_tile(IndustryType::IronWorks); // remove level one.
+    state.players[pid].develop_tile(IndustryType::IronWorks, Era::Canal); // remove level one.
 
     let targets = get_valid_build_targets(&state, pid);
     assert!(targets.iter().any(|target| {

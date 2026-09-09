@@ -45,11 +45,7 @@ fn evaluate_loan(state: &GameState, cash: f64, income_level: f64) -> LoanEvaluat
 /// A loan occupies one action, so its base cost is offset only by the
 /// normalised economic benefit of £30: lower cash/income and more numbered
 /// rounds remaining make the option stronger.
-pub(super) fn score_loan_result(
-    state: &GameState,
-    _plan: &super::plan::Plan,
-    card_choices: &CardChoices,
-) -> Option<Decision> {
+pub(super) fn score_loan_result(state: &GameState, card_choices: &CardChoices) -> Option<Decision> {
     let pid = state.current_player_id();
     if !state.can_take_loan(pid) {
         return None;
@@ -139,13 +135,6 @@ mod tests {
         state.players[pid].income_space = income_highest_space_of_level(-8);
         let no_cards = CardChoices::new();
         assert!(!state.can_take_loan(pid));
-        assert!(
-            score_loan_result(
-                &state,
-                &super::super::plan::compute_plan(&state, pid),
-                &no_cards,
-            )
-            .is_none()
-        );
+        assert!(score_loan_result(&state, &no_cards,).is_none());
     }
 }

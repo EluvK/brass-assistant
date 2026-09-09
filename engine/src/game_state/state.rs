@@ -304,17 +304,6 @@ impl Player {
         }
         Some(t)
     }
-
-    /// Mark the next tile of `ind` as used (build or develop).
-    /// ready to be deprecated. use `built_tile` or `develop_tile` instead.
-    #[deprecated]
-    pub fn consume_tile(&mut self, ind: IndustryType) -> Option<TileDef> {
-        let stack = player_industry_stack(ind);
-        let idx = self.industry_next[ind as usize] as usize;
-        let t = stack.get(idx).copied()?;
-        self.industry_next[ind as usize] += 1;
-        Some(t)
-    }
 }
 
 // ---------------------------------------------------------------------------

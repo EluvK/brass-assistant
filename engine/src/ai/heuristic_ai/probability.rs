@@ -20,60 +20,11 @@ use super::board::{
     beer_available, merchant_reachable, owned_beer_barrels, sellable_beer_demand,
     unbuilt_neighbor_connections,
 };
-use super::context::EvalContext;
+
 use super::value::{market_scarcity, price_heat, simulate_market_sale};
 use crate::data::IndustryType;
 use crate::map::Loc;
 use crate::state::GameState;
-
-/// Probability that the next tile of `ind` built at `loc` eventually flips.
-///
-/// `loc` may be `None` for the abstract production plan, which judges
-/// industry-wide feasibility (any accepting merchant on the board) instead
-/// of site connectivity.
-pub fn flip_probability(
-    state: &GameState,
-    ctx: &EvalContext,
-    ind: IndustryType,
-    loc: Option<Loc>,
-) -> f64 {
-    let cfg = &ctx.cfg.flip;
-    flip_probability_with(state, ctx.pid, ctx.is_canal(), cfg, ind, loc)
-}
-
-/// Context-free implementation shared by concrete Build scoring and the
-/// context-aware plan scorer. Keeping the policy parameters explicit avoids
-/// constructing an evaluation context for every build candidate.
-fn flip_probability_with(
-    state: &GameState,
-    pid: usize,
-    is_canal: bool,
-    cfg: &super::config::FlipWeights,
-    ind: IndustryType,
-    loc: Option<Loc>,
-) -> f64 {
-    let base = if matches!(ind, IndustryType::CoalMine | IndustryType::IronWorks) {
-        let cubes = state
-            .players
-            .get(pid)
-            .and_then(|p| p.next_tile(ind))
-            .map(|t| t.resource_cubes)
-            .unwrap_or(1);
-        resource_flip(state, is_canal, cfg, ind, cubes, loc)
-    } else if ind == IndustryType::Brewery {
-        let next_cubes = state
-            .players
-            .get(pid)
-            .and_then(|p| p.next_tile(ind))
-            .map(|t| t.resource_cubes as usize)
-            .unwrap_or(1);
-        brewery_flip(state, pid, is_canal, cfg, next_cubes)
-    } else {
-        let hand_len = state.players[pid].hand.len();
-        sellable_flip(state, pid, cfg, ind, loc, hand_len)
-    };
-    base.clamp(cfg.floor, cfg.cap.max(cfg.floor))
-}
 
 /// Resource flip model. See module docs for the regimes.
 fn resource_flip(
@@ -88,8 +39,6 @@ fn resource_flip(
     let scarcity = market_scarcity(state, is_coal);
     let can_sell = match loc {
         Some(loc) => ind == IndustryType::IronWorks || merchant_reachable(state, loc, ind),
-        // Plan-level view: an iron works always sells; coal needs *some*
-        // accepting merchant on the board.
         None => ind == IndustryType::IronWorks || state.merchants.iter().any(|mt| mt.accepts(ind)),
     };
 
@@ -172,7 +121,6 @@ fn sellable_flip(
     hand_len: usize,
 ) -> f64 {
     let Some(loc) = loc else {
-        // Plan-level view: judge board-wide feasibility only.
         if !state.merchants.iter().any(|mt| mt.accepts(ind)) {
             return cfg.plan_no_merchant;
         }
@@ -215,16 +163,55 @@ fn sellable_flip(
     b
 }
 
-/// Probability that a build at `loc` flips, for the concrete-build path.
-pub fn build_flip_probability(state: &GameState, pid: usize, ind: IndustryType, loc: Loc) -> f64 {
-    // Build scoring supplies only the state and player. The default flip
-    // policy is shared with the plan-level model, but no evaluation context is
-    // constructed on this hot path.
+/// Flip probability for a concrete resource build.
+pub fn resource_build_flip_probability(
+    state: &GameState,
+    pid: usize,
+    ind: IndustryType,
+    loc: Loc,
+) -> f64 {
     let cfg = super::config::HeuristicConfig::default();
-    flip_probability_with(state, pid, state.is_canal_era(), &cfg.flip, ind, Some(loc))
+    let cubes = state.players[pid]
+        .next_tile(ind)
+        .map(|tile| tile.resource_cubes)
+        .unwrap_or(1);
+    resource_flip(
+        state,
+        state.is_canal_era(),
+        &cfg.flip,
+        ind,
+        cubes,
+        Some(loc),
+    )
+    .clamp(cfg.flip.floor, cfg.flip.cap.max(cfg.flip.floor))
 }
 
-/// Probability that the plan industry flips at all (plan-level view).
-pub fn plan_flip_probability(state: &GameState, ctx: &EvalContext, ind: IndustryType) -> f64 {
-    flip_probability(state, ctx, ind, None)
+/// Flip probability for a concrete brewery build.
+pub fn brewery_build_flip_probability(state: &GameState, pid: usize) -> f64 {
+    let cfg = super::config::HeuristicConfig::default();
+    let cubes = state.players[pid]
+        .next_tile(IndustryType::Brewery)
+        .map(|tile| tile.resource_cubes as usize)
+        .unwrap_or(1);
+    brewery_flip(state, pid, state.is_canal_era(), &cfg.flip, cubes)
+        .clamp(cfg.flip.floor, cfg.flip.cap.max(cfg.flip.floor))
+}
+
+/// Flip probability for a concrete sellable build.
+pub fn sellable_build_flip_probability(
+    state: &GameState,
+    pid: usize,
+    ind: IndustryType,
+    loc: Loc,
+) -> f64 {
+    let cfg = super::config::HeuristicConfig::default();
+    sellable_flip(
+        state,
+        pid,
+        &cfg.flip,
+        ind,
+        Some(loc),
+        state.players[pid].hand.len(),
+    )
+    .clamp(cfg.flip.floor, cfg.flip.cap.max(cfg.flip.floor))
 }

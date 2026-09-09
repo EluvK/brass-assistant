@@ -2,7 +2,6 @@
 
 use super::board::{connection_initial_vp, hand_access_gain, touches_merchant};
 use super::context::{define_era_round_factor, define_round_factor};
-use super::plan::Plan;
 use super::value::link_current_and_potential_vps;
 use super::{CardChoices, Decision};
 use crate::map::{CANAL_LINK_COST, connections};
@@ -17,7 +16,6 @@ const INDUSTRY_CARD_ACCESS_SCORE: f64 = 0.08;
 const MERCHANT_CONNECTION_BONUS: f64 = 1.5;
 const EXPLORATION_BASE: f64 = 1.6;
 const EXPLORATION_PER_REMAINING_LINK: f64 = 0.3;
-const PLAN_CAPACITY_BONUS: f64 = 0.5;
 const DOUBLE_FARM_LOCK_BONUS: f64 = 0.8;
 const CASH_VALUE_BASE: f64 = 0.12;
 const EARLY_PHASE_CASH_MULTIPLIER: f64 = 0.8;
@@ -93,13 +91,7 @@ fn connection_touches_farm(conn_id: usize) -> bool {
 /// actual resource cost, and positional bonuses. It intentionally has no
 /// shared evaluation context: every weight needed to compare network actions
 /// is defined above and its time-dependent part reads from `state`.
-fn score_network_candidate(
-    state: &GameState,
-    pid: usize,
-    conn_id: usize,
-    cost: i32,
-    plan: &Plan,
-) -> f64 {
+fn score_network_candidate(state: &GameState, pid: usize, conn_id: usize, cost: i32) -> f64 {
     let is_canal = state.is_canal_era();
     let connection = &connections()[conn_id];
     let cities = [connection.a, connection.b];
@@ -123,32 +115,6 @@ fn score_network_candidate(
     let exploration =
         (EXPLORATION_BASE - EXPLORATION_PER_REMAINING_LINK * links_left as f64).max(0.0);
 
-    // Plan ("流派") bonus: a link touching a city with a vacant slot for the
-    // plan industry opens production capacity. Only from Canal-Late onward
-    // (Canal-Early builds the economy engine first). A tiebreaker.
-    let mut plan_bonus = 0.0;
-    if plan.count > 0
-        && (!is_canal || state.round > 4)
-        && state.players[pid].remaining_count(plan.industry) > 0
-    {
-        'outer: for loc in &cities {
-            if !loc.is_city() {
-                continue;
-            }
-            for (slot_idx, allowed) in crate::map::city_slots(*loc).iter().enumerate() {
-                if !allowed.contains(&plan.industry) {
-                    continue;
-                }
-                if let Some(k) = state.city_slot_key(*loc, slot_idx)
-                    && state.city_tiles[k].is_none()
-                {
-                    plan_bonus = PLAN_CAPACITY_BONUS;
-                    break 'outer;
-                }
-            }
-        }
-    }
-
     // Rail beer-farm lock: links touching a brewery farm lock down beer
     // supply (double-rails and late-game sells depend on it).
     let beer_lock = if connection_touches_farm(conn_id) {
@@ -166,7 +132,6 @@ fn score_network_candidate(
     link_vp + hand_access - cost as f64 * LinkCostWeight::factor(state)
         + merchant_gain
         + exploration
-        + plan_bonus
         + beer_lock
 }
 
@@ -174,7 +139,6 @@ fn score_network_candidate(
 pub(crate) fn score_top_networks(
     state: &mut GameState,
     k: usize,
-    plan: &Plan,
     card_choices: &CardChoices,
 ) -> Vec<Decision> {
     if k == 0 || card_choices.is_empty() {
@@ -204,7 +168,7 @@ pub(crate) fn score_top_networks(
             // supply actions.
             cost += estimated_connection_coal_cost(state, conn_id);
         }
-        let score = score_network_candidate(state, pid, conn_id, cost, plan);
+        let score = score_network_candidate(state, pid, conn_id, cost);
         scored.push((conn_id, score));
     }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -252,7 +216,6 @@ pub(crate) fn score_top_networks(
 pub(crate) fn score_top_network_doubles(
     state: &mut GameState,
     k: usize,
-    plan: &Plan,
     card_choices: &CardChoices,
 ) -> Vec<Decision> {
     if k == 0 || card_choices.is_empty() || state.is_canal_era() {
@@ -270,8 +233,8 @@ pub(crate) fn score_top_network_doubles(
         // era-sensitive cash weight as each individual link.
         let cost1 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal1);
         let cost2 = crate::map::RAIL_LINK_COST + coal_effective_price(&candidate.coal2);
-        let s1 = score_network_candidate(state, pid, candidate.conn1, cost1, plan);
-        let s2 = score_network_candidate(state, pid, candidate.conn2, cost2, plan);
+        let s1 = score_network_candidate(state, pid, candidate.conn1, cost1);
+        let s2 = score_network_candidate(state, pid, candidate.conn2, cost2);
         let surcharge = (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST) as f64
             * LinkCostWeight::factor(state);
         let mut total = s1 + s2 - surcharge;

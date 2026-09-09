@@ -11,8 +11,6 @@
 //! currency are in [`ValueWeights`]; everything else scores one action type
 //! or sub-model.
 
-use super::plan::Phase;
-
 /// Conversion of raw quantities into the scoring currency (VP equivalents).
 #[derive(Debug, Clone, Copy)]
 pub struct ValueWeights {
@@ -34,45 +32,6 @@ pub struct ValueWeights {
     /// a recurring stream, so a position snapshot values it above one turn's
     /// worth (`income_value`).
     pub leaf_income_scale: f64,
-}
-
-/// Per-phase evaluation profile parameters. `EraProfile` values are derived
-/// from these instead of hard-coded formulas.
-#[derive(Debug, Clone, Copy)]
-pub struct PhaseParams {
-    /// `income_w = income_base * (income_add + income_frac * era_frac)`
-    /// where `era_frac` is the fraction of the era still ahead of us.
-    pub income_add: f64,
-    pub income_frac: f64,
-    /// `money_w = money_base * money_mult`.
-    pub money_mult: f64,
-    /// 2-ply lookahead blending factor for a second own action.
-    pub alpha: f64,
-    /// "Era endgame" cash-rescue rounds: era-end urgency triggers when
-    /// `rounds_remaining <= endgame_rounds`.
-    pub endgame_rounds: f64,
-}
-
-impl PhaseParams {
-    /// Profile that scales `income_base`/`money_base` by fixed factors.
-    const fn scaled(income_add: f64, income_frac: f64, money_mult: f64) -> Self {
-        Self {
-            income_add,
-            income_frac,
-            money_mult,
-            alpha: 0.0,
-            endgame_rounds: 0.0,
-        }
-    }
-}
-
-/// The four phase profiles.
-#[derive(Debug, Clone, Copy)]
-pub struct EraWeights {
-    pub canal_early: PhaseParams,
-    pub canal_late: PhaseParams,
-    pub rail_early: PhaseParams,
-    pub rail_late: PhaseParams,
 }
 
 /// Flip-probability model (`probability.rs`). Probabilities are clamped to
@@ -161,7 +120,6 @@ pub struct Guardrails {
 #[derive(Debug, Clone, Copy)]
 pub struct HeuristicConfig {
     pub value: ValueWeights,
-    pub era: EraWeights,
     pub flip: FlipWeights,
     pub lookahead: LookaheadParams,
     pub guardrails: Guardrails,
@@ -178,32 +136,6 @@ impl Default for HeuristicConfig {
                 own_overbuild_vp_loss: 1.0,
                 unflipped_vp_share: 0.25,
                 leaf_income_scale: 3.0,
-            },
-            era: EraWeights {
-                canal_early: PhaseParams {
-                    alpha: 0.6,
-                    endgame_rounds: 2.0,
-                    ..PhaseParams::scaled(1.8, 0.6, 0.55)
-                },
-                canal_late: PhaseParams {
-                    alpha: 0.6,
-                    endgame_rounds: 2.0,
-                    ..PhaseParams::scaled(1.8, 0.6, 0.55)
-                },
-                rail_early: PhaseParams {
-                    alpha: 0.6,
-                    endgame_rounds: 1.0,
-                    ..PhaseParams::scaled(1.2, 0.5, 0.8)
-                },
-                rail_late: PhaseParams {
-                    // Rail-late income is worthless (the era ends before the
-                    // extra income compounds), cash is king.
-                    income_add: 0.0,
-                    income_frac: 0.0,
-                    money_mult: 5.0 / 3.0,
-                    alpha: 0.35,
-                    endgame_rounds: 1.0,
-                },
             },
             flip: FlipWeights {
                 floor: 0.05,
@@ -250,18 +182,6 @@ impl Default for HeuristicConfig {
             guardrails: Guardrails {
                 ban_build_lv1_brewery: true,
             },
-        }
-    }
-}
-
-impl EraWeights {
-    /// Profile lookup by strategy phase.
-    pub fn params(&self, phase: Phase) -> PhaseParams {
-        match phase {
-            Phase::CanalEarly => self.canal_early,
-            Phase::CanalLate => self.canal_late,
-            Phase::RailEarly => self.rail_early,
-            Phase::RailLate => self.rail_late,
         }
     }
 }

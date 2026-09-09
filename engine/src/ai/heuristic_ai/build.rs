@@ -10,11 +10,13 @@ use super::board::{
     unbuilt_neighbor_connections,
 };
 use super::context::define_era_round_factor;
-use super::plan::Plan;
-use super::probability::build_flip_probability;
-use super::value::{market_scarcity, price_heat, simulate_market_sale};
+use super::probability::{
+    brewery_build_flip_probability, resource_build_flip_probability,
+    sellable_build_flip_probability,
+};
+use super::value::{market_scarcity, simulate_market_sale};
 use super::{Decision, SOURCE_VARIANTS};
-use crate::data::IndustryType;
+use crate::data::{IndustryType, TileDef};
 use crate::graph::count_beer_sources;
 use crate::rules::{BuildTarget, ResolvedMove, valid_build_cards};
 use crate::state::GameState;
@@ -28,19 +30,6 @@ const BAN_BUILD_LEVEL1_BREWERY: bool = true;
 const UNAFFORDABLE_PER_POUND: f64 = 0.3;
 const LINK_SELF_VALUE_SHARE: f64 = 0.5;
 const SELF_SUFFICIENCY_PER_CUBE: f64 = 0.15;
-const IRON_SCARCITY_SHARE: f64 = 0.6;
-const MARKET_CASH_BACK_SHARE: f64 = 0.4;
-const MARKET_SELLOUT_BONUS: f64 = 1.5;
-const COAL_SPIKE_PRICE_BASE: f64 = 5.0;
-const COAL_SPIKE_PRICE_SPAN: f64 = 3.0;
-const COAL_SPIKE_PER_SOLD: f64 = 1.9;
-const COAL_SPIKE_CANAL_MULTIPLIER: f64 = 1.25;
-const SCARCITY_VALUE_PER_UNIT: f64 = 0.6;
-const LEFTOVER_PER_CUBE: f64 = 0.5;
-const ISLAND_COAL_CANAL_PENALTY: f64 = -0.5;
-const ISLAND_COAL_RAIL_BASE: f64 = 1.2;
-const ISLAND_COAL_RAIL_PER_CUBE: f64 = 0.25;
-const ISLAND_IRON_VALUE: f64 = 1.2;
 const EXPANSION_PER_LINK: f64 = 0.1;
 const RAIL_COAL_SHORTAGE: f64 = 3.0;
 const RAIL_COAL_SHORTAGE_PER_LEVEL: f64 = 0.2;
@@ -56,7 +45,6 @@ const BREWERY_SELL_SUPPORT_BASE: f64 = 0.4;
 const RAIL_BREWERY_VALUE: f64 = 2.0;
 const FREE_RIDING_THRESHOLD: f64 = 0.5;
 const FREE_RIDING_BONUS: f64 = 0.8;
-const PLAN_BONUS: f64 = 0.5;
 const RAIL_LATE_BEER_BONUS: f64 = 1.2;
 
 // Shared conversion constants for converting cash/income to VP equivalents.
@@ -81,92 +69,18 @@ define_era_round_factor!(
 
 fn market_value(state: &GameState, cand: &BuildTarget, cubes: u8) -> f64 {
     let is_coal = cand.ind == IndustryType::CoalMine;
-    let scarcity =
-        market_scarcity(state, is_coal) * if is_coal { 1.0 } else { IRON_SCARCITY_SHARE };
 
     // Iron works sell anywhere; coal needs a merchant in reach.
     let market_ok = !is_coal || merchant_reachable(state, cand.loc, cand.ind);
     if !market_ok {
-        return if is_coal {
-            if state.is_canal_era() {
-                ISLAND_COAL_CANAL_PENALTY
-            } else {
-                scarcity * (ISLAND_COAL_RAIL_BASE + ISLAND_COAL_RAIL_PER_CUBE * cubes as f64)
-            }
-        } else {
-            scarcity * ISLAND_IRON_VALUE
-        };
-    }
-
-    let sale = simulate_market_sale(state, is_coal, cubes);
-    let money = sale.cash * BuildMoneyWeight::factor(state);
-    let cash_back = if sale.cash > 0.0 {
-        sale.cash * MARKET_CASH_BACK_SHARE
-            + if sale.flips {
-                MARKET_SELLOUT_BONUS
-            } else {
-                0.0
-            }
-    } else {
-        0.0
-    };
-    let coal_spike = if is_coal && sale.sold > 0 {
-        price_heat(
-            state.coal_price(),
-            COAL_SPIKE_PRICE_BASE,
-            COAL_SPIKE_PRICE_SPAN,
-        ) * sale.sold as f64
-            * COAL_SPIKE_PER_SOLD
-            * if state.is_canal_era() {
-                COAL_SPIKE_CANAL_MULTIPLIER
-            } else {
-                1.0
-            }
-    } else {
-        0.0
-    };
-    let scarcity_value = scarcity * (1.0 + sale.sold as f64) * SCARCITY_VALUE_PER_UNIT;
-    // Rail coal is normally consumed quickly, so unsold cubes are not a risk
-    // there. In Canal they can remain stranded until the era ends.
-    let leftover = if is_coal && !state.is_canal_era() {
-        0.0
-    } else {
-        (sale.total - sale.sold) as f64 * LEFTOVER_PER_CUBE
-    };
-
-    money + cash_back + coal_spike + scarcity_value - leftover
-}
-
-fn beer_economy(
-    state: &GameState,
-    pid: usize,
-    cand: &BuildTarget,
-    beers_to_sell: Option<u8>,
-) -> f64 {
-    if cand.ind.is_sellable() {
-        let merchant = merchant_reachable(state, cand.loc, cand.ind);
-        let beer =
-            merchant && beer_available(state, cand.loc, pid, beers_to_sell.unwrap_or(0) as usize);
-        return (if merchant {
-            MERCHANT_REACHABLE_BONUS
-        } else {
-            0.0
-        }) + if beer {
-            BEER_AVAILABLE_BONUS
-        } else {
-            BEER_MISSING_PENALTY
-        };
-    }
-
-    if cand.ind != IndustryType::Brewery {
         return 0.0;
     }
 
-    let tile_cubes = state.players[pid]
-        .next_tile(cand.ind)
-        .map(|tile| tile.resource_cubes as f64)
-        .unwrap_or(0.0);
-    let barrels = owned_beer_barrels(state, pid) as f64 + tile_cubes;
+    simulate_market_sale(state, is_coal, cubes).cash
+}
+
+fn brewery_economy(state: &GameState, pid: usize, tile_cubes: u8) -> f64 {
+    let barrels = owned_beer_barrels(state, pid) as f64 + tile_cubes as f64;
     let demand = sellable_beer_demand(state, pid) as f64;
     let surplus = (barrels - demand).max(0.0);
     let support = if demand > 0.0 {
@@ -181,6 +95,26 @@ fn beer_economy(
             RAIL_BREWERY_VALUE
         }
         - BREWERY_SURPLUS_PENALTY_PER_BARREL * surplus
+}
+
+fn sellable_economy(
+    state: &GameState,
+    pid: usize,
+    cand: &BuildTarget,
+    beers_to_sell: Option<u8>,
+) -> f64 {
+    let merchant = merchant_reachable(state, cand.loc, cand.ind);
+    let beer =
+        merchant && beer_available(state, cand.loc, pid, beers_to_sell.unwrap_or(0) as usize);
+    (if merchant {
+        MERCHANT_REACHABLE_BONUS
+    } else {
+        0.0
+    }) + if beer {
+        BEER_AVAILABLE_BONUS
+    } else {
+        BEER_MISSING_PENALTY
+    }
 }
 
 fn rail_coal_shortage(state: &GameState, cand: &BuildTarget, level: u8, cubes: u8) -> f64 {
@@ -202,64 +136,90 @@ fn cost_efficiency(income: u8, vp: u8, cost: f64) -> f64 {
 }
 
 /// Score one legal build candidate directly in VP equivalents.
-pub(super) fn score_build_candidate(
-    state: &GameState,
-    pid: usize,
-    cand: &BuildTarget,
-    plan: &Plan,
-) -> f64 {
+pub(super) fn score_build_candidate(state: &GameState, pid: usize, cand: &BuildTarget) -> f64 {
     let Some(tile) = state.players[pid].next_tile(cand.ind) else {
         return f64::NEG_INFINITY;
     };
     if BAN_BUILD_LEVEL1_BREWERY && cand.ind == IndustryType::Brewery && tile.level == 1 {
         return f64::NEG_INFINITY;
     }
-
     let cost = cand.cost_total as f64;
-    let cash = state.players[pid].money as f64;
-    if cost > cash {
-        return -(cost - cash) * UNAFFORDABLE_PER_POUND;
+    if cost > state.players[pid].money as f64 {
+        return -(cost - state.players[pid].money as f64) * UNAFFORDABLE_PER_POUND;
     }
 
-    let flip_prob = build_flip_probability(state, pid, cand.ind, cand.loc);
+    match cand.ind {
+        IndustryType::CoalMine | IndustryType::IronWorks => {
+            score_resource_build(state, pid, cand, tile, cost)
+        }
+        IndustryType::Brewery => score_brewery_build(state, pid, cand, tile, cost),
+        _ => score_sellable_build(state, pid, cand, tile, cost),
+    }
+}
+
+fn score_resource_build(
+    state: &GameState,
+    pid: usize,
+    cand: &BuildTarget,
+    tile: TileDef,
+    cost: f64,
+) -> f64 {
+    let flip_prob = resource_build_flip_probability(state, pid, cand.ind, cand.loc);
     let link_value = if player_owns_link_touching(state, pid, cand.loc) {
         tile.link_vp as f64 * flip_prob * LINK_SELF_VALUE_SHARE
     } else {
         0.0
     };
-    let is_resource = matches!(cand.ind, IndustryType::CoalMine | IndustryType::IronWorks);
-    let self_supply = if is_resource {
-        SELF_SUFFICIENCY_PER_CUBE * tile.resource_cubes as f64
+    let mut score = common_build_score(state, pid, cand, tile, cost);
+    score += tile.vp as f64 * flip_prob
+        + link_value
+        + tile.income as f64 * flip_prob * BuildIncomeWeight::factor(state)
+        + market_value(state, cand, tile.resource_cubes) * BuildMoneyWeight::factor(state)
+        + SELF_SUFFICIENCY_PER_CUBE * tile.resource_cubes as f64
+        + rail_coal_shortage(state, cand, tile.level, tile.resource_cubes);
+
+    score
+}
+
+fn score_brewery_build(
+    state: &GameState,
+    pid: usize,
+    cand: &BuildTarget,
+    tile: TileDef,
+    cost: f64,
+) -> f64 {
+    let flip_prob = brewery_build_flip_probability(state, pid);
+    let link_value = if player_owns_link_touching(state, pid, cand.loc) {
+        tile.link_vp as f64 * flip_prob * LINK_SELF_VALUE_SHARE
     } else {
         0.0
     };
-
-    let mut score = tile.vp as f64 * flip_prob
+    let mut score = common_build_score(state, pid, cand, tile, cost);
+    score += tile.vp as f64 * flip_prob
         + link_value
         + tile.income as f64 * flip_prob * BuildIncomeWeight::factor(state)
-        - cost * BuildMoneyWeight::factor(state)
-        + self_supply
-        + EXPANSION_PER_LINK * unbuilt_neighbor_connections(state, cand.loc) as f64
-        + rail_coal_shortage(state, cand, tile.level, tile.resource_cubes)
-        + cost_efficiency(tile.income, tile.vp, cost)
-        + beer_economy(state, pid, cand, tile.beers_to_sell);
+        + brewery_economy(state, pid, tile.resource_cubes);
+    score
+}
 
-    if is_resource {
-        score += market_value(state, cand, tile.resource_cubes);
-    }
-
-    // Free-riding keeps the common resource pool cheap and avoids spending an
-    // action on a resource tile that opponents can supply for us.
-    let ratio = resource_source_ratio(state, cand);
-    score += (ratio - FREE_RIDING_THRESHOLD).max(0.0) * FREE_RIDING_BONUS;
-
-    score -= own_overbuild_vp_loss(state, pid, cand, 1.0);
-
-    // Canal-Early is reserved for establishing the coal/iron engine; from
-    // Canal-Late onward, follow the production plan.
-    if plan.count > 0 && plan.industry == cand.ind && (!state.is_canal_era() || state.round > 4) {
-        score += PLAN_BONUS;
-    }
+fn score_sellable_build(
+    state: &GameState,
+    pid: usize,
+    cand: &BuildTarget,
+    tile: TileDef,
+    cost: f64,
+) -> f64 {
+    let flip_prob = sellable_build_flip_probability(state, pid, cand.ind, cand.loc);
+    let link_value = if player_owns_link_touching(state, pid, cand.loc) {
+        tile.link_vp as f64 * flip_prob * LINK_SELF_VALUE_SHARE
+    } else {
+        0.0
+    };
+    let mut score = common_build_score(state, pid, cand, tile, cost);
+    score += tile.vp as f64 * flip_prob
+        + link_value
+        + tile.income as f64 * flip_prob * BuildIncomeWeight::factor(state)
+        + sellable_economy(state, pid, cand, tile.beers_to_sell);
 
     // In Rail-Late, a sellable with beer available is a preferred finisher.
     if !state.is_canal_era()
@@ -270,6 +230,25 @@ pub(super) fn score_build_candidate(
         score += RAIL_LATE_BEER_BONUS;
     }
 
+    score
+}
+
+fn common_build_score(
+    state: &GameState,
+    pid: usize,
+    cand: &BuildTarget,
+    tile: TileDef,
+    cost: f64,
+) -> f64 {
+    let mut score = -cost * BuildMoneyWeight::factor(state)
+        + EXPANSION_PER_LINK * unbuilt_neighbor_connections(state, cand.loc) as f64
+        + cost_efficiency(tile.income, tile.vp, cost);
+    score -= own_overbuild_vp_loss(state, pid, cand, 1.0);
+
+    // Free-riding keeps the common resource pool cheap and avoids spending an
+    // action on a tile whose inputs opponents can supply for us.
+    let ratio = resource_source_ratio(state, cand);
+    score += (ratio - FREE_RIDING_THRESHOLD).max(0.0) * FREE_RIDING_BONUS;
     score
 }
 
@@ -348,7 +327,6 @@ mod build_card_tests {
 pub(crate) fn score_top_builds(
     state: &mut GameState,
     k: usize,
-    plan: &Plan,
     targets: &[BuildTarget],
     keep_scores: &[(usize, f64)],
 ) -> Vec<Decision> {
@@ -360,7 +338,7 @@ pub(crate) fn score_top_builds(
         .iter()
         .cloned()
         .map(|target| {
-            let score = score_build_candidate(state, pid, &target, plan);
+            let score = score_build_candidate(state, pid, &target);
             (target, score)
         })
         .collect();

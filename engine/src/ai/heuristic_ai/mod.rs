@@ -40,7 +40,7 @@ mod value;
 pub use config::HeuristicConfig;
 pub use context::EraProfile;
 pub use lookahead::choose_action;
-pub use plan::{Phase, Plan, compute_plan, era_phase};
+pub use plan::{Phase, era_phase};
 
 // Card-selection head: public helpers for replay tooling and tests.
 pub use cards::{card_choices_for_move, card_keep_score, ranked_card_choices};
@@ -177,15 +177,14 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     let build_targets = crate::rules::get_valid_build_targets(state, pid);
     let card_choices = ranked_card_choices(state, pid);
     let mut out = Vec::new();
-    let plan = compute_plan(state, pid);
 
-    for d in score_top_builds(state, k, &plan, &build_targets, &card_choices) {
+    for d in score_top_builds(state, k, &build_targets, &card_choices) {
         if d.score != f64::NEG_INFINITY {
             out.push(d);
         }
     }
-    out.extend(score_top_networks(state, k, &plan, &card_choices));
-    out.extend(score_top_network_doubles(state, k, &plan, &card_choices));
+    out.extend(score_top_networks(state, k, &card_choices));
+    out.extend(score_top_network_doubles(state, k, &card_choices));
     // These scorers emit up to SOURCE_VARIANTS alternative plans per type.
     // Keep the iterator-based shape here so each branch obeys the same Top-K
     // contract and can grow to emit alternatives without changing this dispatcher.
@@ -202,11 +201,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     out.retain(|d| unique.insert(operation_key(&d.mv)));
 
     out.extend(score_sell_plans(state, &card_choices).into_iter().take(k));
-    out.extend(
-        score_loan_result(state, &plan, &card_choices)
-            .into_iter()
-            .take(k),
-    );
+    out.extend(score_loan_result(state, &card_choices).into_iter().take(k));
     out.extend(score_scout_plan(state, &card_choices).into_iter().take(k));
     out.extend(score_pass_result(&card_choices).into_iter().take(k));
 

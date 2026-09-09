@@ -759,7 +759,8 @@ mod tests {
             if !s.step().unwrap() {
                 break;
             }
-            if let Some(step) = s.steps
+            if let Some(step) = s
+                .steps
                 .iter()
                 .find(|step| step.trace.evidence_kind == "heuristic-follow-up")
             {
@@ -768,10 +769,15 @@ mod tests {
                 assert!(expected.len() > 1);
                 for decision in expected {
                     let key = heuristic_ai::operation_key(&decision.mv);
-                    let row = step.legal_actions.iter().find(|row| {
-                        heuristic_ai::operation_key(&move_codec::decode(&row.canonical).unwrap())
-                            == key
-                    }).unwrap();
+                    let row = step
+                        .legal_actions
+                        .iter()
+                        .find(|row| {
+                            heuristic_ai::operation_key(
+                                &move_codec::decode(&row.canonical).unwrap(),
+                            ) == key
+                        })
+                        .unwrap();
                     assert!(row.evaluated);
                     assert_eq!(row.score, Some(decision.score));
                     assert_eq!(row.card_score, Some(decision.card_score));

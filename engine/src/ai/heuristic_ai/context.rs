@@ -5,8 +5,7 @@
 //! exposes the conversions and convenience predicates shared by scorers.
 //! Declarative round/era factors used by individual scorers live here too.
 
-use super::config::HeuristicConfig;
-use super::plan::{Phase, era_phase};
+use super::plan::Phase;
 use crate::state::GameState;
 
 /// Rounds in one era (game rule; used only to normalise "how much era is
@@ -123,16 +122,6 @@ pub(crate) use define_era_round_factor;
 #[allow(unused_imports)]
 pub(crate) use define_round_factor;
 
-/// One-shot evaluation context for scoring the current player's options.
-/// ready for deprecation. do not use in new code.
-pub struct EvalContext<'a> {
-    pub cfg: &'a HeuristicConfig,
-    pub pid: usize,
-    pub phase: Phase,
-    /// Per-phase weights derived from [`HeuristicConfig::era`].
-    pub profile: EraProfile,
-}
-
 /// Per-phase evaluation weights resolved from the config.
 /// ready for deprecation. do not use in new code.
 #[derive(Debug, Clone, Copy)]
@@ -143,43 +132,10 @@ pub struct EraProfile {
     pub alpha: f64,
 }
 
-impl<'a> EvalContext<'a> {
-    pub fn new(state: &GameState, pid: usize, cfg: &'a HeuristicConfig) -> Self {
-        let phase = era_phase(state);
-        let rounds_remaining = state.rounds_remaining();
-        let era_frac = (rounds_remaining / ERA_ROUNDS).clamp(0.0, 1.0);
-        let params = cfg.era.params(phase);
-        let profile = EraProfile {
-            phase,
-            income_w: cfg.value.income_base * (params.income_add + params.income_frac * era_frac),
-            money_w: cfg.value.money_base * params.money_mult,
-            alpha: params.alpha,
-        };
-        Self {
-            cfg,
-            pid,
-            phase,
-            profile,
-        }
-    }
-
-    // -- round / era predicates ------------------------------------------
-
-    pub fn is_canal(&self) -> bool {
-        matches!(self.phase, Phase::CanalEarly | Phase::CanalLate)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::config::HeuristicConfig;
-    use super::*;
     use crate::state::GameState;
     use rand_chacha::rand_core::SeedableRng;
-
-    fn ctx_for<'a>(state: &'a GameState, cfg: &'a HeuristicConfig) -> EvalContext<'a> {
-        EvalContext::new(state, state.current_player_id(), cfg)
-    }
 
     #[test]
     fn declarative_factors_query_game_state() {
