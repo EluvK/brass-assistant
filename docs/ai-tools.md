@@ -7,7 +7,7 @@
 Rust 扩展 `brass_ai._engine` 是游戏规则与动作语义的唯一权威，负责：
 
 - `GameState`、回合推进、合法动作与 canonical action；
-- 状态 tensor 和候选动作特征编码；
+- 状态 token 与动作引用的编码；
 - heuristic teacher；
 - candidate-policy-guided ISMCTS 搜索树。
 
@@ -18,8 +18,8 @@ Python 不实现规则或解析动作。它负责网络前向、训练样本组�
 ```text
 Rust GameState
   -> legal_candidates() / heuristic_candidates()
-  -> Python PolicyValueNet(state tensors, candidate features)
-  -> candidate logits + 4-player value + econ prediction
+  -> Python PolicyValueNet(state tokens, action references)
+  -> candidate logits + Q(s,a) + 4-player value + winner + econ
   -> Rust GameState.search_net() through Python callback
 
 Rust heuristic self-play
@@ -110,13 +110,17 @@ cargo test --features python
 
 ### Heuristic imitation bootstrap
 
-`bootstrap_imitation.py` 是保留的训练入口。Rust heuristic 进行完整对局，Python 使用每步 teacher 候选集训练候选评分、value 和经济辅助头，再让网络引导 Rust MCTS 与 heuristic 对战。
+`bootstrap_imitation.py` 是保留的训练入口。Rust heuristic 进行完整对局，Python 用每一步的 teacher 候选集训练候选评分、value / winner / Q 与经济辅助头，再让网络引导 Rust MCTS 与 heuristic 对战。
 
 ```powershell
-python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp 77 --min-avg-vp 98 --max-attempts 1000 --ckpt checkpoints/bootstrap-smoke.pt
+& .\.venv\Scripts\python.exe python/bootstrap_imitation.py `
+  --ckpt checkpoints/bootstrap-v6.pt --games 2000 --epochs 10 --batch 256 `
+  --workers 12 --materialize-workers 8 --eval-games 0
 ```
 
-这是一条小规模 smoke 命令。正式训练前应先确认 Rust 扩展已由当前源码构建，且 Python 测试通过。
+训练预算按**优化器步数**算，不是按 epoch：`games × 每局决策点 / batch` 才是步数。
+200 局约 2.5 万样本、只有约 194 步，基本等于没训；2000 局约 25 万样本，每个 epoch
+约 970 步、单卡约 5 分钟。先跑 `--games 200 --epochs 2` 确认链路，再上正式规模。
 
 | 参数 | 用途 |
 | --- | --- |
@@ -134,7 +138,10 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 | `--enable-policy-eval` | 训练后统计全部 shard 上的 top-k policy 指标 |
 | `--mcts-shortlist` | 仅让结尾 benchmark 使用 heuristic shortlist；默认 full-legal |
 
-当前源码中 `--max-candidate-batch` 的默认值是 `131072`。GPU 显存有限时应显式设置更小值，例如 `16384`，并从小规模运行开始。
+`--max-candidate-batch` 是**填充后的候选行数**上限，默认 `65536`。显存占用与它近似
+线性（约 1.8 GB @ 65536，含 AMP），放不下时先降它（`32768` / `16384`）。
+`--materialize-workers` 影响的是主机内存：Windows 下每个 worker 都是独立进程，
+各自 import torch，8 个大约 2~3 GB RSS。
 
 ### Self-play 训练入口（阶段 3）
 
@@ -145,13 +152,13 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 ```powershell
 # 冒烟：单进程、极小搜索，几分钟内跑完并写出 checkpoint
 ./.venv/Scripts/python.exe python/selfplay_train.py `
-  --ckpt-dir checkpoints/selfplay-smoke --init-from checkpoints/bootstrap-0909-20000.pt `
+  --ckpt-dir checkpoints/selfplay-smoke --init-from checkpoints/bootstrap-v6.pt `
   --iterations 2 --games-per-iter 2 --workers 1 --sims 8 --train-samples 512 `
   --eval-every 1 --eval-games 2 --eval-sims 8 --heuristic-eval-games 2 --heuristic-eval-sims 8
 
 # 正式起点（16 核 + 1 GPU 量级）
 ./.venv/Scripts/python.exe python/selfplay_train.py `
-  --ckpt-dir checkpoints/selfplay --init-from checkpoints/bootstrap-0909-20000.pt `
+  --ckpt-dir checkpoints/selfplay --init-from checkpoints/bootstrap-v6.pt `
   --iterations 200 --games-per-iter 16 --workers 8 --sims 128 `
   --train-samples 40000 --batch 256 --buffer-samples 400000 --buffer-iterations 20 `
   --eval-every 5 --eval-games 40 --eval-sims 128
@@ -191,7 +198,7 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 ### 价值头兄弟排序基准
 
 ```powershell
-& .\.venv\Scripts\python.exe python/bench_value_ranking.py --ckpt checkpoints/bootstrap.pt --positions 36
+& .\.venv\Scripts\python.exe python/bench_value_ranking.py --ckpt checkpoints/bootstrap-v6.pt --positions 36
 ```
 
 以终局 rollout 为参照，测 `V(s)` / `Q(s,a)` / 先验 / winner 概率对候选动作的排序能力
@@ -200,21 +207,16 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 
 搜索配置的默认值与理由：
 
-- `--prior-top-k 16`：先对全部合法动作打分算出先验，树里只保留先验最高的 16 个孩子。
-  本作单状态 114–600 个合法动作，P ≈ 1/350 时 PUCT 探索项只有 ~0.08，会压不过已评估
-  孩子的价值差，未访问孩子几乎选不中——搜索退化成先验的弱锐化器。K = 16 时探索项回到
-  ~0.9 量级，搜索才真正开始分配访问。
-- `--c-puct 1.0`：**必须随 `--prior-top-k` 一起标定**，两者耦合。K 越小、先验越尖，
-  c 就该越小；沿用 full-legal 时代的 2.5 会继续让探索项压过价值差。
-- `--no-fpu` 关闭 FPU（默认开启）。终局效用是零均值的 VP 差，未访问孩子取 0 已是中性
-  假设；FPU 进一步把它初始化为父节点价值。
-- `--no-q-init` 关闭 Q 初始化（默认开启）。默认用网络给出的边价值 `Q(s,a)` 估计从未访问
-  过的孩子，这样兄弟招是按模型排序而不是只按先验排序——350 个合法动作时先验项本身就
-  小到无法区分。如果 `bench_value_ranking.py` 显示 Q 并不比 V 更能排序兄弟招，就用这个
-  开关退回 FPU。
-
-`--prior-top-k 0` 可退回全合法展开，用于对照。完整的实测数据、仍未解决的问题
-（价值头兄弟层分辨力）见 [roadmap.md](roadmap.md) 的「阶段 3 的已知问题」。
+- `--q-init`（默认开启，用 `--no-q-init` 关闭）：用网络给出的边价值 `Q(s,a)` 估计从未
+  访问过的孩子。本作单状态有 114–600 个合法动作，只按先验排序时 P ≈ 1/350，PUCT 的
+  探索项量级压不过价值差，搜索会退化成先验的弱锐化器；用 Q 初始化之后兄弟招是按模型
+  排序的。**这是全合法展开能否可搜索的关键**，也因此 `--prior-top-k` 不再是必需品。
+- `--no-q-init` 之后才会退回 FPU：`--no-fpu` 关闭 FPU（默认开启）时未访问孩子按 0 处理。
+  终局效用是零均值的 VP 差，取 0 已是中性假设；FPU 则把它初始化为父节点价值。
+- `--prior-top-k 16` / `--c-puct 1.0`：仍然先把全部合法动作打分、只保留先验最高的 K 个
+  孩子，用于压缩搜索宽度。这两个参数耦合，K 越小先验越尖、c 就该越小；`--prior-top-k 0`
+  退回全合法展开。**当前默认值是旧尺度下定的，还没有在新价值尺度上重新标定**，
+  见 [roadmap.md](roadmap.md) 的「近期」第 3 条。
 
 已知边界：
 

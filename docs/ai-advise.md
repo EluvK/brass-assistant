@@ -1,8 +1,9 @@
 # Birmingham AI 长期设计原则
 
-本文只记录尚未落地、但会影响后续路线的设计原则。当前已实现的 candidate
-policy、teacher imitation、MCTS bridge、replay 格式和运行命令见
-[ai-tools.md](ai-tools.md)；分阶段的发展规划见 [roadmap.md](roadmap.md)。
+本文记录约束当前实现与后续演进的设计原则：哪些边界不能动、哪些简化是刻意的、
+下一步该由什么证据来驱动。具体的特征与价值契约见
+[ai-action-encoding.md](ai-action-encoding.md)，运行命令见 [ai-tools.md](ai-tools.md)，
+分阶段规划见 [roadmap.md](roadmap.md)。
 
 ## 问题本质
 
@@ -55,7 +56,7 @@ r_t = terminal_outcome + lambda * (Phi(s_{t+1}) - Phi(s_t))
 ## Imperfect Information
 
 当前 search 通过 determinization 处理隐藏手牌，这是第一版近似；观测上标记了
-哪些手牌是采样值（`hand_is_sampled`），避免网络把它当成真实信息。长期需要让
+哪些手牌是采样值（`SEAT_HAND_SAMPLED_FLAG`），避免网络把它当成真实信息。长期需要让
 policy/value 利用公开历史形成 belief，而不是把未知手牌当作独立随机噪声：
 
 - 已出现与未出现的卡牌；

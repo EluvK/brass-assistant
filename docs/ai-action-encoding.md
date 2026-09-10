@@ -42,42 +42,53 @@ cell → location、cell → slot 的映射由 Rust 导出（`board_cell_locatio
 | cell | 49 | 棋盘格：行业板块、资源、连通性 |
 | link | 39 | 连接：建成状态、归属、时代可建性 |
 | merchant | 9 | 商家：收货类型、啤酒存量 |
-| seat | 4 | 玩家公开状态 + 手牌信息（§2.5） |
+| seat | 4 | 玩家公开状态 + 手牌信息（§2.6） |
 | global | 1 | 时代、轮次、市场、行动队列 |
 
-每个 token 前置一个类型 embedding（5 类），其余字段拼接后过一层线性映射到
-`d_model`。所有计数都除以本文给出的归一化常数，one-hot 为 0/1。
+每个 token 的字段拼接后过一层线性映射到 `d_model`，再加上类型 embedding（5 类）
+与 §2.4 的身份 embedding。所有计数都除以本文给出的归一化常数，one-hot 为 0/1。
 
 ### 2.1 cell token（49）
 
 静态：slot_index/4、is_farm、可建行业 multi-hot(6)。
 
 动态：occupied、owner 相对 one-hot(4)、industry one-hot(6)、flipped、
-resource_cubes/5、level/8、vp/20、income/7。
+resource_cubes/6、level/8、vp/20、income/7。
 
-推导（相对行动方）：`in_net_me`、`in_net_opp[4]`（该格所属地点是否在各自网络中，
-取自 `GameState::network_mask`）、到我的网络的图距离/6（无连接为 1.0）。
+推导（相对行动方）：`in_net[4]`（该格所属地点是否在各自座位玩家的网络中，0 号位
+即我；取自 `GameState::network_mask`）、到我的网络的图距离/6（不可达记 1.0）。
 
 ### 2.2 link token（39）
 
-静态：canal 可建、rail 可建、via-farm 存在、两端点 location id（embedding）。
+静态：canal 可建、rail 可建、via-farm 存在。
 
 动态：built、owner 相对 one-hot(4)、is_canal。
 
-推导：`in_net_me`、`touch_net_me`（端点落在我的网络中）。
+推导：`in_net[4]`（相对座位）、`touch_net_me`（任一端点落在我的网络中）。
 
 ### 2.3 merchant token（9）
 
-收货类型 one-hot(5)：Blank / Any / 棉纺厂 / 制造厂 / 陶器；
-`has_beer`；所在地点的 location id embedding。
+收货类型 one-hot(5)：Blank / Any / 棉纺厂 / 制造厂 / 陶器；`has_beer`。
 
-### 2.4 global token（1）
+### 2.4 token 身份
+
+特征本身不足以识别 token：同一城市里两个能力相同的空槽、两条时代属性相同的连接、
+两个收货类型相同的商家，特征行完全相同。网络必须能区分它们，否则引用到哪一个都
+一样。因此：
+
+- 每组 token 额外加一个**组内位置 embedding**（cells 49 / links 39 / merchants 9 /
+  seats 4），提供精确身份。
+- cells 与 links 再加一个**共享的 location embedding**：cell 用自己所属地点
+  （`BOARD_CELL_LOCATIONS`），link 用两端地点（`CONNECTION_ENDPOINTS`）的均值。
+  这样空间关系是显式的，而不是靠 id 碰巧学出来。
+
+### 2.5 global token（1）
 
 era、round/8、rounds_remaining/10、actions_remaining/actions_per_turn、
 煤市场 one-hot(15)、铁市场 one-hot(11)、牌堆剩余/牌堆总量、弃牌堆张数/牌堆总量、
 wild_location_pile、wild_industry_pile、行动队列 one-hot(4×4，旋转后)。
 
-### 2.5 seat token（4，index 0 = 我）
+### 2.6 seat token（4，index 0 = 我）
 
 公开量：money/200、income_space/99、income_level、vp/200、canal_links/14、
 rail_links/14、hand_size/8、has_wild_location、has_wild_industry、
@@ -91,13 +102,13 @@ rail_links/14、hand_size/8、has_wild_location、has_wild_industry、
 | `hand_sampled` | 全 0 | 本次 determinization 采样出的手牌 |
 | `hand_public` | 已打出的非万能牌计数 | 同左 |
 
-外加一个 `hand_is_sampled` 标志位。手牌用 bag 而非序列：手牌顺序是执行产物，
+外加 `SEAT_HAND_SAMPLED_FLAG` 标志位。手牌用 bag 而非序列：手牌顺序是执行产物，
 语义相同的牌完全可互换，顺序不携带任何策略信息。
 
-### 2.6 张量形状
+### 2.7 张量形状
 
-Rust 按组导出特征张量，Python 把每组线性投影到 `d_model` 并加上类型 embedding，
-再拼成 102 个 token 的序列：
+Rust 按组导出特征张量，Python 把每组线性投影到 `d_model`，加上类型 embedding 与
+§2.4 的身份 embedding，再拼成 102 个 token 的序列：
 
 | 名称 | 形状 | 类型 |
 | --- | --- | --- |
@@ -109,7 +120,7 @@ Rust 按组导出特征张量，Python 把每组线性投影到 `d_model` 并加
 
 各组的特征宽度由 Rust 导出，Python 不硬编码。
 
-### 2.7 归一化常数
+### 2.8 归一化常数
 
 | 字段 | 除数 |
 | --- | --- |
@@ -129,21 +140,23 @@ Rust 按组导出特征张量，Python 把每组线性投影到 `d_model` 并加
 
 ## 3. 动作表示
 
-一个候选动作 = 动作类型 + 一组实体引用 + 少量标量。
+一个候选动作 = 动作类型 + 一组实体引用 + 少量标量，由 Rust 编码成一行
+`ACTION_FEATURE_DIM = 55` 个 float32，Python 只按偏移量读取：
 
 ```
-ActionRef {
-    kind:   u8,                  // 0 Build, 1 Network, 2 NetworkDouble,
-                                 // 3 Develop, 4 Sell, 5 Loan, 6 Scout, 7 Pass
-    refs:   [(ref_kind: u8, id: u16, weight: f32); ≤ REF_CAP],
-    slot:   u8,                  // Build 目标槽位，其余为 0
-    numbers: [f32; 4],           // [市场买煤数, 市场买铁数, 商家啤酒数, 支付牌数]
-}
+[0]                 action kind（索引，不是 one-hot）
+                   0 Build, 1 Network, 2 NetworkDouble, 3 Develop,
+                   4 Sell, 5 Loan, 6 Scout, 7 Pass
+[1]                 Build 目标槽位，其余为 0
+[2..6]              numbers：市场买煤数、市场买铁数、商家啤酒数、支付牌数
+[6]                 引用个数 ref_count
+[7 + 3i + 0..3]     第 i 个引用：(ref_kind, id, weight)，i < ACTION_REF_CAP = 16
 ```
 
-`ref_kind` ∈ {cell, link, merchant, industry, card}。`weight` 是该引用的强度，
-例如 DRAIN 每个来源记 1.0（同一格多次引用累加）。`REF_CAP = 16`，Rust 编码时
-越界即报错——越界说明引用表设计需要复核，不允许静默截断。
+偏移量由 Rust 导出（`ACTION_OFF_*`），Python 不硬编码。`ref_kind` ∈
+{cell, link, merchant, industry, card}，各类 id 的上界分别是 49 / 39 / 9 / 6 / 35。
+`weight` 是该引用的强度（例如每个煤来源记 1.0，同一格被引用两次就累加）。
+`ACTION_REF_CAP` 越界时 Rust 直接报错——越界说明引用表设计需要复核，不允许静默截断。
 
 各类动作的引用内容：
 
@@ -157,26 +170,18 @@ ActionRef {
 | Loan / Pass | 支付牌语义 |
 | Scout | 三个弃牌语义 |
 
-网络侧的处理方式：cell / link / merchant 引用按其 id 在当前状态的 token 序列里
-取出对应的状态 token，按 `weight` 加权池化；industry / card 引用查静态 embedding
-表。池化结果与该引用的静态编码（kind、slot、numbers）拼接后过动作编码器。
-
 **动作表示不重复陈述状态。** 被引用的格子有几块煤、属于谁、是否翻面，一律由
 被取出的 cell token 提供，不写入动作特征。
 
-### 3.1 张量形状
+### 3.1 网络侧如何使用
 
-| 名称 | 形状 | 类型 |
-| --- | --- | --- |
-| `ref_kind` | `(N, REF_CAP)` | uint8 |
-| `ref_id` | `(N, REF_CAP)` | uint16 |
-| `ref_weight` | `(N, REF_CAP)` | float32 |
-| `ref_count` | `(N,)` | uint8 |
-| `action_kind` | `(N,)` | uint8 |
-| `action_slot` | `(N,)` | uint8 |
-| `action_numbers` | `(N, 4)` | float32 |
+cell / link / merchant 引用按 id 从当前状态 token 序列取出对应的 token；industry /
+card 引用查静态 embedding 表。两者拼成一张实体表后用 `ref_kind` 的偏移量索引，
+再按 `weight` 加权求和。
 
-`N` 随局面变化。所有张量在跨进程传输时允许按 `ref_count` 稀疏化，但语义以上表为准。
+实现上不要把 `(N, REF_CAP, d)` 物化出来：那是一个候选 × 16 × d 的张量，反向传播
+还要保留一份。正确做法是把权重累加进 `(N, 实体总数)` 的稀疏权重图，再与实体表做
+一次矩阵乘——数学等价，显存差一个数量级。
 
 ## 4. 价值与目标
 
@@ -205,8 +210,8 @@ VP_SCALE 是唯一的全局尺度常量。
 
 损失：`policy_CE + value_MSE + 0.5*winner_CE + 0.2*econ_MSE + 0.3*q_MSE + l2`。
 
-名次不再是独立头：名次是 VP 的粗化，同时训两个头只会浪费容量，并且名次尺度
-曾让搜索的探索项与价值项无法比较。名次如需展示，由 VP 预测与破平局规则派生。
+名次不单设头：名次是 VP 的粗化，单独训一个名次头既不加信息，又会让它的尺度与
+搜索的价值/探索项不可比。名次如需展示，由 VP 预测与破平局规则派生。
 
 ### 4.3 策略目标
 
@@ -219,39 +224,44 @@ teacher 分数。
 动作身份用于跨边界对齐与树内复用，必须是**语义身份**，不能是手牌下标。
 
 ```
-identity = (结构动作 Move, 支付牌的语义多重集)
+identity = (动作的结构选择：类型 / 目标 / 资源来源, 支付牌的语义多重集)
 ```
 
 约束：
 
 * Python 与 Rust 之间用 canonical 字符串对齐（`move_codec`）。
-* 搜索树的节点保存结构动作与语义卡牌，不保存手牌下标。
-* 每次 simulation 在当前 determinization 下手牌里解析出对应的手牌下标；解析不到
-  的分支直接剪枝。对手手牌每局重采样，手牌下标因此在树内不成立。
+* 搜索树的节点保存 `ResolvedMove` 与它支付的语义卡牌，不把那一手的手牌下标当作
+  身份。对手手牌每局重采样，手牌下标在树内不成立。
+* 每次 simulation 在当前 determinization 的手牌里重新绑定下标（`rebind_cards`）：
+  按语义找到等价的牌。找不到等价卡的分支直接剪枝，绝不"顺着下标"打出另一张牌。
 
 ## 6. Rust 必须导出
 
 ```text
-BOARD_CELLS, LINK_CELLS, LOCATION_COUNT, MERCHANT_COUNT, INDUSTRY_COUNT,
-CARD_SEMANTIC_COUNT, SEAT_COUNT
-STATE_TOKEN_COUNT, STATE_TOKEN_FEATURE_DIM, STATE_TOKEN_SCHEMA_VERSION
-BOARD_CELL_LOCATIONS, BOARD_CELL_SLOTS, CONNECTION_ENDPOINTS, CONNECTION_VIA_FARMS
-ACTION_REF_CAP, ACTION_REF_KINDS, ACTION_SCHEMA_VERSION
-VP_SCALE
+尺寸：BOARD_CELLS, LINK_CELLS, MERCHANT_COUNT, SEAT_COUNT, INDUSTRY_COUNT,
+      CARD_SEMANTIC_COUNT, LOCATION_COUNT, TOKEN_COUNT
+宽度：F_CELL, F_LINK, F_MERCHANT, F_SEAT, F_GLOBAL, ACTION_FEATURE_DIM
+版本：STATE_TOKEN_SCHEMA_VERSION, ACTION_SCHEMA_VERSION
+拓扑：BOARD_CELL_LOCATIONS, BOARD_CELL_SLOTS, CONNECTION_ENDPOINTS,
+      CONNECTION_VIA_FARMS
+特征偏移：CELL_*, LINK_*, MERCHANT_*, SEAT_*, GLOBAL_*, ACTION_OFF_*,
+          ACTION_REF_*
+尺度：VP_SCALE, ACTION_REF_CAP, ACTION_KIND_COUNT, ACTION_NUMBERS,
+      REF_KIND_COUNT
 ```
 
-以及三个运行时调用：
+运行时调用：
 
-* `state_tokens()` → 按行动方旋转后的 token 张量
-* `legal_candidates()` → canonical 字符串 + 动作引用张量
-* `final_vp()` → 终局每座位 VP
+* `GameState.state_tokens(perspective=None)` → 五个 token 组，按行动方旋转
+* `GameState.legal_candidates()` → canonical 字符串 + `(N, 55)` 动作引用行
+* `GameState.player_vps()` / `final_ranking()` → 终局 VP 与官方名次
 
 ## 7. 明确不做的事
 
 * **不编码派生后果。** 翻面数、建满城市、新触及商家这类人工标量一律删除：网络能
   从被引用的 cell / link token 直接看到它们。
-* **不编码手牌顺序。** 见 §2.5。
-* **不把采样出的对手手牌当作真实信息。** 见 §2.5 的 `hand_is_sampled`。
+* **不编码手牌顺序。** 见 §2.6。
+* **不把采样出的对手手牌当作真实信息。** 见 §2.6 的 `SEAT_HAND_SAMPLED_FLAG`。
 * **不用名次作为唯一价值尺度。** 见 §4.1。
 * **不用手牌下标作为树内动作身份。** 见 §5。
 

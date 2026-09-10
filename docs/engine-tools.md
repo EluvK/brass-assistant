@@ -43,8 +43,11 @@ cargo run --profile fast-release --bin replay_web -- --seed 7 --players 4
 网络座位示例（先确保 `.venv` 中已安装 `brass_ai._engine` 扩展）：
 
 ```sh
-cargo run --profile fast-release --features python --bin replay_web -- --seed 7 --player "python:--ckpt checkpoints/bootstrap-0831-20000.pt --sims 1000"
+cargo run --profile fast-release --features python --bin replay_web -- --seed 7 --player "python:--ckpt checkpoints/bootstrap-v6.pt --sims 1000"
 ```
+
+checkpoint 必须是与当前 schema 匹配的训练产物（用 `python/bootstrap_imitation.py`
+或 `selfplay_train.py` 生成）；旧 checkpoint 会因 schema 不符直接拒绝加载。
 
 `python:` 之后的参数原样传给 `python -m brass_ai.replay_worker`：`--ckpt` 为训练 checkpoint（必填），`--mode mcts|policy`（默认 `mcts`，前者为 Rust ISMCTS + 网络引导并按根访问数 argmax，后者为网络对全部合法候选一次前向后直接 argmax），`--sims`（默认 `128`）、`--device`（默认 cuda 可用则 cuda）。worker-config 按空白切分，含空格的参数（如 checkpoint 路径）可用单/双引号包裹。会话启动时即加载 checkpoint 并等待 worker 握手，加载失败会直接报错退出；每步决策受 `--worker-timeout`（默认 `300` 秒）约束，`--python-bin` 可指定解释器（默认 `python`）。网络座位的动作表会展示根访问次数、策略概率与当前玩家价值估计（`net-mcts` 证据），网络座位不做确定性承诺。
 
@@ -87,6 +90,6 @@ Rust 侧不再有独立的 MCTS 实验台。网络引导 NN-MCTS 的决策基准
 cargo run --release -p brass-engine --features python --bin train_bench -- [positions] [seed]
 ```
 
-以启发式对局收集 `positions` 个中局快照，逐项输出训练管线使用的引擎操作耗时：合法动作枚举（`legal_resolved_moves`）、候选特征编码（`encode_move` × 全部候选）、状态张量编码（`state_to_tensor`）、快照序列化/恢复、determinize、整状态 clone、教师打分（`candidate_actions_k(4)`）与 2-ply/末位四联动 `choose_action`。用于评估引擎侧改动对训练数据生成（imitation 生成 / snapshot 物化 / NN-MCTS 展开）的影响。
+以启发式对局收集 `positions` 个中局快照，逐项输出训练管线使用的引擎操作耗时：合法动作枚举（`legal_resolved_moves`）、动作引用编码（`encode_move` × 全部候选）、状态 token 编码（`state_tokens`）、快照序列化/恢复、determinize、整状态 clone、教师打分（`candidate_actions_k(4)`）与 2-ply/末位四联动 `choose_action`。用于评估引擎侧改动对训练数据生成（imitation 生成 / snapshot 物化 / NN-MCTS 展开）的影响。
 
 对应的 Python 侧跨界基准是 `python/bench_train_paths.py`（`legal_candidates` numpy 化、`materialize_snapshot` 单次调用端到端、`coalesce_equivalent_policy`），运行方式：`.venv/Scripts/python.exe python/bench_train_paths.py [n_positions]`。

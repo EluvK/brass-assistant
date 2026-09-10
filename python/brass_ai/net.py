@@ -60,6 +60,24 @@ class PolicyValueNet(nn.Module):
         })
         self.global_proj = nn.Linear(STATE_GLOBAL[1], d)
         self.type_embed = nn.Embedding(len(TOKEN_TYPES), d)
+        # Identity is not implied by the features: two empty slots with the same
+        # capability, two connections with the same era flags, or two merchants
+        # buying the same goods produce identical feature rows. Without a
+        # position embedding the encoder could not tell them apart, and a
+        # candidate that references one of them would pool the wrong token.
+        self.pos_embed = nn.ModuleDict({
+            name: nn.Embedding(count, d) for name, (count, _w) in STATE_GROUPS.items()
+        })
+        # Spatial identity, shared between a cell and the connections that touch
+        # its location.
+        self.location_embed = nn.Embedding(be.LOCATION_COUNT, d)
+        self.register_buffer(
+            "cell_locations", torch.tensor(be.BOARD_CELL_LOCATIONS, dtype=torch.long)
+        )
+        self.register_buffer(
+            "edge_locations",
+            torch.tensor(be.CONNECTION_ENDPOINTS, dtype=torch.long).view(-1, 2),
+        )
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d,
             nhead=self.cfg.heads,
@@ -69,7 +87,17 @@ class PolicyValueNet(nn.Module):
             norm_first=True,
             activation="gelu",
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.cfg.layers)
+        # Every position is always present (102 tokens per state, no padding),
+        # and `norm_first` layers cannot use the nested-tensor fast path anyway,
+        # so the encoder is built with it off instead of warning about it.
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=self.cfg.layers, enable_nested_tensor=False
+        )
+        # The value / winner / econ heads read this summary. A plain mean over
+        # every token would dilute the seat tokens — which is where VP, money,
+        # income and link counts live — to 4 tokens out of 102, so pool per
+        # group instead and keep the global token as its own component.
+        self.summary_proj = nn.Linear((len(STATE_GROUPS) + 1) * d, d)
         self.state_norm = nn.LayerNorm(d)
 
         # Action side: type, slot, scalars, and the referenced entities.
@@ -80,12 +108,19 @@ class PolicyValueNet(nn.Module):
         self.card_embed = nn.Embedding(be.CARD_SEMANTIC_COUNT, d)
         self.action_norm = nn.LayerNorm(d)
 
-        self.score_head = nn.Sequential(
-            nn.Linear(3 * d, 2 * d), nn.GELU(), nn.Linear(2 * d, 1)
-        )
-        self.q_head = nn.Sequential(
-            nn.Linear(3 * d, 2 * d), nn.GELU(), nn.Linear(2 * d, 1)
-        )
+        # Policy and Q share one candidate trunk and only split at the output:
+        # two independent 2*d-wide hidden layers per candidate would double the
+        # largest activation in the model for no representational gain.
+        # Same map as Linear(3d -> 2d) on [action; state; action*state], but
+        # evaluated as three d-wide matmuls summed together: the concatenated
+        # (B,N,3d) activation is one of the largest tensors in the model and
+        # never has to exist.
+        self.joint_action = nn.Linear(d, 2 * d, bias=False)
+        self.joint_state = nn.Linear(d, 2 * d, bias=False)
+        self.joint_cross = nn.Linear(d, 2 * d, bias=False)
+        self.joint_bias = nn.Parameter(torch.zeros(2 * d))
+        self.score_out = nn.Linear(2 * d, 1)
+        self.q_out = nn.Linear(2 * d, 1)
         self.value_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_PLAYERS))
         self.winner_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_PLAYERS))
         self.econ_canal_head = nn.Linear(d, 2)
@@ -117,12 +152,23 @@ class PolicyValueNet(nn.Module):
                 vec = self.global_proj(batch["global"]).unsqueeze(1)
             else:
                 vec = self.group_proj[name](batch[name])
+                vec = vec + self.pos_embed[name].weight.unsqueeze(0)
+                if name == "cells":
+                    vec = vec + self.location_embed(self.cell_locations).unsqueeze(0)
+                elif name == "links":
+                    vec = vec + self.location_embed(self.edge_locations).mean(dim=1).unsqueeze(0)
             tokens.append(vec + self.type_embed.weight[i].view(1, 1, -1))
         seq = torch.cat(tokens, dim=1)
         seq = self.encoder(seq)
-        # The global token sits last; the mean gives a set-level summary that is
-        # invariant to board size while the sequence keeps per-entity detail.
-        summary = self.state_norm(seq[:, -1] + seq.mean(dim=1))
+        pooled = [seq[:, -1]]  # the global token
+        start = 0
+        for name in TOKEN_TYPES:
+            if name == "global":
+                continue
+            count = STATE_GROUPS[name][0]
+            pooled.append(seq[:, start:start + count].mean(dim=1))
+            start += count
+        summary = self.state_norm(self.summary_proj(torch.cat(pooled, dim=-1)))
         return seq, summary
 
     def encode_actions(self, seq: torch.Tensor, actions: torch.Tensor,
@@ -142,14 +188,24 @@ class PolicyValueNet(nn.Module):
             self.card_embed.weight.unsqueeze(0).expand(batch, -1, -1),
         ], dim=1)
 
+        # Weighted sum over the referenced entities. Gathering `(B,N,R,d)`
+        # instead would materialize R x d floats per candidate and keep them
+        # alive for the backward pass — for a 230x567 padded batch that is
+        # ~800 MB on its own. Accumulating an `(B,N,E)` weight map and
+        # contracting it with the entity table costs a cheap matmul and keeps
+        # only N x E weights per batch.
+        entity_count = entity.shape[1]
         ref_index = (self.ref_offset[parts["ref_kind"]] + parts["ref_id"]).clamp(
-            0, entity.shape[1] - 1
+            0, entity_count - 1
         )
-        gathered = entity.gather(
-            1, ref_index.reshape(batch, n * self.cfg.action_ref_cap, 1).expand(-1, -1, entity.shape[2])
-        ).reshape(batch, n, self.cfg.action_ref_cap, entity.shape[2])
-        weight = parts["ref_weight"].unsqueeze(-1)
-        pooled = (gathered * weight).sum(dim=2) / weight.sum(dim=2).clamp_min(1e-6)
+        ref_weight = parts["ref_weight"]           # (B,N,R)
+        flat_index = (
+            ref_index + torch.arange(n, device=ref_index.device).view(1, n, 1) * entity_count
+        ).reshape(batch, n * self.cfg.action_ref_cap)
+        weight_map = ref_weight.new_zeros(batch, n * entity_count)
+        weight_map.scatter_add_(1, flat_index, ref_weight.reshape(batch, n * self.cfg.action_ref_cap))
+        pooled = torch.bmm(weight_map.view(batch, n, entity_count), entity)
+        pooled = pooled / ref_weight.sum(dim=-1, keepdim=True).clamp_min(1e-6)
 
         action = (
             self.kind_embed(parts["kind"].clamp(0, ACTION_KIND_COUNT - 1))
@@ -187,9 +243,14 @@ class PolicyValueNet(nn.Module):
             raise ValueError("state batch and action batch sizes differ")
         action = self.encode_actions(seq, action_features, candidate_mask)
 
-        joint = torch.cat([action, summary.unsqueeze(1).expand_as(action), action * summary.unsqueeze(1)], dim=-1)
-        logits = self.score_head(joint).squeeze(-1)
-        candidate_value = self.q_head(joint).squeeze(-1)
+        hidden = F.gelu(
+            self.joint_action(action)
+            + self.joint_state(summary).unsqueeze(1)
+            + self.joint_cross(action * summary.unsqueeze(1))
+            + self.joint_bias
+        )
+        logits = self.score_out(hidden).squeeze(-1)
+        candidate_value = self.q_out(hidden).squeeze(-1)
 
         log_probs = torch.log_softmax(
             logits.masked_fill(~candidate_mask, float("-inf")), dim=1

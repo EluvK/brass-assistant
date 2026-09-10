@@ -36,8 +36,10 @@ def main():
     ap.add_argument("--games", type=int, default=1000)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--max-candidate-batch", type=int, default=131072,
-                    help="maximum padded candidate rows per GPU batch (default: 131072)") # 24576, 32768
+    ap.add_argument("--max-candidate-batch", type=int, default=65536,
+                    help="maximum padded candidate rows per GPU batch; GPU memory "
+                         "scales roughly linearly with this, so lower it first if "
+                         "a run does not fit")
     ap.add_argument("--enable-policy-eval", action="store_true",
                     help="evaluate top-k policy metrics over every replay shard after training")
     ap.add_argument("--lr", type=float, default=1e-3)

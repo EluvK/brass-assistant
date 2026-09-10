@@ -24,7 +24,7 @@ bootstrap_imitation.py
 
 ### `brass_ai/hierarchical_policy.py`
 
-1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验动作特征 schema，将候选集 padding 为网络 batch，并处理"执行不同但特征相同"的等价类 policy 目标。批量浮点负载全部经 numpy 跨界（Rust 侧直接产出 ndarray，不再逐元素装箱 Python float）。
+1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验 action / state token schema，将候选集 padding 为网络 batch，并处理"执行不同但特征相同"的等价类 policy 目标。批量浮点负载全部经 numpy 跨界（Rust 侧直接产出 ndarray，不再逐元素装箱 Python float）。
 2. 主要函数：
    - `_check_schema()`：模块导入时校验 Rust 与 Python 的 action / state token schema 版本一致。
    - `STATE_GROUPS` / `REF_ID_BOUND`：状态 token 组与各类动作引用的 id 上界，全部取自 Rust 导出。
@@ -83,10 +83,10 @@ bootstrap_imitation.py
    - `Trainer.train_on_samples(samples)`：按配置训练多 epoch，推进学习率并计算训练集指标。
    - `Trainer.train_one_epoch(samples, progress_label)`：训练一遍样本；snapshot 模式经常驻池预取物化（与 GPU 重叠），并按候选行预算贪心装箱 micro-batch（单个超大候选样本只影响其所在块，不再压缩整批）。
    - `Trainer.train_steps(...)`：有放回随机采样的固定步训练 API，供后续训练入口复用。
-   - `Trainer.state_dict()` / `load_state_dict()`：保存/恢复训练状态并检查 feature schema。
+   - `Trainer.state_dict()` / `load_state_dict()`：保存/恢复训练状态并检查 action / state token schema。
    - `compute_loss(...)`：计算各监督目标与正则项。
    - `train_on_batch(...)`：执行一批的前向、反向和参数更新；CUDA 上默认跳过逐步逐参数 inf/NaN 同步检查（GradScaler 已跳过坏步），由调用方每 N 步做一次深检。
-   - `_to_batch(samples)`：堆叠状态、padding 候选和 policy。
+   - `_to_batch(samples)`：堆叠五组状态 token、padding 候选与 policy，并把绝对座位序的 value/winner 目标旋转到行动方视角。
    - `evaluate_policy(...)`：分批统计 top-k 命中率、winner 命中、熵与候选数。
    - `LoopConfig` / `run_loop(...)`：简化的单进程 self-play -> train 循环；当前没有顶层入口调用它。
 
@@ -115,7 +115,7 @@ bootstrap_imitation.py
 1. 作用：replay-web 网络座位的子进程 worker。加载网络 checkpoint 后通过 stdin/stdout 逐行 JSON 协议应答 Rust 的决策请求；协议与会话模型见 [replay-design.md](replay-design.md)。
 2. 主要类/函数：
    - `WorkerConfig`：解析 `--ckpt / --mode / --sims / --device` 等 worker 参数。
-   - `load_net(...)`：加载 checkpoint 并校验 action/state feature schema。
+   - `load_net(...)`：加载 checkpoint 并校验 action / state token schema。
    - `root_forward(state)`：对全部合法候选做一次网络前向，返回覆盖全合法集的 policy 概率与当前玩家 value 头估计。
    - `handle_request(...)`：处理单次 `choose` 请求，mcts 模式经 `RustISMCTS` 搜索、policy 模式直接对全候选 argmax，返回 canonical 动作与 evidence。
    - `main()`：加载 checkpoint 后输出 ready 握手并进入请求循环；单次请求失败返回 `{"type":"error",...}` 并保持存活。

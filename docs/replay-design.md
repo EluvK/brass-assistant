@@ -18,7 +18,7 @@
 
 `python:<worker-config>` 通过 `PythonWorkerStrategy` 实现：每个此类座位启动一个独立的 Python worker 子进程（`python -u -m brass_ai.replay_worker <worker-config>`，`PYTHONPATH` 指向仓库 `python/`；worker-config 按空白切分，含空格的参数可用单/双引号包裹），worker 持有一个网络 checkpoint 并通过 stdin/stdout 的逐行 JSON 协议应答：
 
-- 启动握手：worker 加载 checkpoint 后输出 `{"type":"ready","name":...,"meta":{ckpt, mode, sims, device, action/state feature schema 版本}}`；Rust 在会话创建时等待握手，坏 checkpoint 或解释器缺失会在 HTTP 服务启动前报错退出。
+- 启动握手：worker 加载 checkpoint 后输出 `{"type":"ready","name":...,"meta":{ckpt, mode, sims, device, action_schema_version, state_token_schema_version}}`；Rust 在会话创建时等待握手，坏 checkpoint 或解释器缺失会在 HTTP 服务启动前报错退出。
 - 决策请求：Rust 发送 `{"type":"choose","request_id":N,"snapshot":"<base64>","legal":[...]}`。snapshot 采用与 pyo3 `GameState.snapshot()` 完全相同的字节格式（magic + version + `snapshot_bytes`），worker 用 `GameState.from_snapshot` 无损还原完整局面（含 RNG 与全部手牌）。
 - 决策响应：`{"type":"choice","request_id":N,"canonical":...,"evidence":{mode, policy, visits, root_value}}`；单次请求失败时返回 `{"type":"error",...}` 并保持存活。
 - 超时（`--worker-timeout`，默认 300 秒）、进程退出和返回不在合法集中的 canonical 均产生可诊断的会话失败。

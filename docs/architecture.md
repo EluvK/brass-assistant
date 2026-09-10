@@ -89,7 +89,7 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 │   └─ random_ai.rs     随机基线
 │
 └─ bridge/ 桥接 / 序列化层（Python/NN 相关；依赖全部上层）
-    ├─ action_features.rs ResolvedMove → 执行候选动作特征
+    ├─ action_features.rs ResolvedMove → 动作引用行（类型 + 实体引用 + 标量）
     ├─ move_codec.rs ResolvedMove ⇄ canonical 字符串（无损，含资源源/已选卡牌）
     ├─ encode.rs     状态 → token 特征编码（cells/links/merchants/seats/global）
     ├─ replay_fmt.rs 中文回放格式化（纯只读，供 replay 二进制与 Python 驱动共用）
@@ -132,15 +132,14 @@ python/
 
 `brass_ai._engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
 
-- `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为状态 token 组（`cells`、`links`、`merchants`、`seats`、`global`）、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
+- `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为状态 token 组（`cells`、`links`、`merchants`、`seats`、`global`）、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values, candidate_values)`——第三项是 `Q(s,a)`，用来初始化未访问孩子的价值。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
 - `search_net(...)` 除 `(best, children, legal_candidate_ids)` 外还返回两个搜索自检计数：
-  `failed_applies`（复用的树子节点被规则直接拒绝）与 `rewritten_applies`（复用的树子节点通过了
-  规则检查，但实际打出的是另一张牌）。二者用于度量树节点跨 determinization 复用的代价。
-  该调用还接受 `prior_top_k` / `fpu` / `fpu_reduction`：先对全部合法动作打分，再只保留先验最高的
-  K 个孩子（默认 0 = 全合法），并用父节点价值作为未访问孩子的 Q。理由与实测见
-  [roadmap.md](roadmap.md) 的「阶段 3 的已知问题」。
-- `state_tokens()`：供训练与推理使用的单状态观测。它按行动方视角旋转，输出 49 个棋盘格、39 条连接、9 个商家、4 个座位与 1 个全局 token；每个 cell 上带归属、行业、资源、翻面、静态槽位能力、网络归属与到本方的图距离。逐字段定义见 [ai-action-encoding.md](./ai-action-encoding.md) §2，Rust 同时导出拓扑与全部平面偏移，Python 不硬编码任何平面索引。
-- `legal_candidates()`：Rust 返回完整可执行动作及其结构化特征；网络只对当前候选集合执行 softmax。
+  `failed_applies`（分支在当前 determinization 下执行不了、被剪枝）与 `rewritten_applies`
+  （存储的手牌下标已不指向枚举时那张牌、需要按语义重新绑定）。树节点跨 determinization
+  复用是常态，节点保存的是语义卡牌而不是下标，所以复用不再会静默打错牌。
+  该调用还接受 `prior_top_k` / `fpu` / `q_init`。
+- `state_tokens()`：供训练与推理使用的单状态观测。它按行动方视角旋转，输出 49 个棋盘格、39 条连接、9 个商家、4 个座位与 1 个全局 token；每个 cell 上带归属、行业、资源、翻面、静态槽位能力、网络归属与到本方的图距离。逐字段定义见 [ai-action-encoding.md](./ai-action-encoding.md) §2，Rust 同时导出拓扑、特征偏移与尺寸常量，Python 不硬编码任何平面索引。
+- `legal_candidates()`：Rust 返回完整可执行动作及其动作引用行；网络只对当前候选集合执行 softmax。
 
 网络当前对每个具体候选动作输出 logit：动作由 Rust `bridge::action_features` 编码为"类型 + 实体引用"，网络按引用 id 从状态 token 里取出被引用的实体，因此动作与状态的交互是结构保证的而不是人工特征复述的。合法动作枚举完全由 Rust 完成。动作引用布局与 value/winner/econ/Q 头见 [ai-action-encoding.md](./ai-action-encoding.md)。
 
@@ -183,4 +182,4 @@ teacher canonical action（候选集训练前实时物化），监督目标为�
 入口基于 `play_game_with_roles` / `SelfPlayPool` / `Trainer.train_one_epoch` 组合。
 机器命令与参数见 [ai-tools.md](./ai-tools.md)。
 
-搜索树以 Rust `RustISMCTS` 为唯一实现，Python 侧不做搜索、不实现规则。任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。state-feature schema 或 action-feature schema 升级会拒绝旧 checkpoint/样本，必须重新采样训练。
+搜索树以 Rust `RustISMCTS` 为唯一实现，Python 侧不做搜索、不实现规则。任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。state token schema 或 action schema 升级会拒绝旧 checkpoint/样本，必须重新采样训练。
