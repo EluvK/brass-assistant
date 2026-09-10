@@ -2,20 +2,18 @@
 
 The search can only improve on the policy prior if some value estimate tells it
 that one child is better than another. `V(s)` is structurally bad at this: two
-sibling moves produce two nearly identical states, and the measured spread of
-the rank head across siblings (sd ~0.014) is an order of magnitude below its own
-error (~0.14). `Q(s, a)` gets the action embedding as an input instead, so the
-comparison is first-order for it.
+sibling moves produce two nearly identical states. `Q(s, a)` receives the
+action's referenced entities directly, so the comparison is first-order for it.
 
 This script measures both against a rollout reference: for the top-K children by
-prior it plays the rest of the game with the engine heuristic and records where
-the mover actually finishes, then reports the within-position Spearman
-correlation between each predictor and the realized outcome. Higher is better;
-0 means the head cannot rank siblings at all.
+prior it plays the rest of the game with the engine heuristic and records the
+mover's realized terminal utility, then reports the within-position Spearman
+correlation between each predictor and that outcome. Higher is better; 0 means
+the head cannot rank siblings at all.
 
 Run from the repo root:
 
-    ./.venv/Scripts/python.exe python/bench_value_ranking.py --ckpt checkpoints/bootstrap-qhead.pt
+    ./.venv/Scripts/python.exe python/bench_value_ranking.py --ckpt checkpoints/selfplay/latest.pt
 
 Read it as a comparison, not an absolute score: one rollout per child is a single
 sample, so per-position correlations are noisy and only the *paired* difference
@@ -32,7 +30,7 @@ import numpy as np
 import torch
 
 from brass_ai import _engine as be
-from brass_ai.net import PolicyValueNet, load_state_dict_tolerant
+from brass_ai.net import PolicyValueNet, state_batch
 
 
 def _spearman(x: np.ndarray, y: np.ndarray) -> float | None:
@@ -43,29 +41,35 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> float | None:
     return float(np.corrcoef(rx, ry)[0, 1])
 
 
-def _forward(net: PolicyValueNet, state, pid: int) -> dict:
-    board, links, g, oh, op = state.state_to_tensor(pid)
-    batch = {
-        "board": torch.from_numpy(board).unsqueeze(0),
-        "links": torch.from_numpy(links).unsqueeze(0),
-        "global": torch.from_numpy(g).unsqueeze(0),
-        "own_hand": torch.from_numpy(oh).unsqueeze(0),
-        "opp_hands": torch.from_numpy(op).unsqueeze(0),
-    }
+def _forward(net: PolicyValueNet, state) -> dict:
+    """One forward pass, always from the acting player's perspective."""
+    cells, links, merchants, seats, g = state.state_tokens()
+    batch = state_batch((
+        torch.from_numpy(np.asarray(cells, dtype=np.float32)).unsqueeze(0),
+        torch.from_numpy(np.asarray(links, dtype=np.float32)).unsqueeze(0),
+        torch.from_numpy(np.asarray(merchants, dtype=np.float32)).unsqueeze(0),
+        torch.from_numpy(np.asarray(seats, dtype=np.float32)).unsqueeze(0),
+        torch.from_numpy(np.asarray(g, dtype=np.float32)).unsqueeze(0),
+    ))
     canonical, features = state.legal_candidates()
     actions = torch.from_numpy(np.asarray(features, dtype=np.float32)).unsqueeze(0)
     mask = torch.ones(1, actions.shape[1], dtype=torch.bool)
     with torch.no_grad():
         out = net(batch, actions, mask)
-    rank = out["rank"][0].numpy()
-    win = torch.softmax(out["winner_logits"][0], dim=0).numpy()
+    actor = state.current_player_id
     return {
-        "V(s)=1-rank/n": 1.0 - float(rank[pid]) / 4.0,
-        "winner_prob": float(win[pid]),
+        "actor": actor,
+        "value": out["value"][0].numpy(),                       # index 0 = actor
+        "winner": torch.softmax(out["winner_logits"][0], dim=0).numpy(),
         "prior": out["candidate_log_probs"][0].exp().numpy(),
         "Q(s,a)": out["candidate_value"][0].numpy(),
         "canonical": canonical,
     }
+
+
+def _seat_of(pid: int, actor: int, players: int = 4) -> int:
+    """Index of absolute player `pid` in a perspective-rotated vector."""
+    return (pid - actor) % players
 
 
 def main() -> int:
@@ -78,13 +82,8 @@ def main() -> int:
     args = parser.parse_args()
 
     net = PolicyValueNet()
-    payload = torch.load(args.ckpt, map_location="cpu")
-    missing, _ = load_state_dict_tolerant(
-        net, payload["model"] if "model" in payload else payload
-    )
-    if missing:
-        print(f"note: {args.ckpt} predates {missing} - those heads are random; "
-              "treat their rows below as a baseline, not a measurement")
+    payload = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    net.load_state_dict(payload["model"] if "model" in payload else payload)
     net.eval()
 
     rows = []
@@ -100,14 +99,14 @@ def main() -> int:
                 continue
             pid = state.current_player_id
             world = state.determinize()
-            root = _forward(net, world, pid)
+            root = _forward(net, world)
             for index in np.argsort(-root["prior"])[: args.candidates]:
                 child = world.clone()
                 _, ok = child.apply_move_raw(root["canonical"][int(index)])
                 if not ok:
                     continue
                 child.advance_turn_raw()
-                predicted = _forward(net, child, pid)
+                predicted = _forward(net, child)
                 guard = 0
                 while not child.game_over and guard < 600:
                     move, _, _ = child.choose_heuristic()
@@ -115,19 +114,21 @@ def main() -> int:
                     guard += 1
                 if not child.game_over:
                     continue
-                place = child.final_ranking().index(pid) + 1
+                vps = np.asarray(child.player_vps(), dtype=np.float64)
+                goal = (vps[pid] - vps.mean()) / float(be.VP_SCALE)
+                seat = _seat_of(pid, predicted["actor"])
                 rows.append({
                     "pos": (seed, slot),
-                    "goal": 1.0 - place / 4.0,
+                    "goal": float(goal),
                     "prior": float(root["prior"][int(index)]),
                     "Q(s,a)": float(root["Q(s,a)"][int(index)]),
-                    "V(s)=1-rank/n": predicted["V(s)=1-rank/n"],
-                    "winner_prob": predicted["winner_prob"],
+                    "V(s)": float(predicted["value"][seat]),
+                    "winner_prob": float(predicted["winner"][seat]),
                 })
 
     keys = sorted({row["pos"] for row in rows})
     print(f"positions={len(keys)} rollouts={len(rows)}")
-    for name in ("V(s)=1-rank/n", "Q(s,a)", "prior", "winner_prob"):
+    for name in ("V(s)", "Q(s,a)", "prior", "winner_prob"):
         correlations = []
         for key in keys:
             subset = [row for row in rows if row["pos"] == key]

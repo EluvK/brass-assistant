@@ -50,11 +50,11 @@ pub mod kind {
     pub const PASS: usize = 7;
 }
 
-const OFF_KIND: usize = 0;
-const OFF_SLOT: usize = 1;
-const OFF_NUMBERS: usize = 2;
-const OFF_REF_COUNT: usize = 2 + ACTION_NUMBERS;
-const OFF_REFS: usize = OFF_REF_COUNT + 1;
+pub const OFF_KIND: usize = 0;
+pub const OFF_SLOT: usize = 1;
+pub const OFF_NUMBERS: usize = 2;
+pub const OFF_REF_COUNT: usize = 2 + ACTION_NUMBERS;
+pub const OFF_REFS: usize = OFF_REF_COUNT + 1;
 
 const CARD_WILD_LOCATION: usize = LOCATION_COUNT + INDUSTRY_COUNT; // 33
 const CARD_WILD_INDUSTRY: usize = LOCATION_COUNT + INDUSTRY_COUNT + 1; // 34

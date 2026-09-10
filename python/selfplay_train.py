@@ -114,7 +114,7 @@ def main() -> int:
 
     import torch
 
-    from brass_ai.net import PolicyValueNet, load_state_dict_tolerant
+    from brass_ai.net import PolicyValueNet
     from brass_ai.rust_mcts import RustMCTSConfig
     from brass_ai.selfplay import SelfPlayConfig
     from brass_ai.selfplay_loop import LoopConfig, run_selfplay, write_metrics
@@ -152,11 +152,8 @@ def main() -> int:
         elif args.init_from is not None:
             if not args.init_from.is_file():
                 raise SystemExit(f"--init-from does not exist: {args.init_from}")
-            missing, _ = load_state_dict_tolerant(
-                net, _load_model_state(args.init_from, args.device)
-            )
-            print(f"warm start from {args.init_from}"
-                  + (f" (new heads start from scratch: {missing})" if missing else ""))
+            net.load_state_dict(_load_model_state(args.init_from, args.device))
+            print(f"warm start from {args.init_from}")
         else:
             print("warning: no --init-from and no --resume; starting from random weights")
 

@@ -39,9 +39,10 @@ def test_rust_selfplay_produces_complete_game_samples():
     assert len(vps) == 4
     for sample in samples:
         assert np.isclose(sample.policy.sum(), 1.0)
-        assert sample.rank.shape == (4,)
+        assert sample.value.shape == (4,)
         assert sample.econ.shape == (2,)
-        assert np.isfinite(sample.rank).all()
+        assert np.isfinite(sample.value).all()
+        assert np.isclose(float(sample.value.sum()), 0.0, atol=1e-5)
 
 
 def test_truncated_selfplay_is_rejected():
@@ -85,30 +86,39 @@ def test_prior_top_k_prunes_the_searched_branching_factor():
     assert 0 < len(result.visits) <= 6
 
 
+def _sampled_opponent_hands(state):
+    """Opponent hand bags as encoded for the acting player's perspective."""
+    seats = state.state_tokens()[3]
+    lo, hi = be.SEAT_HAND_SAMPLED, be.SEAT_HAND_SAMPLED + be.CARD_SEMANTIC_COUNT
+    return seats[1:, lo:hi]
+
+
 def test_selfplay_observation_is_determinized_by_default():
     mcts = _make()
     state = be.GameState(seed=5, players=4)
-    true_opp = state.state_to_tensor()[4]
+    true_opp = _sampled_opponent_hands(state)
     samples, _ = play_game(
         mcts, SelfPlayConfig(sims=2, seed=5, temperature=0.0, store_snapshots=False)
     )
     # The first recorded decision is the opening position, whose true opponent
     # hands are known; training must not see them.
     assert samples
-    assert not np.allclose(samples[0].opp_hands, true_opp)
+    recorded = samples[0].seats[1:, be.SEAT_HAND_SAMPLED:be.SEAT_HAND_SAMPLED + be.CARD_SEMANTIC_COUNT]
+    assert not np.allclose(recorded, true_opp)
 
 
 def test_selfplay_observation_can_use_the_true_state():
     mcts = _make()
     state = be.GameState(seed=5, players=4)
-    true_opp = state.state_to_tensor()[4]
+    true_opp = _sampled_opponent_hands(state)
     samples, _ = play_game(
         mcts,
         SelfPlayConfig(sims=2, seed=5, temperature=0.0, determinize_observation=False,
                        store_snapshots=False),
     )
     assert samples
-    assert np.allclose(samples[0].opp_hands, true_opp)
+    recorded = samples[0].seats[1:, be.SEAT_HAND_SAMPLED:be.SEAT_HAND_SAMPLED + be.CARD_SEMANTIC_COUNT]
+    np.testing.assert_allclose(recorded, true_opp)
 
 
 def test_selfplay_stats_report_reuse_counters():

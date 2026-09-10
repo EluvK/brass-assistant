@@ -26,22 +26,26 @@ bootstrap_imitation.py
 
 1. 作用：从 Rust 获得完整合法候选或 heuristic shortlist，校验动作特征 schema，将候选集 padding 为网络 batch，并处理"执行不同但特征相同"的等价类 policy 目标。批量浮点负载全部经 numpy 跨界（Rust 侧直接产出 ndarray，不再逐元素装箱 Python float）。
 2. 主要函数：
-   - `_feature_width()`：检查 Rust action feature schema version，返回动作特征维度。
-   - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, 301)` tensor（Rust 侧一次 memcpy 生成）。
+   - `_check_schema()`：模块导入时校验 Rust 与 Python 的 action / state token schema 版本一致。
+   - `STATE_GROUPS` / `REF_ID_BOUND`：状态 token 组与各类动作引用的 id 上界，全部取自 Rust 导出。
+   - `split_action_rows(rows)`：把 `(N, ACTION_FEATURE_DIM)` 拆成动作类型、槽位、标量、引用 kind/id/weight 与引用掩码。
+   - `encode_legal_candidates(state)`：返回全部合法动作的 canonical 字符串和 `(N, ACTION_FEATURE_DIM)` tensor（Rust 侧一次 memcpy 生成）。
    - `encode_teacher_candidates(state)`：返回 heuristic teacher 的候选评分及最终动作；训练只使用最终动作，候选特征不进入 replay。
-   - `compress_candidate_features(features)`：将以 0.25 为步长的特征无损压缩为 `uint8`；`uint8` 输入直接透传（Rust materialize 已产出打包行）。
    - `pad_candidate_features(rows, device)`：把变长候选行变为 `(B, max_N, D)` 和 boolean mask。
    - `coalesce_equivalent_policy(features, policy)`：把特征完全相同的候选视为等价类，将 policy 质量均摊到类内（MCTS visit 目标使用）。实现委托给 Rust `_engine.coalesce_equivalent_policy`，避免每类分配布尔掩码的 numpy 开销。
    - `teacher_equivalence_policy(features, teacher_index)`：把 teacher one-hot 展开为其特征等价类上的均匀分布（full-legal imitation 目标使用；物化路径由 Rust `materialize_snapshot` 直接产出同等结果）。
+   - `rotate_to_perspective(targets, pid)`：把绝对座位序的 per-seat 目标旋转到"行动方在 0 号位"，与观测的视角一致。
 
 ### `brass_ai/net.py`
 
-1. 作用：定义 `PolicyValueNet`：编码状态和 Rust 候选动作，为每个候选产生 logit（FiLM 调制 + 候选集上下文），并预测四玩家终局名次/胜者分布与经济辅助目标。
+1. 作用：定义 `PolicyValueNet`：把状态 token 组编码成序列，按动作引用取出被引用的实体，为每个候选产生 logit，并预测四玩家终局效用/胜者分布与经济辅助目标。
 2. 主要类/函数：
    - `NetConfig`：网络宽度和输入维度配置。
-   - `PolicyValueNet.__init__()`：构建状态 encoder、共享 trunk、动作 encoder 和 policy/rank/winner/econ heads。
-   - `PolicyValueNet.encode_state(batch)`：编码 board、links、全局信息和手牌为 state embedding。
-   - `PolicyValueNet.forward(batch, action_features, candidate_mask)`：计算 masked candidate logits、rank/winner 与 econ 输出。
+   - `PolicyValueNet.__init__()`：构建分组投影、类型 embedding、transformer 编码器、动作引用打分头与 value/winner/econ/q 头。
+   - `PolicyValueNet.encode_state(batch)`：把五组 token 投影到 `d_model` 后过 transformer，返回 token 序列与全局摘要。
+   - `PolicyValueNet.encode_actions(seq, actions, mask)`：按引用 kind/id 从 token 序列或静态 embedding 表 gather，加权池化成动作向量。
+   - `PolicyValueNet.forward(batch, action_features, candidate_mask)`：计算 masked candidate logits、value/winner/econ 与 `candidate_value`（Q）。
+   - `state_batch(tensors)`：把引擎返回的五组 token 组装成网络 batch。
    - `PolicyValueNet.policy_value(...)`：无梯度推理包装，供搜索调用。
 
 ### `brass_ai/rust_mcts.py`
@@ -58,9 +62,9 @@ bootstrap_imitation.py
 
 1. 作用：定义 `Sample`，生成 MCTS self-play 或 heuristic imitation 数据；完整合法候选模式可通过 Rust snapshot 延迟物化候选集。
 2. 主要类/函数：
-   - `Sample`：一个决策点的状态、候选、policy、rank/winner/econ 目标及可选 snapshot/教师动作。
-   - `materialize_sample(sample)` / `materialize_samples(samples)`：从 snapshot 重建全合法候选与 one-hot target。核心重建在单次 Rust 调用 `_engine.GameState.materialize_snapshot(snapshot, teacher)` 内完成（恢复状态 → 全合法候选 uint8 quarter-step 特征 → teacher 等价类 policy），候选不再经 Python 逐元素转换。
-   - `materialize_chunk(samples)` / `stream_materialized_batches(pool, batches, rpc_chunk)`：池 worker 批量物化（候选按 quarter-step 压成 uint8 传输，省 4× IPC），并按批预取使物化与 GPU 训练重叠。
+   - `Sample`：一个决策点的状态 token 组、候选、policy、value/winner/econ 目标及可选 snapshot/教师动作。
+   - `materialize_sample(sample)` / `materialize_samples(samples)`：从 snapshot 重建全合法候选与 one-hot target。核心重建在单次 Rust 调用 `_engine.GameState.materialize_snapshot(snapshot, teacher)` 内完成（恢复状态 → 全合法候选引用 → teacher 等价类 policy），候选不再经 Python 逐元素转换。
+   - `materialize_chunk(samples)` / `stream_materialized_batches(pool, batches, rpc_chunk)`：池 worker 批量物化，并按批预取使物化与 GPU 训练重叠。
    - `SelfPlayConfig`：玩家数、模拟数、温度、最大步数与 seed。
    - `_candidate_policy(...)`：将 MCTS visit 对齐为 Rust 候选顺序上的 policy 分布。
    - `_sample_move(...)`：按 visit 分布和温度选择动作。
@@ -72,7 +76,7 @@ bootstrap_imitation.py
 
 ### `brass_ai/train.py`
 
-1. 作用：持有 optimizer/scheduler；组装变长候选 batch；计算 policy、rank、winner、经济和 L2 损失；控制完整候选训练的 batch 内存。
+1. 作用：持有 optimizer/scheduler；组装变长候选 batch；计算 policy、value、winner、Q、经济和 L2 损失；控制完整候选训练的 batch 内存。
 2. 主要类/函数：
    - `TrainConfig`：训练超参数、设备、候选行预算、snapshot materialize worker 数与 RPC 分块、周期性 inf/NaN 深检间隔。
    - `Trainer.__init__()`：创建 AdamW、CosineAnnealingLR 并绑定网络；持有跨 shard 复用的常驻 materialize 进程池（`close()` 释放）。

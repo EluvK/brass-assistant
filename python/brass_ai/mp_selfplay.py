@@ -110,7 +110,7 @@ def _pack_samples(samples: list[Sample], stats: dict | None = None) -> dict:
     }
     n = len(samples)
     if n and samples[0].policy_by_canonical is not None:
-        # Snapshot form: a few KB per sample instead of a dense N*301 matrix.
+        # Snapshot form: a few KB per sample instead of a dense candidate matrix.
         return {
             **diagnostics,
             "mode": "snapshot",
@@ -124,7 +124,7 @@ def _pack_samples(samples: list[Sample], stats: dict | None = None) -> dict:
                 for s in samples
             ],
             "played": [s.played_canonical for s in samples],
-            "rank": np.stack([s.rank for s in samples]).astype(np.float32),
+            "value": np.stack([s.value for s in samples]).astype(np.float32),
             "winner": np.stack([s.winner for s in samples]).astype(np.float32),
             "econ": np.stack([s.econ for s in samples]).astype(np.float32),
         }
@@ -135,15 +135,15 @@ def _pack_samples(samples: list[Sample], stats: dict | None = None) -> dict:
             "mode": "dense",
             "pid": np.empty(0, dtype=np.int64),
             "era": np.empty(0, dtype=np.int64),
-            "board": np.empty((0, be.BOARD_PLANES, be.BOARD_CELLS), dtype=np.float32),
-            "links": np.empty((0, be.LINK_PLANES, be.LINK_CELLS), dtype=np.float32),
-            "global": np.empty((0, be.GLOBAL_LEN), dtype=np.float32),
-            "own_hand": np.empty((0, be.HAND_LEN), dtype=np.float32),
-            "opp_hands": np.empty((0, be.HAND_LEN * 3), dtype=np.float32),
+            "cells": np.empty((0, be.BOARD_CELLS, be.F_CELL), dtype=np.float32),
+            "links": np.empty((0, be.LINK_CELLS, be.F_LINK), dtype=np.float32),
+            "merchants": np.empty((0, be.MERCHANT_COUNT, be.F_MERCHANT), dtype=np.float32),
+            "seats": np.empty((0, be.SEAT_COUNT, be.F_SEAT), dtype=np.float32),
+            "global": np.empty((0, be.F_GLOBAL), dtype=np.float32),
             "candidates": np.empty((0, 0, ACTION_FEATURE_DIM), dtype=np.float32),
             "candidate_mask": np.empty((0, 0), dtype=np.bool_),
             "policy": np.empty((0, 0), dtype=np.float32),
-            "rank": np.empty((0, 4), dtype=np.float32),
+            "value": np.empty((0, 4), dtype=np.float32),
             "winner": np.empty((0, 4), dtype=np.float32),
             "econ": np.empty((0, 2), dtype=np.float32),
         }
@@ -157,16 +157,16 @@ def _pack_samples(samples: list[Sample], stats: dict | None = None) -> dict:
         **diagnostics,
         "pid": np.asarray([s.pid for s in samples], dtype=np.int64),
         "era": np.asarray([s.era for s in samples], dtype=np.int64),
-        "board": np.stack([s.board for s in samples]).astype(np.float32),
+        "cells": np.stack([s.cells for s in samples]).astype(np.float32),
         "links": np.stack([s.links for s in samples]).astype(np.float32),
+        "merchants": np.stack([s.merchants for s in samples]).astype(np.float32),
+        "seats": np.stack([s.seats for s in samples]).astype(np.float32),
         "global": np.stack([s.global_vec for s in samples]).astype(np.float32),
-        "own_hand": np.stack([s.own_hand for s in samples]).astype(np.float32),
-        "opp_hands": np.stack([s.opp_hands for s in samples]).astype(np.float32),
         "candidates": candidates.numpy(),
         "candidate_mask": candidate_mask.numpy(),
         "policy": policy,
         "played": [s.played_canonical for s in samples],
-        "rank": np.stack([s.rank for s in samples]).astype(np.float32),
+        "value": np.stack([s.value for s in samples]).astype(np.float32),
         "winner": np.stack([s.winner for s in samples]).astype(np.float32),
         "econ": np.stack([s.econ for s in samples]).astype(np.float32),
         "count": n,
@@ -185,7 +185,7 @@ def unpack_samples(packed: dict) -> list[Sample]:
                 policy_by_canonical=dict(
                     zip(packed["policy_moves"][i], packed["policy_probs"][i])
                 ),
-                rank=packed["rank"][i].astype(np.float32),
+                value=packed["value"][i].astype(np.float32),
                 winner=packed["winner"][i].astype(np.float32),
                 econ=packed["econ"][i].astype(np.float32),
             )
@@ -197,15 +197,15 @@ def unpack_samples(packed: dict) -> list[Sample]:
             Sample(
                 pid=int(packed["pid"][i]),
                 era=int(packed["era"][i]),
-                board=packed["board"][i],
+                cells=packed["cells"][i],
                 links=packed["links"][i],
+                merchants=packed["merchants"][i],
+                seats=packed["seats"][i],
                 global_vec=packed["global"][i],
-                own_hand=packed["own_hand"][i],
-                opp_hands=packed["opp_hands"][i],
                 candidates=packed["candidates"][i, packed["candidate_mask"][i]],
                 policy=packed["policy"][i, packed["candidate_mask"][i]],
                 played_canonical=packed["played"][i],
-                rank=packed["rank"][i].astype(np.float32),
+                value=packed["value"][i].astype(np.float32),
                 winner=packed["winner"][i].astype(np.float32),
                 econ=packed["econ"][i].astype(np.float32),
             )

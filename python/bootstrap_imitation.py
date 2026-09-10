@@ -169,7 +169,7 @@ def main():
             print(f"checkpoint updated after epoch {trainer.epoch_count}: {ckpt_path}")
         mean_losses = {k: sum(x[k] for x in losses) / len(losses) for k in losses[0]}
         print(f"trained {total_samples} samples ({time.time()-t1:.0f}s): "
-              f"policy={mean_losses['policy']:.3f} rank={mean_losses['rank']:.3f} "
+              f"policy={mean_losses['policy']:.3f} value={mean_losses['value']:.3f} "
               f"winner={mean_losses['winner']:.3f}")
         if args.enable_policy_eval:
             metrics = {}

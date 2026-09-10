@@ -68,19 +68,20 @@ def load_net(cfg: WorkerConfig) -> PolicyValueNet:
     if not isinstance(ckpt, dict) or "model" not in ckpt:
         raise ValueError(f"{cfg.ckpt} is not a training checkpoint (missing 'model')")
     checks = {
-        "action_feature_schema_version": be.ACTION_FEATURE_SCHEMA_VERSION,
-        "state_feature_schema_version": be.STATE_FEATURE_SCHEMA_VERSION,
+        "action_schema_version": be.ACTION_SCHEMA_VERSION,
+        "state_token_schema_version": be.STATE_TOKEN_SCHEMA_VERSION,
     }
     for key, expected in checks.items():
         found = ckpt.get(key)
         if found is not None and found != expected:
             raise ValueError(f"checkpoint {key}={found} does not match engine {expected}")
-    shapes = ckpt.get("state_feature_shapes") or {}
+    shapes = ckpt.get("state_token_shapes") or {}
     expected_shapes = {
-        "board": (be.BOARD_PLANES, be.BOARD_CELLS),
-        "links": (be.LINK_PLANES, be.LINK_CELLS),
-        "global": be.GLOBAL_LEN,
-        "hand": be.HAND_LEN,
+        "cells": (be.BOARD_CELLS, be.F_CELL),
+        "links": (be.LINK_CELLS, be.F_LINK),
+        "merchants": (be.MERCHANT_COUNT, be.F_MERCHANT),
+        "seats": (be.SEAT_COUNT, be.F_SEAT),
+        "global": be.F_GLOBAL,
     }
     for key, expected in expected_shapes.items():
         found = shapes.get(key)
@@ -100,25 +101,27 @@ def root_forward(net, state, device: str) -> tuple[dict[str, float], float]:
     """One network forward over all legal candidates.
 
     Returns ``(policy, value)`` where ``policy`` maps every concrete legal
-    canonical to its probability and ``value`` is the current player's value
-    estimate from the rank head (search scale: higher = better).
+    canonical to its probability and ``value`` is the acting player's value
+    estimate. Observations are rotated so seat 0 is the actor, so index 0 of
+    the value vector is that player.
     """
     from .rust_mcts import make_net_fn
 
     canonicals, features = encode_legal_candidates(state)
     padded, mask = pad_candidate_features([features])
-    board, links, global_vec, own_hand, opp_hands = state.state_to_tensor()
+    cells, links, merchants, seats, global_vec = state.state_tokens()
     # make_net_fn mirrors the Rust callback contract: per-row arrays.
     logits, values = make_net_fn(net, device)(
-        board, links,
+        np.asarray(cells, dtype=np.float32).reshape(1, -1),
+        np.asarray(links, dtype=np.float32).reshape(1, -1),
+        np.asarray(merchants, dtype=np.float32).reshape(1, -1),
+        np.asarray(seats, dtype=np.float32).reshape(1, -1),
         np.asarray(global_vec, dtype=np.float32).reshape(1, -1),
-        np.asarray(own_hand, dtype=np.float32).reshape(1, -1),
-        np.asarray(opp_hands, dtype=np.float32).reshape(1, -1),
         padded.numpy(), mask.numpy(),
     )
     probs = torch.softmax(torch.from_numpy(logits[0]), dim=-1).numpy()
     policy = {canon: float(p) for canon, p in zip(canonicals, probs)}
-    return policy, float(values[0][state.current_player_id])
+    return policy, float(values[0][0])
 
 
 def handle_request(net, mcts: RustISMCTS | None, cfg: WorkerConfig, snapshot: bytes, legal: list[str]) -> dict:
@@ -206,8 +209,8 @@ def main(argv: list[str] | None = None) -> int:
             "mode": cfg.mode,
             "sims": cfg.sims,
             "device": cfg.device,
-            "action_feature_schema_version": be.ACTION_FEATURE_SCHEMA_VERSION,
-            "state_feature_schema_version": be.STATE_FEATURE_SCHEMA_VERSION,
+            "action_schema_version": be.ACTION_SCHEMA_VERSION,
+            "state_token_schema_version": be.STATE_TOKEN_SCHEMA_VERSION,
         },
     })
 

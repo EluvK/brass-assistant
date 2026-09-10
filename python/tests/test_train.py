@@ -4,7 +4,7 @@ import torch
 
 from brass_ai.net import PolicyValueNet
 from brass_ai import selfplay
-from brass_ai.selfplay import Sample, _rank_targets, generate_imitation_samples
+from brass_ai.selfplay import Sample, _value_targets, generate_imitation_samples
 from brass_ai.hierarchical_policy import encode_legal_candidates
 from brass_ai import _engine as be
 from brass_ai.train import TrainConfig, Trainer, _to_batch, compute_loss, evaluate_policy
@@ -60,17 +60,18 @@ def test_trainer_state_roundtrip():
 def test_trainer_rejects_old_state_feature_schema():
     trainer = Trainer(PolicyValueNet(), TrainConfig(device="cpu", epochs=1, batch_size=2))
     checkpoint = trainer.state_dict()
-    checkpoint.pop("state_feature_schema_version")
-    checkpoint.pop("state_feature_shapes")
-    with pytest.raises(ValueError, match="state-feature schema"):
+    checkpoint.pop("state_token_schema_version")
+    checkpoint.pop("state_token_shapes")
+    with pytest.raises(ValueError, match="state-token schema"):
         trainer.load_state_dict(checkpoint)
 
 
-def test_rank_target_uses_official_tiebreak_order():
-    # Players 0 and 1 may have tied VP, but the engine's final ranking has
-    # already resolved it by income then cash.
-    rank, winner = _rank_targets([1, 0, 3, 2], 4)
-    np.testing.assert_array_equal(rank, np.asarray([0.5, 0.25, 1.0, 0.75], dtype=np.float32))
+def test_value_target_is_a_vp_margin_and_winner_uses_the_official_tiebreak():
+    # Players 1 and 3 tie on VP; the engine's ranking resolves it by income
+    # then cash, and the winner target must follow that order.
+    value, winner = _value_targets([110, 100, 60, 100], [1, 0, 3, 2], 4)
+    np.testing.assert_allclose(value, np.asarray([17.5, 7.5, -32.5, 7.5], dtype=np.float32) / 50.0)
+    assert np.isclose(float(value.sum()), 0.0, atol=1e-5)
     np.testing.assert_array_equal(winner, np.asarray([0.0, 1.0, 0.0, 0.0], dtype=np.float32))
 
 
@@ -79,7 +80,7 @@ def test_policy_evaluation_materializes_snapshot_batches():
     teacher, _, _ = state.choose_heuristic()
     sample = Sample(
         pid=state.current_player_id, era=state.era,
-        rank=np.zeros(4, dtype=np.float32), winner=np.zeros(4, dtype=np.float32),
+        value=np.zeros(4, dtype=np.float32), winner=np.zeros(4, dtype=np.float32),
         econ=np.zeros(2, dtype=np.float32), snapshot=bytes(state.snapshot()),
         teacher_canonical=teacher,
     )

@@ -838,6 +838,34 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "REF_KIND_COUNT",
         crate::bridge::action_features::REF_KIND_COUNT,
     )?;
+    m.add("ACTION_OFF_KIND", crate::bridge::action_features::OFF_KIND)?;
+    m.add("ACTION_OFF_SLOT", crate::bridge::action_features::OFF_SLOT)?;
+    m.add(
+        "ACTION_OFF_NUMBERS",
+        crate::bridge::action_features::OFF_NUMBERS,
+    )?;
+    m.add(
+        "ACTION_OFF_REF_COUNT",
+        crate::bridge::action_features::OFF_REF_COUNT,
+    )?;
+    m.add("ACTION_OFF_REFS", crate::bridge::action_features::OFF_REFS)?;
+    m.add(
+        "ACTION_REF_CELL",
+        crate::bridge::action_features::REF_CELL,
+    )?;
+    m.add(
+        "ACTION_REF_LINK",
+        crate::bridge::action_features::REF_LINK,
+    )?;
+    m.add(
+        "ACTION_REF_MERCHANT",
+        crate::bridge::action_features::REF_MERCHANT,
+    )?;
+    m.add(
+        "ACTION_REF_INDUSTRY",
+        crate::bridge::action_features::REF_INDUSTRY,
+    )?;
+    m.add("ACTION_REF_CARD", crate::bridge::action_features::REF_CARD)?;
     m.add("BOARD_CELLS", encode::BOARD_CELLS)?;
     m.add("LINK_CELLS", encode::LINK_CELLS)?;
     m.add("MERCHANT_COUNT", encode::MERCHANT_COUNT)?;
@@ -860,5 +888,59 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BOARD_CELL_SLOTS", encode::board_cell_slots())?;
     m.add("CONNECTION_ENDPOINTS", encode::connection_endpoints())?;
     m.add("CONNECTION_VIA_FARMS", encode::connection_via_farms())?;
+    // Token feature offsets (docs/ai-action-encoding.md §2), so no Python
+    // consumer has to hardcode a plane index.
+    for (name, value) in [
+        ("CELL_OWNER", encode::CELL_OWNER),
+        ("CELL_OCCUPIED", encode::CELL_OCCUPIED),
+        ("CELL_INDUSTRY", encode::CELL_INDUSTRY),
+        ("CELL_FLIPPED", encode::CELL_FLIPPED),
+        ("CELL_CUBES", encode::CELL_CUBES),
+        ("CELL_LEVEL", encode::CELL_LEVEL),
+        ("CELL_VP", encode::CELL_VP),
+        ("CELL_INCOME", encode::CELL_INCOME),
+        ("CELL_IS_FARM", encode::CELL_IS_FARM),
+        ("CELL_SLOT", encode::CELL_SLOT),
+        ("CELL_ALLOWED", encode::CELL_ALLOWED),
+        ("CELL_IN_NET", encode::CELL_IN_NET),
+        ("CELL_DIST", encode::CELL_DIST),
+        ("LINK_CANAL", encode::LINK_CANAL),
+        ("LINK_RAIL", encode::LINK_RAIL),
+        ("LINK_VIA_FARM", encode::LINK_VIA_FARM),
+        ("LINK_BUILT", encode::LINK_BUILT),
+        ("LINK_OWNER", encode::LINK_OWNER),
+        ("LINK_IS_CANAL", encode::LINK_IS_CANAL),
+        ("LINK_IN_NET", encode::LINK_IN_NET),
+        ("LINK_TOUCHES_NET", encode::LINK_TOUCHES_NET),
+        ("MERCHANT_BUY", encode::MERCHANT_BUY),
+        ("MERCHANT_BEER", encode::MERCHANT_BEER),
+        ("SEAT_MONEY", encode::SEAT_MONEY),
+        ("SEAT_INCOME_SPACE", encode::SEAT_INCOME_SPACE),
+        ("SEAT_INCOME_LEVEL", encode::SEAT_INCOME_LEVEL),
+        ("SEAT_VP", encode::SEAT_VP),
+        ("SEAT_CANAL_LINKS", encode::SEAT_CANAL_LINKS),
+        ("SEAT_RAIL_LINKS", encode::SEAT_RAIL_LINKS),
+        ("SEAT_HAND_SIZE", encode::SEAT_HAND_SIZE),
+        ("SEAT_WILD_LOCATION", encode::SEAT_WILD_LOCATION),
+        ("SEAT_WILD_INDUSTRY", encode::SEAT_WILD_INDUSTRY),
+        ("SEAT_REMAINING", encode::SEAT_REMAINING),
+        ("SEAT_SPENT", encode::SEAT_SPENT),
+        ("SEAT_IS_CURRENT", encode::SEAT_IS_CURRENT),
+        ("SEAT_HAND_SAMPLED_FLAG", encode::SEAT_HAND_SAMPLED_FLAG),
+        ("SEAT_HAND_REAL", encode::SEAT_HAND_REAL),
+        ("SEAT_HAND_SAMPLED", encode::SEAT_HAND_SAMPLED),
+        ("SEAT_HAND_PUBLIC", encode::SEAT_HAND_PUBLIC),
+        ("GLOBAL_ERA", encode::GLOBAL_ERA),
+        ("GLOBAL_ROUND", encode::GLOBAL_ROUND),
+        ("GLOBAL_ROUNDS_REMAINING", encode::GLOBAL_ROUNDS_REMAINING),
+        ("GLOBAL_ACTIONS", encode::GLOBAL_ACTIONS),
+        ("GLOBAL_COAL_MARKET", encode::GLOBAL_COAL_MARKET),
+        ("GLOBAL_IRON_MARKET", encode::GLOBAL_IRON_MARKET),
+        ("GLOBAL_DECK", encode::GLOBAL_DECK),
+        ("GLOBAL_DISCARD", encode::GLOBAL_DISCARD),
+        ("GLOBAL_QUEUE", encode::GLOBAL_QUEUE),
+    ] {
+        m.add(name, value)?;
+    }
     Ok(())
 }

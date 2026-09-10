@@ -35,20 +35,19 @@ Rust heuristic self-play
 
 当前训练路径固定为四人局。`GameState` 虽可支持 2--4 人，网络的 value head 和对手手牌编码均固定按四人局设计。
 
+逐字段的定义与形状见 [ai-action-encoding.md](./ai-action-encoding.md)，那里是唯一契约：
+
 | 数据 | 形状/含义 |
 | --- | --- |
-| board | `float32 (24, 49)` |
-| links | `float32 (7, 39)` |
-| global | `float32 (168,)` |
-| own_hand | `float32 (35,)` |
-| opp_hands | `float32 (105,)`，三名对手手牌 |
-| candidate features | `float32 (N, 301)` |
+| 状态 token | cells `(49,F_CELL)`、links `(39,F_LINK)`、merchants `(9,F_MERCHANT)`、seats `(4,F_SEAT)`、global `(F_GLOBAL,)`，按行动方视角旋转 |
+| 动作引用 | `float32 (N, ACTION_FEATURE_DIM)`，动作类型 + 实体引用 + 少量标量 |
 | policy target | 对这 `N` 个候选归一化的分布 |
-| rank target | 每座位终局名次 / n（VP → 收入 → 现金确定性破平局） `(4,)` |
-| winner target | 唯一冠军（破平局后第一名）的 one-hot `(4,)` |
+| value target | 每座位终局效用 `(vp - 桌均 VP) / VP_SCALE` `(4,)`，相对座位序 |
+| winner target | 唯一冠军（VP→收入→现金破平局后第一名）的 one-hot `(4,)`，相对座位序 |
 | econ target | `(income_level, money)`，按时代拆分的辅助监督 |
 
-动作特征 schema 当前为 `ACTION_FEATURE_SCHEMA_VERSION = 4`，状态特征 schema 为 `STATE_FEATURE_SCHEMA_VERSION = 4`。Python adapter 和 checkpoint 会拒绝未知 schema；Rust 修改编码时必须同步更新这些位置和测试。动作特征 301 维的具体布局见 [ai-action-encoding.md](./ai-action-encoding.md)。
+Python adapter 与 checkpoint 会拒绝未知 schema（`ACTION_SCHEMA_VERSION`、
+`STATE_TOKEN_SCHEMA_VERSION`）；Rust 修改编码时必须同步更新这些位置与测试。
 
 ## 当前目录
 
@@ -196,24 +195,19 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 ```
 
 以终局 rollout 为参照，测 `V(s)` / `Q(s,a)` / 先验 / winner 概率对候选动作的排序能力
-（within-position Spearman）。这是 Q 头方向的 go/no-go：重跑 bootstrap 让 Q 头训起来后，
-Q 的相关性必须显著高于 V，否则"把 Q 接进搜索"没有意义。老 checkpoint 没有 `q_head.*`
-时脚本会提示该头是随机的，输出只能当基线看。
-
-注意 checkpoint 兼容性：新增 Q 头后，`--init-from` / `--resume` 仍然可用（旧检查点缺
-`q_head.*` 时该头从随机初始化开始，`net.load_state_dict_tolerant` 会列出缺失的键），
-但要拿到可用的 Q 值必须重跑 bootstrap。
+（within-position Spearman）。这是把 Q 接进搜索的 go/no-go：Q 的相关性必须显著高于 V，
+否则"用 Q 初始化未访问孩子"没有意义。参照量是行动方自己的终局效用，与网络同一尺度。
 
 搜索配置的默认值与理由：
 
 - `--prior-top-k 16`：先对全部合法动作打分算出先验，树里只保留先验最高的 16 个孩子。
-  本作单状态 114–600 个合法动作，P ≈ 1/350 时 PUCT 探索项只有 ~0.08，而未访问孩子
-  的 Q 是 0、已评估孩子 Q ≈ 0.3，未访问孩子永远选不中——搜索会退化成先验的弱锐化器。
-  K = 16 时探索项回到 ~0.9 量级，搜索才真正开始分配访问。
+  本作单状态 114–600 个合法动作，P ≈ 1/350 时 PUCT 探索项只有 ~0.08，会压不过已评估
+  孩子的价值差，未访问孩子几乎选不中——搜索退化成先验的弱锐化器。K = 16 时探索项回到
+  ~0.9 量级，搜索才真正开始分配访问。
 - `--c-puct 1.0`：**必须随 `--prior-top-k` 一起标定**，两者耦合。K 越小、先验越尖，
   c 就该越小；沿用 full-legal 时代的 2.5 会继续让探索项压过价值差。
-- `--no-fpu` 关闭 FPU（默认开启）。本作 value = `1 - rank/n` ∈ [0, 0.75]、均值约 0.3，
-  把未访问孩子当 0 等于判定"未访问 = 最差"；FPU 改成取父节点价值。
+- `--no-fpu` 关闭 FPU（默认开启）。终局效用是零均值的 VP 差，未访问孩子取 0 已是中性
+  假设；FPU 进一步把它初始化为父节点价值。
 
 `--prior-top-k 0` 可退回全合法展开，用于对照。完整的实测数据、仍未解决的问题
 （价值头兄弟层分辨力）见 [roadmap.md](roadmap.md) 的「阶段 3 的已知问题」。
@@ -239,13 +233,13 @@ Q 的相关性必须显著高于 V，否则"把 Q 接进搜索"没有意义。�
   打出另一张牌并计入 `rewritten_applies`。后者才是常见情形，也是判断搜索质量是否退化的一手指标。
 - **样本形态**：`SelfPlayConfig.store_snapshots`（默认开启）让自对弈样本只保存
   determinize 后的 snapshot 与稀疏 `canonical -> visit`，训练前由 `materialize_sample`
-  还原成密集张量。密集形态每个决策点约 `N*301` 个 float32（N=300 时约 0.4 MB），
+  还原成密集张量。密集形态每个决策点约 `N*55` 个 float32（N=300 时约 66 KB），
   不压缩成 snapshot 就无法让 replay window 跨轮存在。设为 `False` 则退回密集样本，
   仅在对照实验与单元测试中使用。
 
 ## 样本与 checkpoint
 
-`Sample` 代表一个决策点。imitation 训练统一使用 full-legal：样本只保存 Rust state snapshot + teacher canonical action（不保存状态张量），候选集与状态张量在训练前从 snapshot 实时物化。候选上的监督包括 policy 分布、rank/winner 终局目标与 econ 目标。
+`Sample` 代表一个决策点。imitation 训练统一使用 full-legal：样本只保存 Rust state snapshot + teacher canonical action（不保存状态张量），候选集与状态张量在训练前从 snapshot 实时物化。候选上的监督包括 policy 分布、value/winner 终局目标与 econ 目标。
 
 Trainer checkpoint 包含：
 

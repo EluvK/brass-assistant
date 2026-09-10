@@ -38,7 +38,7 @@ import torch
 
 from .evaluate import benchmark_net_vs_heuristic
 from .mp_selfplay import SelfPlayPool
-from .net import PolicyValueNet, load_state_dict_tolerant
+from .net import PolicyValueNet
 from .rust_mcts import RustISMCTS, RustMCTSConfig
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .train import TrainConfig, Trainer
@@ -253,7 +253,7 @@ def run_selfplay(
 
     best_net = copy.deepcopy(net).eval()
     if best_state is not None:
-        load_state_dict_tolerant(best_net, best_state)
+        best_net.load_state_dict(best_state)
     opponent_pool: list[dict] = []
     pool: SelfPlayPool | None = None
     local_mcts: RustISMCTS | None = None

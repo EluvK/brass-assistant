@@ -1,10 +1,11 @@
 """Self-play: play full games with the network-guided MCTS and collect
-training samples (state -> visit-distribution policy target, per-seat final
-RANK targets + winner distribution).
+training samples (state -> visit-distribution policy target, value target,
+winner target).
 
-Value target: rank_p = final_rank_p / n_players, using the engine's official
-VP -> income -> cash final ranking. Each sample carries the same 4-vector plus
-a one-hot winner target. The search value for a seat is 1 - rank.
+Value target: `(vp_p - table_mean_vp) / VP_SCALE`, the same scale the search
+backs up and the network predicts (docs/ai-action-encoding.md §4.1). Each
+sample carries the 4-vector plus a one-hot winner target from the engine's
+official VP -> income -> cash ranking.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from . import _engine as be
 from typing import Callable, Protocol
 
 from .hierarchical_policy import (
-    compress_candidate_features,
     encode_legal_candidates,
     encode_teacher_candidates,
     coalesce_equivalent_policy,
@@ -44,14 +44,15 @@ class SearchLike(Protocol):
 @dataclass
 class Sample:
     pid: int
-    board: np.ndarray | None = None  # (24,49)
-    links: np.ndarray | None = None  # (7,39)
-    global_vec: np.ndarray | None = None  # (168,)
-    own_hand: np.ndarray | None = None  # (35,)
-    opp_hands: np.ndarray | None = None  # (105,)
-    candidates: np.ndarray | None = None  # (N,301), materialized on demand
+    cells: np.ndarray | None = None  # (49, F_CELL)
+    links: np.ndarray | None = None  # (39, F_LINK)
+    merchants: np.ndarray | None = None  # (9, F_MERCHANT)
+    seats: np.ndarray | None = None  # (4, F_SEAT)
+    global_vec: np.ndarray | None = None  # (F_GLOBAL,)
+    candidates: np.ndarray | None = None  # (N, ACTION_FEATURE_DIM)
     policy: np.ndarray | None = None  # (N,) aligned to candidates
-    rank: np.ndarray | float = 0.0  # (4,) per-seat final-rank/n target
+    # (4,) terminal utility `(vp - table_mean) / VP_SCALE`, absolute seat order.
+    value: np.ndarray | float = 0.0
     winner: np.ndarray | float = 0.0  # (4,) one-hot official winner
     era: int = 0  # 0 = canal, 1 = rail (sample's own era at record time)
     econ: np.ndarray = None  # (2,) = (income_level, money) target for this sample
@@ -69,16 +70,23 @@ class Sample:
     action_index: int = -1
 
 
-def _rank_targets(ranking: list[int], n_players: int) -> tuple[np.ndarray, np.ndarray]:
-    """Targets from the engine's official VP -> income -> cash ranking."""
+def _value_targets(
+    vps: list[int], ranking: list[int], n_players: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Terminal utility and winner targets (see ai-action-encoding.md §4.1).
+
+    Utility is the VP margin over the table mean; the winner comes from the
+    engine's official VP -> income -> cash ranking, which breaks ties.
+    """
     if len(ranking) != n_players or set(ranking) != set(range(n_players)):
         raise ValueError("engine returned an invalid final ranking")
-    rank = np.empty(n_players, dtype=np.float32)
-    for place, pid in enumerate(ranking, start=1):
-        rank[pid] = place / n_players
+    if len(vps) != n_players:
+        raise ValueError("engine returned an invalid final score line")
+    scores = np.asarray(vps, dtype=np.float64)
+    utility = ((scores - scores.mean()) / float(be.VP_SCALE)).astype(np.float32)
     winner = np.zeros(n_players, dtype=np.float32)
     winner[ranking[0]] = 1.0
-    return rank, winner
+    return utility, winner
 
 
 def materialize_sample(sample: Sample) -> Sample:
@@ -87,8 +95,7 @@ def materialize_sample(sample: Sample) -> Sample:
     The whole reconstruction (snapshot restore, full-legal candidate features,
     teacher equivalence policy) runs in ONE Rust call
     (`_engine.GameState.materialize_snapshot`) so no per-float Python objects
-    are ever created for the ~N*301 candidate matrix. Candidates come back as
-    lossless uint8 quarter-steps (see `compress_candidate_features`).
+    are ever created for the candidate matrix.
 
     Self-play samples (`policy_by_canonical`) take the generic path instead:
     their target is a visit distribution over many canonical moves rather than
@@ -99,15 +106,15 @@ def materialize_sample(sample: Sample) -> Sample:
         return sample
     if sample.policy_by_canonical is not None:
         return _materialize_selfplay_sample(sample)
-    (pid, era, board, links, global_vec, own_hand, opp_hands,
+    (pid, era, cells, links, merchants, seats, global_vec,
      candidates, teacher_index, policy) = be.GameState.materialize_snapshot(
         sample.snapshot, sample.teacher_canonical or "")
     if pid != sample.pid or era != sample.era:
         raise ValueError("replay snapshot does not match its player/era metadata")
     return Sample(
-        pid=pid, era=era, board=board, links=links,
-        global_vec=global_vec, own_hand=own_hand, opp_hands=opp_hands,
-        candidates=candidates, policy=policy, rank=sample.rank,
+        pid=pid, era=era, cells=cells, links=links, merchants=merchants,
+        seats=seats, global_vec=global_vec,
+        candidates=candidates, policy=policy, value=sample.value,
         winner=sample.winner, econ=sample.econ, snapshot=sample.snapshot,
         teacher_canonical=sample.teacher_canonical, action_index=teacher_index,
         played_canonical=sample.teacher_canonical,
@@ -144,11 +151,11 @@ def _materialize_selfplay_sample(sample: Sample) -> Sample:
     pid = state.current_player_id
     if pid != sample.pid or state.era != sample.era:
         raise ValueError("self-play snapshot does not match its player/era metadata")
-    board, links, global_vec, own_hand, opp_hands = state.state_to_tensor()
+    cells, links, merchants, seats, global_vec = state.state_tokens()
     return Sample(
-        pid=pid, era=state.era, board=board, links=links, global_vec=global_vec,
-        own_hand=own_hand, opp_hands=opp_hands, candidates=features,
-        policy=policy, rank=sample.rank, winner=sample.winner, econ=sample.econ,
+        pid=pid, era=state.era, cells=cells, links=links, merchants=merchants,
+        seats=seats, global_vec=global_vec, candidates=features,
+        policy=policy, value=sample.value, winner=sample.winner, econ=sample.econ,
         snapshot=sample.snapshot, policy_by_canonical=sample.policy_by_canonical,
         played_canonical=sample.played_canonical, action_index=action_index,
     )
@@ -159,21 +166,8 @@ def materialize_samples(samples: list[Sample]) -> list[Sample]:
 
 
 def materialize_chunk(samples: list[Sample]) -> list[Sample]:
-    """Worker-side bulk materialization for the replay pool.
-
-    Candidates are transported as lossless uint8 quarter-steps when the schema
-    allows (4x smaller cross-process payload); ``_to_batch`` converts them back
-    to float32.
-    """
-    out = []
-    for sample in samples:
-        materialized = materialize_sample(sample)
-        try:
-            materialized.candidates = compress_candidate_features(materialized.candidates)
-        except ValueError:
-            pass  # non-quarter-step row: keep the float32 row
-        out.append(materialized)
-    return out
+    """Worker-side bulk materialization for the replay pool."""
+    return [materialize_sample(sample) for sample in samples]
 
 
 def stream_materialized_batches(pool, batches: list[list[Sample]], rpc_chunk: int = 32):
@@ -229,7 +223,7 @@ class SelfPlayConfig:
     determinize_observation: bool = True
     # Store a decision point as (determinized snapshot, sparse visit
     # distribution over canonical moves) instead of dense state tensors plus the
-    # full candidate matrix. A full-legal point carries ~N*301 float32 (~0.4 MB
+    # full candidate matrix. A full-legal point carries ~N*55 float32 (~66 KB
     # at N=300); the snapshot form is a few KB, which is what makes a
     # multi-iteration replay buffer affordable. Materialization happens in the
     # trainer (`materialize_sample`, parallelized by `Trainer._materialize_pool`).
@@ -369,16 +363,16 @@ def play_game_with_roles(
                     for move, probability in zip(canonical_candidates, visits)
                     if probability > 0.0
                 }
-                s = Sample(pid=pid, era=state.era, rank=0.0, winner=0.0,
+                s = Sample(pid=pid, era=state.era, value=0.0, winner=0.0,
                            snapshot=bytes(observed.snapshot()),
                            policy_by_canonical=sparse)
             else:
-                board, links, g, oh, op = observed.state_to_tensor()
+                cells, links, merchants, seats, g = observed.state_tokens()
                 policy = coalesce_equivalent_policy(
                     candidate_tensor.numpy(), _candidate_policy(canonical_candidates, result)
                 )
-                s = Sample(pid=pid, board=board, links=links, global_vec=g,
-                           own_hand=oh, opp_hands=op, policy=policy, rank=0.0,
+                s = Sample(pid=pid, cells=cells, links=links, merchants=merchants,
+                           seats=seats, global_vec=g, policy=policy, value=0.0,
                            winner=0.0, candidates=candidate_tensor.numpy(), era=state.era)
             samples.append(s)
             recorded = s
@@ -428,12 +422,12 @@ def play_game_with_roles(
         )
 
     vps = state.player_vps()
-    rank, winner = _rank_targets(state.final_ranking(), state.player_count)
+    value, winner = _value_targets(vps, state.final_ranking(), state.player_count)
     # Rail-era samples (and any canal samples that never got a canal-econ stamp,
     # e.g. a game that ended in the canal era) take the FINAL economy.
     final_econ = {p: e for p, e in enumerate(state.final_econ())}
     for s in samples:
-        s.rank = rank
+        s.value = value
         s.winner = winner
         if s.econ is None:
             s.econ = np.asarray(final_econ[s.pid], dtype=np.float32)
@@ -461,7 +455,7 @@ def _generate_imitation_game(args):
             encode_teacher_candidates(state)
         )
         local.append(Sample(
-            pid=pid, era=state.era, rank=0.0, winner=0.0,
+            pid=pid, era=state.era, value=0.0, winner=0.0,
             snapshot=bytes(state.snapshot()), teacher_canonical=canon,
         ))
         if state.era == 0:
@@ -485,10 +479,10 @@ def _generate_imitation_game(args):
         )
 
     vps = np.asarray(state.player_vps(), dtype=np.float64)
-    rank, winner = _rank_targets(state.final_ranking(), state.player_count)
+    value, winner = _value_targets(vps, state.final_ranking(), state.player_count)
     final_econ = {p: e for p, e in enumerate(state.final_econ())}
     for sample in local:
-        sample.rank = rank
+        sample.value = value
         sample.winner = winner
         if sample.econ is None:
             sample.econ = np.asarray(final_econ[sample.pid], dtype=np.float32)

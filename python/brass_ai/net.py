@@ -1,16 +1,13 @@
 """Candidate-scoring Policy-Value network for Brass: Birmingham.
 
-The engine supplies a variable-size set of concrete legal moves. The policy
-scores those candidates conditional on the state and never learns legality.
+Implements the contract in `docs/ai-action-encoding.md`: the engine supplies a
+variable-size set of concrete legal moves, the network scores each one against
+the state tokens of the same position, and it never learns legality.
 
-Head set (see docs/ai-action-encoding.md §5):
-* policy: FiLM-modulated action embedding + masked-mean candidate-set context,
-  scored per candidate (O(N), no candidate self-attention).
-* rank head: per-seat normalized final rank (rank/n, MSE) — comparable across
-  games and order-preserving within one game.
-* winner head: official winner one-hot (softmax CE); the search value for a
-  seat is `1 - rank` (higher = better), matching the Rust terminal backup.
-* econ: era-split heads (canal / rail), 2 outputs each.
+The state is a token sequence (49 cells + 39 links + 9 merchants + 4 seats +
+1 global) processed by a small transformer. An action is a type plus references
+into that token sequence, so "which mine did I drain, and what was on it" is a
+structural lookup rather than a hand-written feature.
 """
 
 from __future__ import annotations
@@ -19,25 +16,35 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from . import _engine as be
-from .hierarchical_policy import ACTION_FEATURE_SCALE
+from .hierarchical_policy import (
+    ACTION_KIND_COUNT,
+    ACTION_NUMBERS,
+    REF_CARD,
+    REF_CELL,
+    REF_INDUSTRY,
+    REF_KIND_COUNT,
+    REF_LINK,
+    REF_MERCHANT,
+    STATE_GLOBAL,
+    STATE_GROUPS,
+    TOKEN_TYPES,
+    split_action_rows,
+)
 
-N_ACTIONS = 7
 N_PLAYERS = 4
 
 
 @dataclass
 class NetConfig:
-    board_emb: int = 128
-    links_emb: int = 64
-    graph_layers: int = 3
-    trunk: int = 256
-    action_emb: int = 128
-    action_features: int = getattr(be, "ACTION_FEATURE_DIM", 301)
-    global_len: int = be.GLOBAL_LEN
-    hand_len: int = be.HAND_LEN
-    opp_hands_len: int = be.HAND_LEN * 3
+    d_model: int = 192
+    layers: int = 4
+    heads: int = 6
+    dropout: float = 0.0
+    action_features: int = be.ACTION_FEATURE_DIM
+    action_ref_cap: int = be.ACTION_REF_CAP
 
 
 class PolicyValueNet(nn.Module):
@@ -46,159 +53,156 @@ class PolicyValueNet(nn.Module):
     def __init__(self, cfg: NetConfig | None = None):
         super().__init__()
         self.cfg = cfg or NetConfig()
-        self.board_enc = nn.Sequential(nn.Linear(be.BOARD_PLANES, self.cfg.board_emb), nn.ReLU())
-        self.links_enc = nn.Sequential(nn.Linear(be.LINK_PLANES, self.cfg.links_emb), nn.ReLU())
-        self.node_position = nn.Embedding(be.LOCATION_COUNT, self.cfg.board_emb)
-        self.edge_position = nn.Embedding(be.LINK_CELLS, self.cfg.links_emb)
-        self.edge_updates = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(self.cfg.links_emb + 3 * self.cfg.board_emb, self.cfg.links_emb),
-                nn.ReLU(),
-            )
-            for _ in range(self.cfg.graph_layers)
-        ])
-        self.node_updates = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(self.cfg.board_emb + self.cfg.links_emb, self.cfg.board_emb),
-                nn.ReLU(),
-            )
-            for _ in range(self.cfg.graph_layers)
-        ])
-        cell_locations = torch.as_tensor(be.BOARD_CELL_LOCATIONS, dtype=torch.long)
-        endpoints = torch.as_tensor(be.CONNECTION_ENDPOINTS, dtype=torch.long).reshape(be.LINK_CELLS, 2)
-        via_farms = torch.as_tensor(be.CONNECTION_VIA_FARMS, dtype=torch.long)
-        if cell_locations.numel() != be.BOARD_CELLS or endpoints.shape != (be.LINK_CELLS, 2):
-            raise RuntimeError("engine returned invalid state-graph topology")
-        self.register_buffer("cell_locations", cell_locations)
-        self.register_buffer("edge_endpoints", endpoints)
-        self.register_buffer("edge_via_farms", via_farms)
-        trunk_in = (
-            2 * self.cfg.board_emb + 2 * self.cfg.links_emb + self.cfg.global_len
-            + self.cfg.hand_len + self.cfg.opp_hands_len
+        d = self.cfg.d_model
+
+        self.group_proj = nn.ModuleDict({
+            name: nn.Linear(width, d) for name, (_count, width) in STATE_GROUPS.items()
+        })
+        self.global_proj = nn.Linear(STATE_GLOBAL[1], d)
+        self.type_embed = nn.Embedding(len(TOKEN_TYPES), d)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d,
+            nhead=self.cfg.heads,
+            dim_feedforward=4 * d,
+            dropout=self.cfg.dropout,
+            batch_first=True,
+            norm_first=True,
+            activation="gelu",
         )
-        self.trunk = nn.Sequential(
-            nn.Linear(trunk_in, self.cfg.trunk), nn.ReLU(),
-            nn.Linear(self.cfg.trunk, self.cfg.trunk), nn.ReLU(),
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.cfg.layers)
+        self.state_norm = nn.LayerNorm(d)
+
+        # Action side: type, slot, scalars, and the referenced entities.
+        self.kind_embed = nn.Embedding(ACTION_KIND_COUNT, d)
+        self.slot_embed = nn.Embedding(4, d)
+        self.numbers_proj = nn.Linear(ACTION_NUMBERS, d)
+        self.industry_embed = nn.Embedding(be.INDUSTRY_COUNT, d)
+        self.card_embed = nn.Embedding(be.CARD_SEMANTIC_COUNT, d)
+        self.action_norm = nn.LayerNorm(d)
+
+        self.score_head = nn.Sequential(
+            nn.Linear(3 * d, 2 * d), nn.GELU(), nn.Linear(2 * d, 1)
         )
-        self.action_encoder = nn.Sequential(
-            nn.Linear(self.cfg.action_features, self.cfg.action_emb), nn.ReLU(),
-            nn.Linear(self.cfg.action_emb, self.cfg.action_emb), nn.ReLU(),
-        )
-        # FiLM: the state modulates every action embedding (multiplicative
-        # interaction), then each candidate also sees the set context — the
-        # masked mean of all candidates — so scores depend on the candidate
-        # SET, not only on the single action.
-        self.film = nn.Linear(self.cfg.trunk, 2 * self.cfg.action_emb)
-        self.action_score = nn.Sequential(
-            nn.Linear(3 * self.cfg.action_emb, self.cfg.trunk), nn.ReLU(),
-            nn.Linear(self.cfg.trunk, 1),
-        )
-        # Action-conditioned value. `rank_head` below predicts V(s) from the
-        # state alone, so two sibling moves differ only by a tiny perturbation of
-        # its input: measured sibling spread is 0.014 against a head error of
-        # ~0.14, which is far too small for search to rank children by. This head
-        # receives the same FiLM-modulated candidate embedding as the policy, so
-        # "move A beats move B" is a first-order difference of its input.
         self.q_head = nn.Sequential(
-            nn.Linear(3 * self.cfg.action_emb, self.cfg.trunk), nn.ReLU(),
-            nn.Linear(self.cfg.trunk, 1),
+            nn.Linear(3 * d, 2 * d), nn.GELU(), nn.Linear(2 * d, 1)
         )
-        self.rank_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
-        self.winner_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
-        self.econ_canal_head = nn.Linear(self.cfg.trunk, 2)
-        self.econ_rail_head = nn.Linear(self.cfg.trunk, 2)
+        self.value_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_PLAYERS))
+        self.winner_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_PLAYERS))
+        self.econ_canal_head = nn.Linear(d, 2)
+        self.econ_rail_head = nn.Linear(d, 2)
+
+        self.register_buffer("ref_offset", self._ref_offsets())
 
     @staticmethod
-    def _scatter_mean(values: torch.Tensor, indices: torch.Tensor, size: int) -> torch.Tensor:
-        """Mean-pool `(B,N,D)` values into `size` graph nodes."""
-        batch, _, dim = values.shape
-        out = values.new_zeros((batch, size, dim))
-        expanded = indices.view(1, -1, 1).expand(batch, -1, dim)
-        out.scatter_add_(1, expanded, values)
-        counts = values.new_zeros((batch, size, 1))
-        counts.scatter_add_(1, indices.view(1, -1, 1).expand(batch, -1, 1),
-                            values.new_ones((batch, indices.numel(), 1)))
-        return out / counts.clamp_min(1.0)
+    def _ref_offsets() -> torch.Tensor:
+        """Start index of each reference kind inside the entity table."""
+        cells = be.BOARD_CELLS
+        links = cells + be.LINK_CELLS
+        merchants = links + be.MERCHANT_COUNT
+        industry = merchants + be.INDUSTRY_COUNT
+        card = industry + be.CARD_SEMANTIC_COUNT
+        offsets = torch.zeros(REF_KIND_COUNT, dtype=torch.long)
+        offsets[REF_CELL] = 0
+        offsets[REF_LINK] = cells
+        offsets[REF_MERCHANT] = links
+        offsets[REF_INDUSTRY] = industry
+        offsets[REF_CARD] = card
+        return offsets
 
-    def encode_state(self, batch: dict) -> torch.Tensor:
-        board_cells = self.board_enc(batch["board"].transpose(1, 2))
-        node = self._scatter_mean(board_cells, self.cell_locations, be.LOCATION_COUNT)
-        node = node + self.node_position.weight.unsqueeze(0)
-        edge = self.links_enc(batch["links"].transpose(1, 2))
-        edge = edge + self.edge_position.weight.unsqueeze(0)
+    def encode_state(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (token sequence (B,T,d), state summary (B,d))."""
+        tokens = []
+        for i, name in enumerate(TOKEN_TYPES):
+            if name == "global":
+                vec = self.global_proj(batch["global"]).unsqueeze(1)
+            else:
+                vec = self.group_proj[name](batch[name])
+            tokens.append(vec + self.type_embed.weight[i].view(1, 1, -1))
+        seq = torch.cat(tokens, dim=1)
+        seq = self.encoder(seq)
+        # The global token sits last; the mean gives a set-level summary that is
+        # invariant to board size while the sequence keeps per-entity detail.
+        summary = self.state_norm(seq[:, -1] + seq.mean(dim=1))
+        return seq, summary
 
-        a, b = self.edge_endpoints[:, 0], self.edge_endpoints[:, 1]
-        via_valid = self.edge_via_farms < be.LOCATION_COUNT
-        via = self.edge_via_farms.clamp_max(be.LOCATION_COUNT - 1)
-        for edge_update, node_update in zip(self.edge_updates, self.node_updates):
-            via_node = node[:, via] * via_valid.view(1, -1, 1)
-            edge = edge_update(torch.cat([edge, node[:, a], node[:, b], via_node], dim=-1))
-            # An edge informs both endpoints and its brewery farm when present.
-            incident = torch.cat([a, b, via[via_valid]], dim=0)
-            messages = torch.cat([edge, edge, edge[:, via_valid]], dim=1)
-            node = node_update(torch.cat([
-                node, self._scatter_mean(messages, incident, be.LOCATION_COUNT)
-            ], dim=-1))
+    def encode_actions(self, seq: torch.Tensor, actions: torch.Tensor,
+                       mask: torch.Tensor) -> torch.Tensor:
+        """Return a per-candidate action embedding ``(B,N,d)``."""
+        parts = split_action_rows(actions)
+        batch, n, _ = actions.shape
+        mask2 = mask.unsqueeze(-1).to(seq.dtype)
+        parts = {k: (v * mask2 if v.dtype.is_floating_point else v) for k, v in parts.items()}
 
-        board = torch.cat([node.mean(dim=1), node.max(dim=1).values], dim=1)
-        links = torch.cat([edge.mean(dim=1), edge.max(dim=1).values], dim=1)
-        return self.trunk(torch.cat(
-            [board, links, batch["global"], batch["own_hand"], batch["opp_hands"]], dim=1
-        ))
+        entity = torch.cat([
+            seq[:, :be.BOARD_CELLS],
+            seq[:, be.BOARD_CELLS:be.BOARD_CELLS + be.LINK_CELLS],
+            seq[:, be.BOARD_CELLS + be.LINK_CELLS:
+                be.BOARD_CELLS + be.LINK_CELLS + be.MERCHANT_COUNT],
+            self.industry_embed.weight.unsqueeze(0).expand(batch, -1, -1),
+            self.card_embed.weight.unsqueeze(0).expand(batch, -1, -1),
+        ], dim=1)
+
+        ref_index = (self.ref_offset[parts["ref_kind"]] + parts["ref_id"]).clamp(
+            0, entity.shape[1] - 1
+        )
+        gathered = entity.gather(
+            1, ref_index.reshape(batch, n * self.cfg.action_ref_cap, 1).expand(-1, -1, entity.shape[2])
+        ).reshape(batch, n, self.cfg.action_ref_cap, entity.shape[2])
+        weight = parts["ref_weight"].unsqueeze(-1)
+        pooled = (gathered * weight).sum(dim=2) / weight.sum(dim=2).clamp_min(1e-6)
+
+        action = (
+            self.kind_embed(parts["kind"].clamp(0, ACTION_KIND_COUNT - 1))
+            + self.slot_embed(parts["slot"].clamp(0, 3))
+            + self.numbers_proj(parts["numbers"])
+            + pooled
+        )
+        return self.action_norm(action)
 
     def forward(self, batch: dict, action_features: torch.Tensor,
                 candidate_mask: torch.Tensor | None = None) -> dict:
-        """Evaluate candidates shaped ``(B,N,D)`` with optional padding mask.
-
-        uint8 quarter-step rows (the replay-transport encoding) are upconverted
-        to float on their arrival device, keeping the host->device copy 4x
-        smaller than float32.
-        """
+        """Evaluate candidates shaped ``(B,N,ACTION_FEATURE_DIM)``."""
         if action_features.ndim == 2:
             action_features = action_features.unsqueeze(0)
-        if action_features.dtype == torch.uint8:
-            action_features = action_features.float().div_(ACTION_FEATURE_SCALE)
-        if action_features.ndim != 3 or action_features.shape[-1] != self.cfg.action_features:
+        if (action_features.ndim != 3
+                or action_features.shape[-1] != self.cfg.action_features):
             raise ValueError(
                 f"action_features must have shape (B,N,{self.cfg.action_features})"
             )
-        state = self.encode_state(batch)
-        if state.shape[0] != action_features.shape[0]:
-            raise ValueError("state batch and action batch sizes differ")
-
         if candidate_mask is None:
             candidate_mask = torch.ones(
                 action_features.shape[:2], dtype=torch.bool, device=action_features.device
             )
         else:
-            candidate_mask = candidate_mask.to(device=action_features.device, dtype=torch.bool)
+            candidate_mask = candidate_mask.to(
+                device=action_features.device, dtype=torch.bool
+            )
             if candidate_mask.shape != action_features.shape[:2]:
                 raise ValueError("candidate_mask must have shape (B,N)")
         if (~candidate_mask).all(dim=1).any():
             raise ValueError("each state must contain at least one legal candidate")
 
-        actions = self.action_encoder(action_features)
-        gamma, beta = self.film(state).chunk(2, dim=-1)
-        modulated = gamma.unsqueeze(1) * actions + beta.unsqueeze(1)  # (B,N,E)
-        weights = candidate_mask.unsqueeze(-1).to(modulated.dtype)
-        ctx = (modulated * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)  # (B,E)
-        ctx = ctx.unsqueeze(1).expand(-1, modulated.shape[1], -1)
-        scored = torch.cat([modulated, ctx, modulated * ctx], dim=-1)
-        logits = self.action_score(scored).squeeze(-1)
-        candidate_value = self.q_head(scored).squeeze(-1)
+        seq, summary = self.encode_state(batch)
+        if seq.shape[0] != action_features.shape[0]:
+            raise ValueError("state batch and action batch sizes differ")
+        action = self.encode_actions(seq, action_features, candidate_mask)
 
-        rank = self.rank_head(state)
-        log_probs = torch.log_softmax(logits.masked_fill(~candidate_mask, float("-inf")), dim=1)
-        econ = torch.cat([self.econ_canal_head(state), self.econ_rail_head(state)], dim=-1)
+        joint = torch.cat([action, summary.unsqueeze(1).expand_as(action), action * summary.unsqueeze(1)], dim=-1)
+        logits = self.score_head(joint).squeeze(-1)
+        candidate_value = self.q_head(joint).squeeze(-1)
+
+        log_probs = torch.log_softmax(
+            logits.masked_fill(~candidate_mask, float("-inf")), dim=1
+        )
+        econ = torch.cat([self.econ_canal_head(summary), self.econ_rail_head(summary)], dim=-1)
         return {
             "candidate_logits": logits,
             "candidate_log_probs": log_probs,
             "candidate_mask": candidate_mask,
-            "rank": rank,                       # per-seat normalized final rank
-            "value": 1.0 - rank,                # search scale (higher = better)
-            "candidate_value": candidate_value,  # (B,N) action-conditioned value
-            "winner_logits": self.winner_head(state),
-            "econ": econ,                       # (B,4): canal head | rail head
+            "value": self.value_head(summary),          # (B,4), me first
+            "candidate_value": candidate_value,          # (B,N) action-conditioned value
+            "winner_logits": self.winner_head(summary),  # (B,4), me first (softmax CE)
+            "econ": econ,                                # (B,4): canal head | rail head
         }
 
     def policy_value(self, batch: dict, action_features: torch.Tensor,
@@ -212,25 +216,30 @@ class PolicyValueNet(nn.Module):
             self.train(was_training)
 
 
-#: Heads that may legitimately be absent from an older checkpoint. Loading such a
-#: checkpoint is fine — the head simply starts from scratch — but every other
-#: mismatch is a real error.
-TOLERATED_MISSING_PREFIXES = ("q_head.",)
+def state_batch(tensors) -> dict:
+    """Assemble the network's state batch dict from engine token groups."""
+    cells, links, merchants, seats, global_vec = tensors
+    return {
+        "cells": cells.float() if cells.dtype == torch.uint8 else cells,
+        "links": links.float() if links.dtype == torch.uint8 else links,
+        "merchants": merchants.float() if merchants.dtype == torch.uint8 else merchants,
+        "seats": seats.float() if seats.dtype == torch.uint8 else seats,
+        "global": global_vec.float() if global_vec.dtype == torch.uint8 else global_vec,
+    }
 
 
-def load_state_dict_tolerant(net: PolicyValueNet, state_dict: dict) -> tuple[list, list]:
-    """Load `state_dict`, tolerating weights for heads added after it was saved.
+def candidate_value_loss(predicted: torch.Tensor, target_value: torch.Tensor,
+                         action_index: torch.Tensor) -> torch.Tensor:
+    """MSE of the action-conditioned value on the move actually played.
 
-    Returns ``(missing, unexpected)``. Raises when the only differences are not
-    explainable as newly added heads, so a genuine architecture mismatch still
-    fails loudly.
+    ``target_value`` is the acting player's terminal utility (index 0 of the
+    perspective-rotated value target) and ``action_index`` is the played
+    candidate's position, or -1 when the sample has no recorded move.
     """
-    missing, unexpected = net.load_state_dict(state_dict, strict=False)
-    unexplained = [key for key in missing
-                   if not key.startswith(TOLERATED_MISSING_PREFIXES)]
-    if unexpected or unexplained:
-        raise ValueError(
-            "incompatible checkpoint: "
-            f"missing={sorted(unexplained)} unexpected={sorted(unexpected)}"
-        )
-    return list(missing), list(unexpected)
+    valid = action_index >= 0
+    if not bool(valid.any()):
+        return predicted.sum() * 0.0
+    index = action_index.clamp_min(0)
+    picked = predicted.gather(1, index.unsqueeze(1)).squeeze(1)
+    loss = F.mse_loss(picked[valid], target_value[valid])
+    return loss

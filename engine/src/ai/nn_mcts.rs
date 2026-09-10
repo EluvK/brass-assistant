@@ -168,7 +168,7 @@ struct Request {
 enum ParkedOutcome {
     Terminal {
         path: Vec<usize>,
-        ranking: Vec<usize>,
+        value: Vec<f64>,
     },
     Net {
         path: Vec<usize>,
@@ -272,8 +272,7 @@ pub fn search_net(
                 &mut failed_applies,
                 &mut rewritten_applies,
             ) {
-                ParkedOutcome::Terminal { path, ranking } => {
-                    let value = terminal_value(ranking, n_players);
+                ParkedOutcome::Terminal { path, value } => {
                     add_value(&mut arena, &path, &value);
                 }
                 park @ ParkedOutcome::Net { .. } => parked.push(park),
@@ -372,7 +371,7 @@ fn descend(
         if work.game_over {
             return ParkedOutcome::Terminal {
                 path,
-                ranking: crate::scoring::final_ranking(work),
+                value: terminal_value(work, work.player_count()),
             };
         }
         if depth >= cfg.max_depth {
@@ -546,12 +545,10 @@ fn declared_card(hand: &[Card], mv: &ResolvedMove) -> Option<Card> {
 fn select_child(arena: &[Node], node_idx: usize, pid: usize, cfg: &NnMctsConfig) -> usize {
     let node = &arena[node_idx];
     let parent_visits = node.visits.max(1) as f64;
-    // First-play urgency. Search values are `1 - rank/n`, i.e. in [0, 0.75]
-    // with a mean near 0.4 — unlike AlphaZero's roughly zero-mean [-1, 1]. The
-    // original "unvisited child is worth 0" therefore made every unvisited
-    // child look strictly worse than *any* evaluated one, so the tail could
-    // never be explored. Assume instead that an unvisited child is worth what
-    // its parent is worth.
+    // First-play urgency. Terminal utility is zero-mean across seats, so 0 is
+    // already a neutral guess for an unvisited child; FPU instead starts it at
+    // the parent's value, a strictly stronger prior whenever the parent sits
+    // away from the table average.
     let fpu = if cfg.fpu { node.q(pid) - cfg.fpu_reduction } else { 0.0 };
     let mut best: Option<(usize, f64)> = None;
     for (i, child) in node.children.iter().enumerate() {
@@ -606,32 +603,31 @@ fn add_value(arena: &mut Vec<Node>, path: &[usize], value: &[f64]) {
     }
 }
 
-/// Per-seat terminal search value: `1 - normalized official final rank`,
-/// matching Python's rank target and `scoring::final_ranking` (VP, income,
-/// then cash).
-fn terminal_value(ranking: Vec<usize>, n_players: usize) -> Vec<f64> {
-    let n = n_players.max(1);
-    let mut rank = vec![n as f64; n];
-    for (place, pid) in ranking.into_iter().enumerate() {
-        if pid < n {
-            rank[pid] = (place + 1) as f64;
-        }
-    }
-    (0..n).map(|p| 1.0 - rank[p] / n as f64).collect()
+/// Per-seat terminal utility: `(vp - table_mean_vp) / VP_SCALE`.
+///
+/// Zero-mean across seats and measured in VP, so sibling moves differ by real
+/// score margin and "an unvisited child is worth 0" is a neutral assumption
+/// rather than a claim that it is the worst child.
+fn terminal_value(state: &GameState, n_players: usize) -> Vec<f64> {
+    let n = n_players.max(1).min(state.players.len());
+    let scores: Vec<f64> = (0..n).map(|p| state.players[p].vp as f64).collect();
+    let mean = scores.iter().sum::<f64>() / n as f64;
+    let scale = crate::bridge::VP_SCALE as f64;
+    scores.iter().map(|s| (s - mean) / scale).collect()
 }
 
-/// Map a raw network value (`1 - rank`, one component per seat) onto the
-/// `[0, 1]` scale that `terminal_value` and the PUCT backup use.
-///
-/// The Python rank head is an unconstrained linear layer, so early in training
-/// (or with an untrained net) `1 - rank` can leave `[0, 1]`. PUCT compares
-/// `value_sum / visits` against exploration terms, so an out-of-range Q
-/// destabilizes child selection. NaN is mapped to the neutral midpoint instead
-/// of poisoning every comparison; infinities clamp to the endpoints.
+/// Clamp a raw network value onto the terminal utility scale. An untrained or
+/// early value head is an unconstrained linear layer and can emit values far
+/// outside the observed range; PUCT compares `value_sum / visits` against
+/// exploration terms, so an out-of-range Q destabilizes child selection.
+/// `VALUE_LIMIT` is well above the reachable spread (±3 VP-margin units at
+/// VP_SCALE = 50), so clamping only ever catches blow-ups. NaN maps to neutral.
 fn search_value(raw: f32) -> f64 {
     let v = raw as f64;
-    if v.is_nan() { 0.5 } else { v.clamp(0.0, 1.0) }
+    if v.is_nan() { 0.0 } else { v.clamp(-VALUE_LIMIT, VALUE_LIMIT) }
 }
+
+const VALUE_LIMIT: f64 = 4.0;
 
 fn apply_dirichlet_noise(
     node: &mut Node,
@@ -756,14 +752,12 @@ fn flush_net(
     let mut results = Vec::with_capacity(requests.len());
     for (ri, req) in requests.iter().enumerate() {
         let r0 = ri * 4;
-        // Value = 1 - normalized rank per seat (higher = better), the same
-        // scale as `terminal_value` backups.
+        // Value = terminal utility per seat (VP margin over the table mean,
+        // higher = better), the same scale as `terminal_value` backups.
         //
-        // The rank head is an unconstrained linear layer, so `1 - rank` can
-        // leave [0, 1] early in training (or with an untrained net). PUCT
-        // divides value sums by visit counts and compares them against
-        // exploration terms, so an out-of-range Q destabilizes selection;
-        // clamp to the scale the terminal backup and the training target use.
+        // The value head is an unconstrained linear layer, so `search_value`
+        // clamps blow-ups before they reach PUCT's value/exploration
+        // comparison.
         let value: Vec<f64> = (0..MAX_PLAYERS).map(|p| search_value(values[r0 + p])).collect();
         let priors = match &req.kind {
             RequestKind::Expand {
@@ -802,23 +796,34 @@ fn softmax(logits: &[f32]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{search_value, terminal_value};
+    use crate::state::GameState;
+    use rand_chacha::rand_core::SeedableRng;
+    use rand_chacha::ChaCha12Rng;
 
     #[test]
-    fn terminal_value_uses_official_tiebreak_order() {
-        // The caller has already resolved equal VP through income then cash.
-        let value = terminal_value(vec![1, 0, 3, 2], 4);
-        assert_eq!(value, vec![0.5, 0.75, 0.0, 0.25]);
+    fn terminal_value_is_a_zero_mean_vp_margin() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(3), 4);
+        for (p, vp) in [110u16, 100, 60, 100].iter().enumerate() {
+            state.players[p].vp = *vp;
+        }
+        let value = terminal_value(&state, 4);
+        let scale = crate::bridge::VP_SCALE as f64;
+        // Table mean is 92.5; margins are +17.5 / +7.5 / -32.5 / +7.5.
+        let expected = [17.5 / scale, 7.5 / scale, -32.5 / scale, 7.5 / scale];
+        for (got, want) in value.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-9, "got {got}, want {want}");
+        }
+        assert!(value.iter().sum::<f64>().abs() < 1e-9);
     }
 
     #[test]
     fn search_value_is_clamped_to_the_terminal_scale() {
-        assert_eq!(search_value(-3.0), 0.0);
+        assert_eq!(search_value(-3.0), -3.0);
         assert_eq!(search_value(0.0), 0.0);
-        assert_eq!(search_value(0.25), 0.25);
-        assert_eq!(search_value(0.75), 0.75);
-        assert_eq!(search_value(7.0), 1.0);
-        assert_eq!(search_value(f32::NAN), 0.5);
-        assert_eq!(search_value(f32::INFINITY), 1.0);
-        assert_eq!(search_value(f32::NEG_INFINITY), 0.0);
+        assert_eq!(search_value(-0.75), -0.75);
+        assert_eq!(search_value(7.0), 4.0);
+        assert_eq!(search_value(f32::NAN), 0.0);
+        assert_eq!(search_value(f32::INFINITY), 4.0);
+        assert_eq!(search_value(f32::NEG_INFINITY), -4.0);
     }
 }

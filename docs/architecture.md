@@ -91,7 +91,7 @@ lib.rs（模块根，声明职责层并为既有调用方再导出平铺模块�
 └─ bridge/ 桥接 / 序列化层（Python/NN 相关；依赖全部上层）
     ├─ action_features.rs ResolvedMove → 执行候选动作特征
     ├─ move_codec.rs ResolvedMove ⇄ canonical 字符串（无损，含资源源/已选卡牌）
-    ├─ encode.rs     状态 → 张量特征编码（board/links/global/hands）
+    ├─ encode.rs     状态 → token 特征编码（cells/links/merchants/seats/global）
     ├─ replay_fmt.rs 中文回放格式化（纯只读，供 replay 二进制与 Python 驱动共用）
     └─ pymod.rs      PyO3 绑定 brass_ai._engine（GameState 类 + search_net + stepwise replay）
 ```
@@ -111,7 +111,7 @@ Python 侧位于 `python/`，负责训练编排与模型推理，不重复实现
 python/
 ├─ brass_ai/
 │  ├─ hierarchical_policy.py  Rust 候选动作/teacher 适配、schema 校验与候选 batch padding
-│  ├─ net.py          Policy-Value 网络：候选动作打分（FiLM+集合上下文）+ rank/winner/econ/Q 头
+│  ├─ net.py          Policy-Value 网络：状态 token 序列编码 + 动作引用打分 + value/winner/econ/Q 头
 │  ├─ rust_mcts.py    `GameState.search_net` 的 PyTorch 回调适配器
 │  ├─ selfplay.py     Sample、imitation 与 MCTS self-play 生成
 │  ├─ selfplay_loop.py 长期 self-play 循环：replay window、对手池、arena、指标
@@ -132,17 +132,17 @@ python/
 
 `brass_ai._engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
 
-- `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为 `board`、`links`、`global`、`own_hand`、`opp_hands`、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
+- `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为状态 token 组（`cells`、`links`、`merchants`、`seats`、`global`）、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
 - `search_net(...)` 除 `(best, children, legal_candidate_ids)` 外还返回两个搜索自检计数：
   `failed_applies`（复用的树子节点被规则直接拒绝）与 `rewritten_applies`（复用的树子节点通过了
   规则检查，但实际打出的是另一张牌）。二者用于度量树节点跨 determinization 复用的代价。
   该调用还接受 `prior_top_k` / `fpu` / `fpu_reduction`：先对全部合法动作打分，再只保留先验最高的
   K 个孩子（默认 0 = 全合法），并用父节点价值作为未访问孩子的 Q。理由与实测见
   [roadmap.md](roadmap.md) 的「阶段 3 的已知问题」。
-- `state_to_tensor()`：供训练样本采集使用的单状态特征；当前 state-feature schema v4 的维度固定为 board `(24, 49)`、links `(7, 39)`、global `(168,)`、own hand `(35,)`、 opponent hands `(105,)`。links 同时编码地图静态的水路/铁路可建性、动态建成状态与归属；global 包含每位玩家的手牌数、本回合花费、收入格和收入等级，以及每个商家的收货类型（5 种：Blank/Any/棉纺/制造厂/陶器）与啤酒状态；board 额外携带静态的槽位行业能力与槽位序号平面。Rust 还导出 board-cell/location 与 connection endpoint 拓扑，Python 网络据此做节点-边消息传递。
+- `state_tokens()`：供训练与推理使用的单状态观测。它按行动方视角旋转，输出 49 个棋盘格、39 条连接、9 个商家、4 个座位与 1 个全局 token；每个 cell 上带归属、行业、资源、翻面、静态槽位能力、网络归属与到本方的图距离。逐字段定义见 [ai-action-encoding.md](./ai-action-encoding.md) §2，Rust 同时导出拓扑与全部平面偏移，Python 不硬编码任何平面索引。
 - `legal_candidates()`：Rust 返回完整可执行动作及其结构化特征；网络只对当前候选集合执行 softmax。
 
-网络当前直接对每个具体候选动作输出 logit（FiLM 调制 + 候选集上下文）；候选动作特征由 Rust `bridge::action_features` 编码，合法动作枚举也完全由 Rust 完成。301 维动作特征的逐块布局、每类动作的实测编码示例，以及 policy/rank/winner/econ 网络头的设计见 [ai-action-encoding.md](./ai-action-encoding.md)。
+网络当前对每个具体候选动作输出 logit：动作由 Rust `bridge::action_features` 编码为"类型 + 实体引用"，网络按引用 id 从状态 token 里取出被引用的实体，因此动作与状态的交互是结构保证的而不是人工特征复述的。合法动作枚举完全由 Rust 完成。动作引用布局与 value/winner/econ/Q 头见 [ai-action-encoding.md](./ai-action-encoding.md)。
 
 #### 训练循环现状
 
@@ -160,7 +160,7 @@ Rust heuristic 完整对局
 
 默认 full-legal 模式下，每个 `Sample` 保存当前视角状态、Rust state snapshot 与
 teacher canonical action（候选集训练前实时物化），监督目标为候选上的 policy
-分布、rank/winner 终局目标与经济辅助目标。只有正常到达 `game_over` 的完整
+分布、value/winner 终局目标与经济辅助目标。只有正常到达 `game_over` 的完整
 对局可以入库；达到 `max_moves` 的截断局会被丢弃，不能以当前盘面伪造终局价值。
 
 **阶段 3：self-play 训练**（`selfplay_train.py` + `brass_ai/selfplay_loop.py`）
@@ -168,7 +168,7 @@ teacher canonical action（候选集训练前实时物化），监督目标为�
 ```
 当前网络 (+ 历史 checkpoint 对手池)
   -> Rust ISMCTS 自对弈；每个决策点先 determinize 再编码，π = 根 visit 分布
-  -> 样本 = snapshot + 稀疏 canonical->visit（约几 KB，而非 N*301 的密集矩阵）
+  -> 样本 = snapshot + 稀疏 canonical->visit（约几 KB，而非 N*55 的密集矩阵）
   -> rolling replay window（按迭代数 + 样本数双重上限）
   -> Trainer.train_one_epoch（训练时并行物化，GPU 只跑前向/反向）
   -> arena(vs best，轮换座位固定 seed) + vs heuristic benchmark
@@ -177,7 +177,7 @@ teacher canonical action（候选集训练前实时物化），监督目标为�
 
 最新的网络始终继续训练；`best.pt` 只决定对手池内容与对外报告的强度。理由是
 40 局 arena 的标准误差约 ±15%，用硬门禁卡晋升会让训练停摆。价值目标来自对局
-终局（rank/winner），不是 bootstrap 自举；MCTS 只负责产出更好的 π。
+终局（VP 效用 / winner），不是 bootstrap 自举；MCTS 只负责产出更好的 π。
 
 `train.py::run_loop` 是早期的单进程示例循环，保留但不再是推荐入口；重建后的
 入口基于 `play_game_with_roles` / `SelfPlayPool` / `Trainer.train_one_epoch` 组合。

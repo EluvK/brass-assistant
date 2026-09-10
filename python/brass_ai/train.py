@@ -1,12 +1,13 @@
 """AlphaZero-style training loop with a persistent optimizer.
 
-Loss (per sample, head set v4):
+Loss (per sample, see docs/ai-action-encoding.md §4.2):
   L = -sum_a p_a * log_softmax(score(s, a))_a     (policy CE over concrete
       Engine-generated legal candidates; padding is masked only for batching)
-    + ||rank_4 - target_4||^2                     (MSE on per-seat normalized
-      final rank; the search value for a seat is 1 - rank)
+    + ||value_4 - target_4||^2                    (MSE on per-seat terminal
+      utility (vp - table_mean_vp) / VP_SCALE, seat 0 = the acting player)
     + 0.5 * winner_CE                             (official winner one-hot CE)
     + 0.2 * econ_MSE                              (era-split auxiliary heads)
+    + 0.3 * Q_MSE                                 (played action's utility)
     + l2 * ||theta||^2
 
 The `Trainer` class owns the network, a persistent AdamW optimizer and a
@@ -32,8 +33,9 @@ from . import _engine as be
 from .net import PolicyValueNet
 from .hierarchical_policy import (
     ACTION_FEATURE_DIM,
-    ACTION_FEATURE_SCHEMA_VERSION,
+    ACTION_SCHEMA_VERSION,
     pad_candidate_features,
+    rotate_to_perspective,
 )
 from .progress import Progress
 from .selfplay import (
@@ -59,17 +61,17 @@ class TrainConfig:
     grad_clip_norm: float = 5.0
     econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
     econ_neg_weight: float = 1.0  # extra weight on samples with negative income (1.0 = off, kept for ablation)
-    # Weight of the action-conditioned value loss (Q(s, played) -> mover's final
-    # 1 - rank/n). See docs/roadmap.md「阶段 3 的已知问题」for why V(s) alone
-    # cannot rank sibling moves.
+    # Weight of the action-conditioned value loss (Q(s, played) -> the mover's
+    # own terminal utility). V(s) alone cannot rank sibling moves; Q receives
+    # the action's referenced entities directly.
     q_lambda: float = 0.3
     # Bound the largest padded candidate matrix in one GPU batch. Full-legal
     # states can have hundreds of candidates, so a fixed sample batch is unsafe.
     max_candidate_batch: int = 65536
     materialize_workers: int = 4
     # Snapshot samples per cross-process materialization task. One message per
-    # sample would ship ~N*301 floats through the pipe each time; chunking the
-    # RPC keeps pickle overhead bounded while workers stay parallel.
+    # sample would ship the whole candidate matrix through the pipe each time;
+    # chunking the RPC keeps pickle overhead bounded while workers stay parallel.
     materialize_rpc_chunk: int = 32
     # The per-parameter inf/NaN sweep forces a device sync per parameter and
     # serializes the GPU pipeline; on CUDA it runs as a periodic deep check
@@ -222,37 +224,39 @@ class Trainer:
             "scaler": self.scaler.state_dict(),
             "epoch": self.epoch_count,
             "action_feature_dim": ACTION_FEATURE_DIM,
-            "action_feature_schema_version": ACTION_FEATURE_SCHEMA_VERSION,
-            "state_feature_schema_version": be.STATE_FEATURE_SCHEMA_VERSION,
-            "state_feature_shapes": {
-                "board": (be.BOARD_PLANES, be.BOARD_CELLS),
-                "links": (be.LINK_PLANES, be.LINK_CELLS),
-                "global": be.GLOBAL_LEN,
-                "hand": be.HAND_LEN,
+            "action_schema_version": ACTION_SCHEMA_VERSION,
+            "state_token_schema_version": be.STATE_TOKEN_SCHEMA_VERSION,
+            "state_token_shapes": {
+                "cells": (be.BOARD_CELLS, be.F_CELL),
+                "links": (be.LINK_CELLS, be.F_LINK),
+                "merchants": (be.MERCHANT_COUNT, be.F_MERCHANT),
+                "seats": (be.SEAT_COUNT, be.F_SEAT),
+                "global": be.F_GLOBAL,
             },
         }
 
     def load_state_dict(self, sd: dict) -> None:
-        schema_version = sd.get("action_feature_schema_version")
+        schema_version = sd.get("action_schema_version")
         feature_dim = sd.get("action_feature_dim")
-        if schema_version != ACTION_FEATURE_SCHEMA_VERSION or feature_dim != ACTION_FEATURE_DIM:
+        if schema_version != ACTION_SCHEMA_VERSION or feature_dim != ACTION_FEATURE_DIM:
             raise ValueError(
-                "incompatible checkpoint action-feature schema: "
+                "incompatible checkpoint action schema: "
                 f"got version={schema_version}, dim={feature_dim}; expected "
-                f"version={ACTION_FEATURE_SCHEMA_VERSION}, dim={ACTION_FEATURE_DIM}"
+                f"version={ACTION_SCHEMA_VERSION}, dim={ACTION_FEATURE_DIM}"
             )
-        state_version = sd.get("state_feature_schema_version")
+        state_version = sd.get("state_token_schema_version")
         expected_shapes = {
-            "board": (be.BOARD_PLANES, be.BOARD_CELLS),
-            "links": (be.LINK_PLANES, be.LINK_CELLS),
-            "global": be.GLOBAL_LEN,
-            "hand": be.HAND_LEN,
+            "cells": (be.BOARD_CELLS, be.F_CELL),
+            "links": (be.LINK_CELLS, be.F_LINK),
+            "merchants": (be.MERCHANT_COUNT, be.F_MERCHANT),
+            "seats": (be.SEAT_COUNT, be.F_SEAT),
+            "global": be.F_GLOBAL,
         }
-        if state_version != be.STATE_FEATURE_SCHEMA_VERSION or sd.get("state_feature_shapes") != expected_shapes:
+        if state_version != be.STATE_TOKEN_SCHEMA_VERSION or sd.get("state_token_shapes") != expected_shapes:
             raise ValueError(
-                "incompatible checkpoint state-feature schema: "
-                f"got version={state_version}, shapes={sd.get('state_feature_shapes')}; expected "
-                f"version={be.STATE_FEATURE_SCHEMA_VERSION}, shapes={expected_shapes}"
+                "incompatible checkpoint state-token schema: "
+                f"got version={state_version}, shapes={sd.get('state_token_shapes')}; expected "
+                f"version={be.STATE_TOKEN_SCHEMA_VERSION}, shapes={expected_shapes}"
             )
         self.net.load_state_dict(sd["model"])
         self.optimizer.load_state_dict(sd["optimizer"])
@@ -271,25 +275,25 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
         ~out["candidate_mask"], 0.0
     )).sum(dim=1).mean()
 
-    # Rank head: per-seat normalized final rank (rank/n), comparable across
-    # games and order-preserving within one game.
-    rank_loss = F.mse_loss(out["rank"], tensors["rank"])
+    # Value head: per-seat terminal utility `(vp - table_mean_vp) / VP_SCALE`,
+    # the same scale the search backs up. Zero-mean across seats, so "an
+    # unvisited child is worth 0" stays meaningful in PUCT.
+    value_loss = F.mse_loss(out["value"], tensors["value"])
 
     # Winner head: one-hot official winner after VP/income/cash tie-breaks.
     winner_loss = -(tensors["winner"] * F.log_softmax(out["winner_logits"], dim=1)).sum(dim=1).mean()
 
-    # Action-conditioned value: Q(s, played) -> the mover's own final
-    # `1 - rank/n`, the same scale the search's backup uses. Only the played
-    # sibling has an outcome label, so the loss is masked to it. This is the
-    # head that can actually rank sibling moves: V(s) sees two nearly identical
-    # states and moves by ~2% of its range (see docs/roadmap.md), while this one
-    # receives the action embedding itself.
+    # Action-conditioned value: Q(s, played) -> the mover's own terminal
+    # utility, the same scale as the value head. Only the played sibling has an
+    # outcome label, so the loss is masked to it. This is the head that can
+    # actually rank sibling moves: V(s) sees two nearly identical states, while
+    # this one receives the action's referenced entities directly.
     played = tensors["played"]
     has_label = played >= 0
     q_loss = torch.zeros((), device=device)
     if bool(has_label.any()):
-        seat_rank = tensors["rank"].gather(1, tensors["pid"].unsqueeze(1)).squeeze(1)
-        q_target = 1.0 - seat_rank / 4.0
+        # After perspective rotation the actor is seat 0.
+        q_target = tensors["value"][:, 0]
         q_pred = out["candidate_value"].gather(
             1, played.clamp_min(0).unsqueeze(1)
         ).squeeze(1)
@@ -319,8 +323,8 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
     econ_loss = econ_lambda * era_loss
 
     l2_loss = sum(p.pow(2).sum() for p in net.parameters()) * l2
-    total = policy_loss + rank_loss + winner_weight * winner_loss + econ_loss + q_loss + l2_loss
-    return total, policy_loss, rank_loss, winner_loss, econ_loss, l2_loss, q_loss
+    total = policy_loss + value_loss + winner_weight * winner_loss + econ_loss + q_loss + l2_loss
+    return total, policy_loss, value_loss, winner_loss, econ_loss, l2_loss, q_loss
 
 
 def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
@@ -380,7 +384,7 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
     _, pl, rl, wl, el, ll, ql = losses
     return {
         "policy": pl.detach().item(),
-        "rank": rl.detach().item(),
+        "value": rl.detach().item(),
         "winner": wl.detach().item(),
         "econ": el.detach().item(),
         "q": ql.detach().item(),
@@ -412,43 +416,35 @@ def _pack_candidate_chunks(samples: list[Sample], batch_size: int, max_candidate
 
 
 def _to_batch(samples: list[Sample]) -> dict:
-    b = np.stack([s.board for s in samples]).astype(np.float32)
-    l = np.stack([s.links for s in samples]).astype(np.float32)
+    cells = np.stack([s.cells for s in samples]).astype(np.float32)
+    links = np.stack([s.links for s in samples]).astype(np.float32)
+    merchants = np.stack([s.merchants for s in samples]).astype(np.float32)
+    seats = np.stack([s.seats for s in samples]).astype(np.float32)
     g = np.stack([s.global_vec for s in samples]).astype(np.float32)
-    o = np.stack([s.own_hand for s in samples]).astype(np.float32)
-    p = np.stack([s.opp_hands for s in samples]).astype(np.float32)
     rows = [s.candidates for s in samples]
-    if all(row.dtype == np.uint8 for row in rows):
-        # Fast path: pad in uint8 and let the network upconvert on the GPU,
-        # keeping the host->device copy 4x smaller than float32.
-        max_n = max(row.shape[0] for row in rows)
-        candidates = np.zeros((len(rows), max_n, rows[0].shape[1]), dtype=np.uint8)
-        candidate_mask = np.zeros((len(rows), max_n), dtype=bool)
-        for i, row in enumerate(rows):
-            n = row.shape[0]
-            candidates[i, :n] = row
-            candidate_mask[i, :n] = True
-    else:
-        candidate_rows = []
-        for row in rows:
-            if row.dtype == np.uint8:
-                row = row.astype(np.float32) / 4.0
-            candidate_rows.append(torch.from_numpy(row))
-        candidates, candidate_mask = pad_candidate_features(candidate_rows)
-        candidates = candidates.numpy()
-        candidate_mask = candidate_mask.numpy()
+    candidates, candidate_mask = pad_candidate_features(
+        [torch.from_numpy(np.ascontiguousarray(row, dtype=np.float32)) for row in rows]
+    )
+    candidates = candidates.numpy()
+    candidate_mask = candidate_mask.numpy()
     pol = np.zeros(candidate_mask.shape, dtype=np.float32)
     for i, sample in enumerate(samples):
         pol[i, :len(sample.policy)] = sample.policy
-    val = np.stack([s.rank for s in samples]).astype(np.float32)
-    win = np.stack([s.winner for s in samples]).astype(np.float32)
     econ = np.stack([s.econ for s in samples]).astype(np.float32)
     era = np.asarray([s.era for s in samples], dtype=np.int64)
     pid = np.asarray([s.pid for s in samples], dtype=np.int64)
     played = np.asarray([s.action_index for s in samples], dtype=np.int64)
+    # Per-seat targets are stored in absolute seat order; the observation (and
+    # therefore the heads predicting them) is rotated so seat 0 is the actor.
+    val = rotate_to_perspective(
+        torch.as_tensor(np.stack([s.value for s in samples]), dtype=torch.float32), torch.as_tensor(pid)
+    ).numpy()
+    win = rotate_to_perspective(
+        torch.as_tensor(np.stack([s.winner for s in samples]), dtype=torch.float32), torch.as_tensor(pid)
+    ).numpy()
     return {
-        "board": b, "links": l, "global": g,
-        "own_hand": o, "opp_hands": p, "policy": pol, "rank": val,
+        "cells": cells, "links": links, "merchants": merchants, "seats": seats,
+        "global": g, "policy": pol, "value": val,
         "winner": win,
         "candidates": candidates, "candidate_mask": candidate_mask,
         "econ": econ, "era": era, "pid": pid, "played": played,

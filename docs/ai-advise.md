@@ -21,29 +21,28 @@ Search: allocate lookahead among candidates
 
 ## State Representation
 
-当前 state encoder 已是"图 + 向量"混合结构，不应被误认为最终表示：
+观测是 102 个 token（棋盘格、连接、商家、座位、全局），动作是"类型 + 实体引用"，
+网络按引用 id 取出被引用的实体（见 [ai-action-encoding.md](ai-action-encoding.md)）。
+这套表示已经解决了两类结构性问题：
 
-- **已是图结构**：地图连通性——board 格 scatter-pool 成地点节点、连接作为边、
-  经农场节点消息传递（`net.py encode_state`，3 层边/节点交替更新；拓扑由
-  Rust `encode.rs` 导出）。
-- **仍是 flatten vector**：玩家全局量（现金、收入、VP、债务、公开行动）、
-  手牌（地点/行业/万能牌的 35 维槽位编码）、历史（已出现卡牌、公开行动、
-  时代/回合顺序）。
+- **逐格细节不再被池化掉**：每个棋盘格是独立 token，槽位身份、资源数、归属与
+  网络连通性都在 token 上，动作引用直接指向它们。
+- **动作与状态的交互是结构保证的**：打分头看到的是"这一手实际引用的那些格子的
+  当前状态"，不依赖人工特征复述后果。
 
-下一代表示应把剩余对象逐步迁移为 token 或结构化表示（如手牌 token、历史
-action token）。优先级不是立刻引入 Transformer 或 GNN，而是先通过错误案例
-证明当前 encoder 无法区分的关键局面，再增量升级。目标是让模型理解卡牌保留
-价值和对手竞争，而不是只拟合局面统计量。
+仍然偏粗的是历史与信念：对手手牌目前只有一次 determinization 采样加公开已用牌
+计数，没有跨回合的历史序列。下一步的升级应由错误案例驱动——只有当固定观测下的
+决策误差明确来自隐藏信息或牌序记忆时，再引入历史 token 与 belief 表示。
 
 ## Value And Objective
 
-policy 的最终优化目标是最大化最终第一名概率。当前 value 目标已切到竞争结果：
-rank 头（每座位终局名次 /n，MSE）与 winner 头（唯一冠军 one-hot，CE），搜索
-与终局 backup 统一使用 `1 - rank` 尺度，见
-[ai-action-encoding.md](ai-action-encoding.md) §5.2。
+policy 的最终优化目标是最大化最终第一名概率。价值尺度是 VP 效用：
+`(vp - 桌均 VP) / VP_SCALE`，四人和恒为 0，跨局可比且保留分差；搜索的叶子与终局
+backup 使用同一尺度，见 [ai-action-encoding.md](ai-action-encoding.md) §4。
+winner 头作为辅助监督保留，`q` 头给出动作条件化的价值，用于在树内分辨兄弟招。
 
-保留 income、era score 等辅助头（当前为按时代拆分的 econ 头）以改善表征学习；
-但 policy 的最终优化目标保持 win/rank，而不是绝对现金、收入或 VP。
+不用名次当唯一尺度：名次是 VP 的粗化，会把分差抹平。保留 income、era score 等
+经济辅助头（按时代拆分的 econ 头）以改善表征学习，但主目标是终局竞争结果。
 
 如果引入 reward shaping，应使用 potential difference：
 
@@ -55,7 +54,8 @@ r_t = terminal_outcome + lambda * (Phi(s_{t+1}) - Phi(s_t))
 
 ## Imperfect Information
 
-当前 search 通过 determinization 处理隐藏手牌，这是第一版近似。长期需要让
+当前 search 通过 determinization 处理隐藏手牌，这是第一版近似；观测上标记了
+哪些手牌是采样值（`hand_is_sampled`），避免网络把它当成真实信息。长期需要让
 policy/value 利用公开历史形成 belief，而不是把未知手牌当作独立随机噪声：
 
 - 已出现与未出现的卡牌；

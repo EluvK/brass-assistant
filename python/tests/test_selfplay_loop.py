@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+from brass_ai import _engine as be
 from brass_ai.net import PolicyValueNet
 from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.selfplay import Sample, SelfPlayConfig, materialize_sample, play_game
@@ -30,13 +31,14 @@ def test_selfplay_samples_are_snapshot_backed_and_materialize():
     # Snapshot form: no dense tensors, target is a sparse canonical->visit map.
     assert sample.snapshot is not None
     assert sample.candidates is None
-    assert sample.board is None
+    assert sample.cells is None
     assert sample.policy_by_canonical
 
     dense = materialize_sample(sample)
     assert dense.candidates is not None
-    assert dense.candidates.shape[1] == 301
-    assert dense.board.shape == (24, 49)
+    assert dense.candidates.shape[1] == be.ACTION_FEATURE_DIM
+    assert dense.cells.shape == (be.BOARD_CELLS, be.F_CELL)
+    assert dense.seats.shape == (be.SEAT_COUNT, be.F_SEAT)
     assert np.isclose(dense.policy.sum(), 1.0)
     assert dense.policy.shape[0] == dense.candidates.shape[0]
     assert dense.pid == sample.pid
@@ -45,10 +47,8 @@ def test_selfplay_samples_are_snapshot_backed_and_materialize():
     assert 0 <= dense.action_index < dense.candidates.shape[0]
     # The stored observation is a determinization, so the materialized inputs
     # must be exactly what the snapshot encodes.
-    from brass_ai import _engine as be
-
     restored = be.GameState.from_snapshot(sample.snapshot)
-    assert np.allclose(dense.opp_hands, restored.state_to_tensor()[4])
+    np.testing.assert_allclose(dense.seats, restored.state_tokens()[3])
 
 
 def test_snapshot_policy_aligns_to_the_restored_candidate_set():

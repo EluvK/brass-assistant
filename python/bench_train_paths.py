@@ -64,16 +64,16 @@ def main() -> None:
     bench("snapshot", lambda st: st.snapshot(), (states[0],), 200)
     bench("from_snapshot", be.GameState.from_snapshot, (snaps[0],), 200)
     bench("legal_candidates", lambda st: st.legal_candidates(), (states[0],), iters)
-    bench("state_to_tensor", lambda st: st.state_to_tensor(), (states[0],), iters)
+    bench("state_tokens", lambda st: st.state_tokens(), (states[0],), iters)
     bench("heuristic_cands", lambda st: st.heuristic_candidates(), (states[0],), iters)
 
     # end-to-end: materialize one training sample like selfplay.materialize_sample
     def materialize_one(snap: bytes, pid: int, era: int, teacher: str):
-        (r_pid, r_era, board, links, g, oh, op, candidates, t_idx, policy) = (
+        (r_pid, r_era, cells, links, merchants, seats, g, candidates, t_idx, policy) = (
             be.GameState.materialize_snapshot(snap, teacher)
         )
         assert r_pid == pid and r_era == era
-        return board, links, g, oh, op, candidates, t_idx, policy
+        return cells, links, merchants, seats, g, candidates, t_idx, policy
 
     t0 = time.perf_counter()
     for snap, st in zip(snaps, states):

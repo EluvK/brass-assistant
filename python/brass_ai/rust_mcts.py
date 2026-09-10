@@ -6,16 +6,16 @@ callback. This is the supported search implementation for self-play and
 evaluation. Its `search(...) -> SearchResult` contract exposes `.best`,
 `.visits`, and `.canon_by_candidate`.
 
-Callback contract (Rust side builds the arrays, ONE row per request = the
-request's current-player perspective):
-  board   (rows, BOARD_PLANES*BOARD_CELLS)   float32
-  links   (rows, LINK_PLANES*LINK_CELLS)     float32
-  global_ (rows, GLOBAL_LEN)                 float32
-  own     (rows, HAND_LEN)                   float32
-  opp     (rows, 3*HAND_LEN)                 float32
-receives padded candidate features and a candidate mask in addition to the
-state arrays, and returns ``(candidate_logits (rows,max_candidates),
-values (rows,4))``. Rust masks by each request's real candidate length.
+Callback contract (Rust side builds the arrays, ONE row per request, framed
+from that request's acting player):
+  cells      (rows, BOARD_CELLS*F_CELL)         float32
+  links      (rows, LINK_CELLS*F_LINK)          float32
+  merchants  (rows, MERCHANT_COUNT*F_MERCHANT)  float32
+  seats      (rows, SEAT_COUNT*F_SEAT)          float32
+  global_    (rows, F_GLOBAL)                   float32
+Padded action rows and a candidate mask come along with them; the callback
+returns ``(candidate_logits (rows,max_candidates), values (rows,4))``. Rust
+masks by each request's real candidate length.
 """
 
 from __future__ import annotations
@@ -26,23 +26,26 @@ import numpy as np
 import torch
 
 from . import _engine as be
-from .net import PolicyValueNet
+from .net import PolicyValueNet, state_batch
 
 
 def make_net_fn(net: PolicyValueNet, device: str = "cuda"):
     """Build the Python callback the Rust search calls for batched inference."""
-    def net_fn(board, links, global_vec, own_hand, opp_hands, candidates, candidate_mask):
-        batch = {
-            "board": torch.from_numpy(np.asarray(board, dtype=np.float32)).reshape(-1, be.BOARD_PLANES, be.BOARD_CELLS),
-            "links": torch.from_numpy(np.asarray(links, dtype=np.float32)).reshape(-1, be.LINK_PLANES, be.LINK_CELLS),
-            "global": torch.from_numpy(np.asarray(global_vec, dtype=np.float32)),
-            "own_hand": torch.from_numpy(np.asarray(own_hand, dtype=np.float32)),
-            "opp_hands": torch.from_numpy(np.asarray(opp_hands, dtype=np.float32)),
-        }
+    def net_fn(cells, links, merchants, seats, global_vec, candidates, candidate_mask):
+        rows = np.asarray(candidate_mask).shape[0]
+        batch = state_batch((
+            torch.from_numpy(np.asarray(cells, dtype=np.float32)).reshape(-1, be.BOARD_CELLS, be.F_CELL),
+            torch.from_numpy(np.asarray(links, dtype=np.float32)).reshape(-1, be.LINK_CELLS, be.F_LINK),
+            torch.from_numpy(np.asarray(merchants, dtype=np.float32)).reshape(-1, be.MERCHANT_COUNT, be.F_MERCHANT),
+            torch.from_numpy(np.asarray(seats, dtype=np.float32)).reshape(-1, be.SEAT_COUNT, be.F_SEAT),
+            torch.from_numpy(np.asarray(global_vec, dtype=np.float32)).reshape(-1, be.F_GLOBAL),
+        ))
+        if batch["cells"].shape[0] != rows:
+            raise ValueError("state batch and candidate batch sizes differ")
         if device != "cpu":
             batch = {k: v.to(device) for k, v in batch.items()}
         action_features = torch.from_numpy(np.asarray(candidates, dtype=np.float32)).reshape(
-            -1, np.asarray(candidate_mask).shape[1], net.cfg.action_features
+            rows, np.asarray(candidate_mask).shape[1], net.cfg.action_features
         )
         mask = torch.from_numpy(np.asarray(candidate_mask, dtype=np.float32) > 0)
         if device != "cpu":
