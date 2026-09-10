@@ -60,6 +60,11 @@ pub struct NnMctsConfig {
     /// First-play urgency for unvisited children (see `select_child`).
     pub fpu: bool,
     pub fpu_reduction: f64,
+    /// Initialize an unvisited child's Q with the network's action-conditioned
+    /// value for that edge instead of the FPU estimate. The tree then ranks
+    /// never-visited siblings by the network rather than by the prior alone,
+    /// which is what makes a full-legal branching factor searchable.
+    pub q_init: bool,
 }
 
 impl Default for NnMctsConfig {
@@ -74,6 +79,7 @@ impl Default for NnMctsConfig {
             prior_top_k: 0,
             fpu: true,
             fpu_reduction: 0.0,
+            q_init: true,
         }
     }
 }
@@ -103,11 +109,15 @@ struct Child {
     candidate_id: usize,
     mv: ResolvedMove,
     node: usize,
-    /// The card this move discards, captured when the node was expanded.
-    /// `ResolvedMove` stores a hand *index*, and a tree node outlives the
-    /// determinization that created it, so the index can resolve to a
-    /// different card in a later simulation. `None` for Scout (multi-card).
-    declared_card: Option<Card>,
+    /// The cards this move pays with, captured when the node was expanded.
+    /// `ResolvedMove` stores hand *indices*, and a tree node outlives the
+    /// determinization that created it, so an index can name a different card
+    /// in a later simulation. The card semantics survive that; the indices are
+    /// rebound per simulation in `rebind_cards`.
+    cards: Vec<Card>,
+    /// Network action-conditioned value for this edge, in terminal-utility
+    /// units. Used to initialize an unvisited child's Q (`q_init`).
+    q_prior: f64,
 }
 
 struct Node {
@@ -179,6 +189,8 @@ enum ParkedOutcome {
 struct BatchResult {
     value: Vec<f64>,
     priors: Option<Vec<f64>>,
+    /// Per-candidate action-conditioned value, aligned with `priors`.
+    candidate_values: Option<Vec<f64>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +246,13 @@ pub fn search_net(
                 for (req, res) in root_reqs.iter().zip(results.iter()) {
                     if let RequestKind::Expand { node_idx, .. } = req.kind {
                         if let Some(p) = &res.priors {
-                            apply_priors(&mut arena, node_idx, p.clone(), cfg.prior_top_k);
+                            apply_priors(
+                                &mut arena,
+                                node_idx,
+                                p.clone(),
+                                res.candidate_values.as_deref(),
+                                cfg.prior_top_k,
+                            );
                         }
                     }
                 }
@@ -285,7 +303,13 @@ pub fn search_net(
             for (req, res) in requests.iter().zip(results.iter()) {
                 if let RequestKind::Expand { node_idx, .. } = req.kind {
                     if let Some(p) = &res.priors {
-                        apply_priors(&mut arena, node_idx, p.clone(), cfg.prior_top_k);
+                        apply_priors(
+                            &mut arena,
+                            node_idx,
+                            p.clone(),
+                            res.candidate_values.as_deref(),
+                            cfg.prior_top_k,
+                        );
                     }
                 }
             }
@@ -401,9 +425,11 @@ fn descend(
                 legal_candidate_ids.push(action_id);
                 let child_idx = arena.len();
                 arena.push(Node::new(0));
+                let cards = declared_cards(hand, &mv);
                 children.push(Child {
                     candidate_id: action_id,
-                    declared_card: declared_card(hand, &mv),
+                    cards,
+                    q_prior: 0.0,
                     mv,
                     node: child_idx,
                 });
@@ -449,37 +475,29 @@ fn descend(
         // Select the child maximizing the mover's OWN Q + PUCT.
         let pid = arena[node_idx].player;
         let child_slot = select_child(arena, node_idx, pid, cfg);
-        let child = &arena[node_idx].children[child_slot];
-        let mv = child.mv.clone();
         let child_node = arena[node_idx].children[child_slot].node;
+        let mut mv = arena[node_idx].children[child_slot].mv.clone();
+        let cards = arena[node_idx].children[child_slot].cards.clone();
 
-        // The tree outlives one determinization. A node's children were
-        // enumerated against the mover's hand *at expansion time*, but
-        // `determinize` re-samples opponent hands every simulation, and
-        // `ResolvedMove` stores a hand index rather than a card identity.
-        // Detect the two ways that can go wrong:
-        //   * `failed_applies`  - the rules rejected the stale index outright
-        //     (`execute_build` re-validates the card).
-        //   * `rewritten_applies` - the index still bounds-checks but now names
-        //     a *different* card, so the simulation silently discards a card
-        //     the enumerated move did not choose (network/develop/sell/loan/
-        //     pass only call `require_card_index`). This is the common case and
-        //     the one that biases value estimates.
-        if let Some(declared) = &child.declared_card {
-            if declared_card(&work.players[pid].hand, &mv).as_ref() != Some(declared) {
-                *rewritten_applies += 1;
+        // The tree outlives one determinization: children were enumerated
+        // against the mover's hand at expansion time, but `determinize`
+        // re-samples hands every simulation, so the stored hand indices can
+        // name different cards. Rebind them to the cards the move was
+        // enumerated with; a hand with no equivalent card prunes the branch.
+        let hand = &work.players[pid].hand;
+        if !cards.is_empty() && declared_cards(hand, &mv) != cards {
+            *rewritten_applies += 1;
+            if !rebind_cards(&mut mv, &cards, hand) {
+                *failed_applies += 1;
+                return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
             }
         }
 
         if crate::rules::apply_move(work, &mv).is_err() {
-            // A child is executable only in the determinization that created
-            // it: `ResolvedMove` stores a hand index (`card_index`), and a
-            // later simulation re-samples the mover's hand, so the stored
-            // index can name a different (or no longer legal) card. Rules that
-            // re-validate the card (`execute_build`) reject it; rules that only
-            // bound-check (`require_card_index`) silently consume a wrong card.
-            // Until nodes store re-resolvable semantic moves, count these and
-            // end the line as a leaf so the search stays robust.
+            // The child is executable only in the determinization that created
+            // it: resource sources, network state or the opponent's beer may
+            // have changed. Count and end the line as a leaf so the search
+            // stays robust.
             *failed_applies += 1;
             return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
         }
@@ -526,10 +544,24 @@ fn park(
     }
 }
 
-/// The card a single-card move would discard, read from `hand` at the move's
-/// stored index. `None` for Scout, which selects three cards at once.
-fn declared_card(hand: &[Card], mv: &ResolvedMove) -> Option<Card> {
-    let index = match mv {
+/// The cards a move pays with, read from `hand` at its stored indices: one for
+/// every action except Scout, which discards three.
+fn declared_cards(hand: &[Card], mv: &ResolvedMove) -> Vec<Card> {
+    match mv {
+        ResolvedMove::Scout { card_indices } => card_indices
+            .iter()
+            .filter_map(|index| hand.get(*index).cloned())
+            .collect(),
+        other => hand
+            .get(move_card_index(other))
+            .cloned()
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn move_card_index(mv: &ResolvedMove) -> usize {
+    match mv {
         ResolvedMove::Build { card_index, .. }
         | ResolvedMove::Network { card_index, .. }
         | ResolvedMove::NetworkDouble { card_index, .. }
@@ -537,18 +569,63 @@ fn declared_card(hand: &[Card], mv: &ResolvedMove) -> Option<Card> {
         | ResolvedMove::Sell { card_index, .. }
         | ResolvedMove::Loan { card_index }
         | ResolvedMove::Pass { card_index } => *card_index,
-        ResolvedMove::Scout { .. } => return None,
+        ResolvedMove::Scout { card_indices } => card_indices[0],
+    }
+}
+
+/// Rewrite a move's hand indices so it pays exactly the cards it was enumerated
+/// with. Returns false when the current hand no longer holds an equivalent card
+/// for some slot, in which case the branch has to be pruned.
+///
+/// This is what makes cross-determinization tree reuse sound: card *semantics*
+/// are what a move commits to, and two cards with the same semantics are
+/// interchangeable (the engine only ever reads a card through its semantics).
+fn rebind_cards(mv: &mut ResolvedMove, cards: &[Card], hand: &[Card]) -> bool {
+    let slots = match mv {
+        ResolvedMove::Scout { .. } => 3,
+        _ => 1,
     };
-    hand.get(index).cloned()
+    if cards.len() != slots {
+        return false;
+    }
+    let mut used = vec![false; hand.len()];
+    let mut picked = [0usize; 3];
+    for (slot, want) in cards.iter().enumerate().take(picked.len()) {
+        let Some(index) = hand
+            .iter()
+            .enumerate()
+            .position(|(i, card)| !used[i] && card == want)
+        else {
+            return false;
+        };
+        used[index] = true;
+        picked[slot] = index;
+    }
+    match mv {
+        ResolvedMove::Scout { card_indices } => {
+            let mut sorted = picked;
+            sorted.sort_unstable();
+            *card_indices = sorted;
+        }
+        ResolvedMove::Build { card_index, .. }
+        | ResolvedMove::Network { card_index, .. }
+        | ResolvedMove::NetworkDouble { card_index, .. }
+        | ResolvedMove::Develop { card_index, .. }
+        | ResolvedMove::Sell { card_index, .. }
+        | ResolvedMove::Loan { card_index }
+        | ResolvedMove::Pass { card_index } => *card_index = picked[0],
+    }
+    true
 }
 
 fn select_child(arena: &[Node], node_idx: usize, pid: usize, cfg: &NnMctsConfig) -> usize {
     let node = &arena[node_idx];
     let parent_visits = node.visits.max(1) as f64;
-    // First-play urgency. Terminal utility is zero-mean across seats, so 0 is
-    // already a neutral guess for an unvisited child; FPU instead starts it at
-    // the parent's value, a strictly stronger prior whenever the parent sits
-    // away from the table average.
+    // Unvisited children. With `q_init` the network's own action-conditioned
+    // value for that edge is the estimate, so siblings are ranked by the model
+    // rather than by the prior alone. Otherwise fall back to first-play
+    // urgency: terminal utility is zero-mean across seats, so 0 is already a
+    // neutral guess, and FPU starts the child at the parent's value instead.
     let fpu = if cfg.fpu { node.q(pid) - cfg.fpu_reduction } else { 0.0 };
     let mut best: Option<(usize, f64)> = None;
     for (i, child) in node.children.iter().enumerate() {
@@ -556,7 +633,8 @@ fn select_child(arena: &[Node], node_idx: usize, pid: usize, cfg: &NnMctsConfig)
         // n = 0 for unvisited children (the standard PUCT denominator), so a
         // child that has never been expanded gets the full exploration bonus.
         let nv = cn.visits as f64;
-        let q = if cn.visits == 0 { fpu } else { cn.q(pid) };
+        let unvisited = if cfg.q_init { child.q_prior } else { fpu };
+        let q = if cn.visits == 0 { unvisited } else { cn.q(pid) };
         let explore = cfg.c_puct * node.prior[i] * parent_visits.sqrt() / (1.0 + nv);
         let uct = q + explore;
         if best.map_or(true, |(_, b)| uct > b) {
@@ -566,10 +644,21 @@ fn select_child(arena: &[Node], node_idx: usize, pid: usize, cfg: &NnMctsConfig)
     best.map(|(i, _)| i).unwrap_or(0)
 }
 
-/// Install a node's priors, optionally keeping only the `top_k` highest-prior
-/// children (`reprioritize`). Pruned children keep their original
+/// Install a node's priors and per-edge Q estimates, optionally keeping only
+/// the `top_k` highest-prior children. Pruned children keep their original
 /// `candidate_id`, so visit counts still map back to the same canonical move.
-fn apply_priors(arena: &mut Vec<Node>, node_idx: usize, priors: Vec<f64>, top_k: usize) {
+fn apply_priors(
+    arena: &mut Vec<Node>,
+    node_idx: usize,
+    priors: Vec<f64>,
+    candidate_values: Option<&[f64]>,
+    top_k: usize,
+) {
+    if let Some(values) = candidate_values {
+        for (child, value) in arena[node_idx].children.iter_mut().zip(values.iter()) {
+            child.q_prior = *value;
+        }
+    }
     if top_k == 0 || priors.len() <= top_k {
         arena[node_idx].prior = priors;
         return;
@@ -738,8 +827,11 @@ fn flush_net(
             candidate_mask_arr,
         ),
     )?;
-    let (candidate_arr, values_arr): (Bound<PyArray2<f32>>, Bound<PyArray2<f32>>) =
-        out.bind(py).extract()?;
+    let (candidate_arr, values_arr, q_arr): (
+        Bound<PyArray2<f32>>,
+        Bound<PyArray2<f32>>,
+        Bound<PyArray2<f32>>,
+    ) = out.bind(py).extract()?;
     let candidate_ro = candidate_arr.readonly();
     let candidate_logits = candidate_ro
         .as_slice()
@@ -748,6 +840,10 @@ fn flush_net(
     let values = values_ro
         .as_slice()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("values array not contiguous"))?;
+    let q_ro = q_arr.readonly();
+    let raw_candidate_values = q_ro
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("Q array not contiguous"))?;
 
     let mut results = Vec::with_capacity(requests.len());
     for (ri, req) in requests.iter().enumerate() {
@@ -770,7 +866,25 @@ fn flush_net(
             }
             RequestKind::Leaf => None,
         };
-        results.push(BatchResult { value, priors });
+        let candidate_values = match &req.kind {
+            RequestKind::Expand {
+                candidate_features, ..
+            } => {
+                let start = ri * max_candidates;
+                Some(
+                    raw_candidate_values[start..start + candidate_features.len()]
+                        .iter()
+                        .map(|raw| search_value(*raw))
+                        .collect(),
+                )
+            }
+            RequestKind::Leaf => None,
+        };
+        results.push(BatchResult {
+            value,
+            priors,
+            candidate_values,
+        });
     }
     Ok(results)
 }
@@ -795,8 +909,11 @@ fn softmax(logits: &[f32]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{search_value, terminal_value};
+    use super::{declared_cards, rebind_cards, search_value, terminal_value};
+    use crate::r#move::ResolvedMove;
     use crate::state::GameState;
+    use crate::state::Card;
+    use crate::map::Loc;
     use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha12Rng;
 
@@ -825,5 +942,64 @@ mod tests {
         assert_eq!(search_value(f32::NAN), 0.0);
         assert_eq!(search_value(f32::INFINITY), 4.0);
         assert_eq!(search_value(f32::NEG_INFINITY), -4.0);
+    }
+
+    #[test]
+    fn a_reused_child_pays_the_card_it_was_enumerated_with() {
+        let enumerated = vec![Card::Location(Loc::Derby), Card::Location(Loc::Oxford)];
+        let move_with = |index: usize| ResolvedMove::Network {
+            conn_id: 0,
+            coal: None,
+            card_index: index,
+        };
+        let mut mv = move_with(0);
+        assert_eq!(declared_cards(&enumerated, &mv)[0], Card::Location(Loc::Derby));
+
+        // A later determinization reorders the hand: the same card now sits at
+        // index 1. The stored index must not silently pay Oxford instead.
+        let reused = vec![Card::Location(Loc::Oxford), Card::Location(Loc::Derby)];
+        assert_ne!(declared_cards(&reused, &mv)[0], Card::Location(Loc::Derby));
+        assert!(rebind_cards(&mut mv, &[Card::Location(Loc::Derby)], &reused));
+        match mv {
+            ResolvedMove::Network { card_index, .. } => assert_eq!(card_index, 1),
+            other => panic!("unexpected move {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_branch_without_an_equivalent_card_is_pruned() {
+        let hand = vec![Card::Location(Loc::Oxford)];
+        let mut mv = ResolvedMove::Loan { card_index: 0 };
+        assert!(!rebind_cards(&mut mv, &[Card::Location(Loc::Derby)], &hand));
+    }
+
+    #[test]
+    fn scout_rebinds_three_distinct_indices() {
+        let hand = vec![
+            Card::Location(Loc::Derby),
+            Card::Location(Loc::Derby),
+            Card::Location(Loc::Oxford),
+        ];
+        let mut mv = ResolvedMove::Scout { card_indices: [0, 1, 2] };
+        let cards = vec![
+            Card::Location(Loc::Oxford),
+            Card::Location(Loc::Derby),
+            Card::Location(Loc::Derby),
+        ];
+        assert!(rebind_cards(&mut mv, &cards, &hand));
+        match mv {
+            ResolvedMove::Scout { card_indices } => {
+                let mut got: Vec<_> = card_indices
+                    .iter()
+                    .map(|i| hand[*i].clone())
+                    .collect();
+                got.sort_by_key(|c| format!("{c:?}"));
+                let mut want = cards;
+                want.sort_by_key(|c| format!("{c:?}"));
+                assert_eq!(got, want);
+                assert!(card_indices[0] != card_indices[1]);
+            }
+            other => panic!("unexpected move {other:?}"),
+        }
     }
 }

@@ -14,8 +14,10 @@ from that request's acting player):
   seats      (rows, SEAT_COUNT*F_SEAT)          float32
   global_    (rows, F_GLOBAL)                   float32
 Padded action rows and a candidate mask come along with them; the callback
-returns ``(candidate_logits (rows,max_candidates), values (rows,4))``. Rust
-masks by each request's real candidate length.
+returns ``(candidate_logits (rows,max_candidates), values (rows,4),
+candidate_values (rows,max_candidates))``. Rust masks by each request's real
+candidate length. The per-candidate values are the action-conditioned Q that
+initializes an unvisited child's value in the tree.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ def make_net_fn(net: PolicyValueNet, device: str = "cuda"):
         return (
             out["candidate_logits"].detach().cpu().numpy(),
             out["value"].detach().cpu().numpy(),
+            out["candidate_value"].detach().cpu().numpy(),
         )
 
     return net_fn
@@ -77,6 +80,10 @@ class RustMCTSConfig:
     # First-play urgency for unvisited children (never treat them as worthless).
     fpu: bool = True
     fpu_reduction: float = 0.0
+    # Initialize an unvisited child's Q with the network's action-conditioned
+    # value for that edge. This is what lets the search rank never-visited
+    # siblings by the model instead of by the prior alone.
+    q_init: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -118,6 +125,7 @@ class RustISMCTS:
             self.cfg.prior_top_k,
             self.cfg.fpu,
             self.cfg.fpu_reduction,
+            self.cfg.q_init,
         )
         visits = {candidate_id: count for candidate_id, _canon, count in children}
         canon_by_candidate = {candidate_id: canon for candidate_id, canon, _count in children}

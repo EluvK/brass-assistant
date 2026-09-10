@@ -111,7 +111,7 @@ def root_forward(net, state, device: str) -> tuple[dict[str, float], float]:
     padded, mask = pad_candidate_features([features])
     cells, links, merchants, seats, global_vec = state.state_tokens()
     # make_net_fn mirrors the Rust callback contract: per-row arrays.
-    logits, values = make_net_fn(net, device)(
+    logits, values, _q = make_net_fn(net, device)(
         np.asarray(cells, dtype=np.float32).reshape(1, -1),
         np.asarray(links, dtype=np.float32).reshape(1, -1),
         np.asarray(merchants, dtype=np.float32).reshape(1, -1),

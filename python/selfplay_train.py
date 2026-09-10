@@ -94,6 +94,8 @@ def main() -> int:
                         help="search only the K highest-prior legal moves (0 = search every legal move)")
     parser.add_argument("--no-fpu", action="store_true",
                         help="treat unvisited children as worth 0 instead of the parent's value")
+    parser.add_argument("--no-q-init", action="store_true",
+                        help="estimate unvisited children with FPU instead of the network's Q(s,a)")
     parser.add_argument("--max-depth", type=int, default=10)
     parser.add_argument("--mcts-batch", type=int, default=64)
     parser.add_argument("--candidate-k", type=int, default=0,
@@ -168,6 +170,7 @@ def main() -> int:
                 c_puct=args.c_puct, max_depth=args.max_depth,
                 batch_size=args.mcts_batch, candidate_k=args.candidate_k,
                 prior_top_k=args.prior_top_k, fpu=not args.no_fpu,
+                q_init=not args.no_q_init,
                 device=args.device,
             ),
             selfplay=SelfPlayConfig(max_moves=args.max_moves),

@@ -16,35 +16,23 @@
 
 ## 近期：先把搜索的输入搞对
 
-这三件事没做完之前，任何规模的自对弈都是在错误的信号上花钱。
+1. **树内动作身份**：已完成。节点保存动作与它支付的**语义卡牌**，每次 simulation 在当前
+   determinization 下重新绑定手牌下标（`rebind_cards`），手牌里没有等价卡就剪枝。此前
+   深层节点会静默打出另一张牌，污染子树价值，而根节点的访问分配正由这些价值驱动。
 
-1. **树内动作身份**（正确性，最高优先级）
+2. **Q 初始化未访问孩子**：已落地（`q_init`，默认开启）。`select_child` 用网络给出的
+   边价值 `Q(s,a)` 估计从未访问过的孩子，而不是回退到父节点价值；这正是让全合法分支
+   可搜索的那一步——否则先验项在 350 分支下小到无法区分兄弟招。
 
-   搜索树节点保存的是 `ResolvedMove`，而 `ResolvedMove` 记录的是手牌下标。树节点活得
-   比一次 determinization 长，对手手牌每次 simulation 会重采样，于是深层节点会指向
-   另一张牌：规则重新校验的动作（Build）被拒，只做越界检查的动作（Network / Develop /
-   Sell / Loan / Pass）会静默打出另一张牌。后者实测占树内动作的 30–55%，直接污染子树
-   的价值估计，而根节点的访问分配正由这些价值驱动。
+3. **重标定搜索参数**：未做。价值尺度换成零均值 VP 效用、Q 成为未访问孩子的初始估计
+   之后，`c_puct` / `prior_top_k` / `fpu` 的既有默认值需要重新标定，并决定
+   full-legal 与 top-K 剪枝哪个更划算。
 
-   做法见 [ai-action-encoding.md](ai-action-encoding.md) §5：节点保存结构动作与语义
-   卡牌，每次 simulation 在当前 determinization 下重新解析，解析不到就剪枝。
-   `failed_applies` / `rewritten_applies` 两个计数器保留，用来验证修复效果——修好后
-   前者应当接近 0，后者应当为 0。
+4. **candidate recall**：未测。搜索与训练目前都用 full-legal，所以这条不是阻塞项；一旦
+   为了吞吐切到 `--candidate-k`，候选分布就会与训练错位。测量口径：已训练策略在全合法
+   集上的 top-1 / top-3 落在 shortlist 内的比例。
 
-2. **把 Q 接进搜索**
-
-   `q_head` 已经随训练一起训练，`flush_net` 也已把它取回，但 `select_child` 还没有用它。
-   计划：用边的 Q 初始化未访问孩子的价值，替代 FPU 的父值回填。
-
-   前置判据是 `python/bench_value_ranking.py`：Q 的 within-position Spearman 必须显著
-   高于 V。V 只看状态，兄弟招对它只是状态微扰；Q 直接接收动作引用的实体，兄弟差异对
-   它是一阶量。
-
-3. **candidate recall**
-
-   搜索与训练目前都用 full-legal，所以这条不是阻塞项；一旦为了吞吐切到
-   `--candidate-k`，候选分布就会与训练错位。测量口径：已训练策略在全合法集上的
-   top-1 / top-3 落在 shortlist 内的比例。
+在 1–3 完成之前，任何规模的自对弈都是在错误的信号上花钱。
 
 ## 中期：imitation → self-play 闭环
 

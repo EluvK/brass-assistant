@@ -417,13 +417,16 @@ impl PyGame {
 
     /// Network-guided ISMCTS search with the tree in Rust (`nn_mcts`).
     ///
-    /// `net_fn(board, links, global, own_hand, opp_hands, candidates, mask)`
-    /// receives batched state arrays plus flattened padded candidate features
-    /// and must return `(candidate_logits (rows,max_candidates), values
-    /// (rows,4))`. Returns (best_canonical, root children as (slot, canonical,
-    /// visits) best-first, legal candidate ids, failed child applications,
-    /// child applications that silently executed a different card).
-    #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64, candidate_k=0, prior_top_k=0, fpu=true, fpu_reduction=0.0))]
+    /// `net_fn(cells, links, merchants, seats, global, candidates, mask)`
+    /// receives the batched state token groups plus flattened padded action
+    /// references and must return `(candidate_logits (rows,max_candidates),
+    /// values (rows,4), candidate_values (rows,max_candidates))`.
+    ///
+    /// Returns (best_canonical, root children as (slot, canonical, visits)
+    /// best-first, legal candidate ids, failed child applications, child
+    /// applications whose stored hand index had to be rebound to the card the
+    /// move was enumerated with).
+    #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64, candidate_k=0, prior_top_k=0, fpu=true, fpu_reduction=0.0, q_init=true))]
     fn search_net(
         &self,
         py: Python<'_>,
@@ -439,6 +442,7 @@ impl PyGame {
         prior_top_k: usize,
         fpu: bool,
         fpu_reduction: f64,
+        q_init: bool,
     ) -> PyResult<(
         Option<String>,
         Vec<(usize, String, u32)>,
@@ -456,6 +460,7 @@ impl PyGame {
             prior_top_k,
             fpu,
             fpu_reduction,
+            q_init,
         };
         let res = crate::nn_mcts::search_net(&self.state, &cfg, sims, add_root_noise, &net_fn, py)?;
         Ok((

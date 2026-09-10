@@ -98,7 +98,7 @@ GLOBAL_QUEUE: int
 
 NetCallback = Callable[
     [Any, Any, Any, Any, Any, Any, Any],
-    Tuple[NDArray[np.float32], NDArray[np.float32]],
+    Tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]],
 ]
 
 
@@ -147,6 +147,7 @@ class GameState:
         prior_top_k: int = 0,
         fpu: bool = True,
         fpu_reduction: float = 0.0,
+        q_init: bool = True,
     ) -> Tuple[Optional[str], List[Tuple[int, str, int]], List[int], int, int]: ...
 
     def apply_move(self, canonical: str) -> str: ...

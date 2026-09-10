@@ -185,7 +185,7 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 | `--eval-every` / `--eval-games` / `--eval-sims` | arena 与 heuristic benchmark 的间隔与规模；`0` 关闭评估 |
 | `--heuristic-eval-games` / `--heuristic-eval-sims` | ending benchmark 对 heuristic 的规模 |
 | `--promote-winrate` | 刷新 `best.pt` 所需的 arena 胜率阈值（默认 0.55） |
-| `--prior-top-k` / `--c-puct` / `--no-fpu` | 搜索分支控制，见下 |
+| `--prior-top-k` / `--c-puct` / `--no-fpu` / `--no-q-init` | 搜索分支控制，见下 |
 | `--max-depth` / `--mcts-batch` / `--candidate-k` | Rust ISMCTS 参数；`--candidate-k 0` 为 full-legal |
 
 ### 价值头兄弟排序基准
@@ -208,6 +208,10 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
   c 就该越小；沿用 full-legal 时代的 2.5 会继续让探索项压过价值差。
 - `--no-fpu` 关闭 FPU（默认开启）。终局效用是零均值的 VP 差，未访问孩子取 0 已是中性
   假设；FPU 进一步把它初始化为父节点价值。
+- `--no-q-init` 关闭 Q 初始化（默认开启）。默认用网络给出的边价值 `Q(s,a)` 估计从未访问
+  过的孩子，这样兄弟招是按模型排序而不是只按先验排序——350 个合法动作时先验项本身就
+  小到无法区分。如果 `bench_value_ranking.py` 显示 Q 并不比 V 更能排序兄弟招，就用这个
+  开关退回 FPU。
 
 `--prior-top-k 0` 可退回全合法展开，用于对照。完整的实测数据、仍未解决的问题
 （价值头兄弟层分辨力）见 [roadmap.md](roadmap.md) 的「阶段 3 的已知问题」。
@@ -227,10 +231,12 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 - **每局唯一种子**：`play_batch` 在 `SelfPlayConfig.seed` 给定时按 `seed + game_id` 派生每局种子；
   `selfplay_loop` 进一步按 `seed + iteration * seed_stride` 错开每一轮，避免整批对局复用同一发牌。
 - **搜索自检**：`play_game_with_roles(..., stats=...)` 会回填 `failed_applies` / `rewritten_applies` /
-  `moves`；`SelfPlayPool.last_diagnostics` 汇总 worker 侧同名计数。两者度量的是同一个问题——搜索树
-  节点会跨 determinization 复用，而节点里的 `ResolvedMove` 保存的是手牌下标：规则重新校验的动作
-  （Build）被拒时计入 `failed_applies`，只做越界检查的动作（Network/Develop/Sell/Loan/Pass）会静默
-  打出另一张牌并计入 `rewritten_applies`。后者才是常见情形，也是判断搜索质量是否退化的一手指标。
+  `moves`；`SelfPlayPool.last_diagnostics` 汇总 worker 侧同名计数。它们度量搜索树跨 determinization
+  复用的代价：节点里的 `ResolvedMove` 保存的是手牌下标，而每次 simulation 都会重采样手牌，
+  所以下标可能指向另一张牌。引擎按**语义卡牌**重新绑定下标（`rebind_cards`），因此这一手永远
+  支付它被枚举时选的那张牌——`rewritten_applies` 计数的是发生了重绑定的 simulation
+  （衡量复用规模，不是错误），`failed_applies` 计数的是当前 determinization 下根本执行不了、
+  被剪枝的分支（例如手牌里已无等价卡，或资源/连通性变了）。
 - **样本形态**：`SelfPlayConfig.store_snapshots`（默认开启）让自对弈样本只保存
   determinize 后的 snapshot 与稀疏 `canonical -> visit`，训练前由 `materialize_sample`
   还原成密集张量。密集形态每个决策点约 `N*55` 个 float32（N=300 时约 66 KB），

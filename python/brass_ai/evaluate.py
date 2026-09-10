@@ -57,7 +57,20 @@ def benchmark_mcts_vs_heuristic(mcts, sims: int, games: int = 20, players: int =
 
     The MCTS seat and seed both rotate over ``0..games-1``.  Returns per-game
     scores alongside aggregate statistics for training gates and analysis.
+    ``games=0`` skips the benchmark and returns an empty result, so callers can
+    disable evaluation without special-casing the exit path.
     """
+    if games <= 0:
+        return {
+            "win_rate": float("nan"),
+            "wins": 0,
+            "games": 0,
+            "mcts_vps": [],
+            "base_vps": [],
+            "mcts_mean": float("nan"),
+            "mcts_median": float("nan"),
+            "base_mean": float("nan"),
+        }
     wins = 0
     mcts_vps, base_vps = [], []
     prog = Progress(games, f"bench sims={sims}")
