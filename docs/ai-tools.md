@@ -55,11 +55,13 @@ Rust heuristic self-play
 ```text
 python/
 |- bootstrap_imitation.py     heuristic imitation warm-start 入口
+|- selfplay_train.py          长期 self-play 训练入口（阶段 3）
 |- brass_ai/
 |  |- hierarchical_policy.py  Rust 候选动作和 teacher adapter
 |  |- net.py                  PolicyValueNet
 |  |- rust_mcts.py            Rust 搜索的 Python 网络回调
 |  |- selfplay.py             Sample、imitation 与 MCTS self-play
+|  |- selfplay_loop.py        自对弈循环：replay window、对手池、arena、指标
 |  |- train.py                Trainer、loss、训练指标
 |  |- evaluate.py             MCTS 对 heuristic 的评测
 |  |- mp_selfplay.py          多进程 self-play worker pool
@@ -88,12 +90,22 @@ source .venv/Scripts/activate
 安装 Rust 扩展和运行回归测试
 
 ```powershell
-# Rust bridge 有修改时需要重新安装扩展
-maturin develop --release --features python
+# Rust 侧（规则、搜索、bridge）有修改时先重装扩展
+& .\.venv\Scripts\python.exe -m maturin develop --release --features python
 
 # Python 当前回归测试
-python -m pytest python/tests -q
+& .\.venv\Scripts\python.exe -m pytest python/tests -q
+
+# Rust 回归测试（nn_mcts 在 python feature 下，必须带 --features python；
+# pyo3 需要知道解释器位置，否则报 "no Python 3.x interpreter found"）
+$env:PYO3_PYTHON = "$PWD\.venv\Scripts\python.exe"
+cargo test --features python
 ```
+
+三层验证的推荐顺序：先跑上面两个测试套件，再跑一次
+[self-play 冒烟](#self-play-训练入口阶段-3)（单进程、`--sims 8`、2 轮），
+最后才放正式规模的训练。冒烟能覆盖扩展加载、自对弈采样、snapshot 物化、
+训练一步、arena 与 checkpoint 写出这条完整链路。
 
 ## 当前可运行入口
 
@@ -125,9 +137,111 @@ python python/bootstrap_imitation.py --games 500 --epochs 1 --workers 8 --min-vp
 
 当前源码中 `--max-candidate-batch` 的默认值是 `131072`。GPU 显存有限时应显式设置更小值，例如 `16384`，并从小规模运行开始。
 
-### 自对弈模块的状态
+### Self-play 训练入口（阶段 3）
 
-`selfplay.py`、`mp_selfplay.py` 和 `train.py` 仍保留网络 MCTS self-play 所需能力，但当前没有保留的顶层长期 self-play 训练脚本。它们是后续重新设计自对弈训练入口时可复用的基础模块，不应把它们当作已完成的端到端训练工作流。
+`selfplay_train.py` 是长期自对弈训练入口，`brass_ai/selfplay_loop.py` 是它的循环实现。
+它从 imitation checkpoint 热启动：先用 heuristic 教师给出可用先验，再用 MCTS visit
+分布作为 policy 目标逐步替代 teacher。
+
+```powershell
+# 冒烟：单进程、极小搜索，几分钟内跑完并写出 checkpoint
+./.venv/Scripts/python.exe python/selfplay_train.py `
+  --ckpt-dir checkpoints/selfplay-smoke --init-from checkpoints/bootstrap-0909-20000.pt `
+  --iterations 2 --games-per-iter 2 --workers 1 --sims 8 --train-samples 512 `
+  --eval-every 1 --eval-games 2 --eval-sims 8 --heuristic-eval-games 2 --heuristic-eval-sims 8
+
+# 正式起点（16 核 + 1 GPU 量级）
+./.venv/Scripts/python.exe python/selfplay_train.py `
+  --ckpt-dir checkpoints/selfplay --init-from checkpoints/bootstrap-0909-20000.pt `
+  --iterations 200 --games-per-iter 16 --workers 8 --sims 128 `
+  --train-samples 40000 --batch 256 --buffer-samples 400000 --buffer-iterations 20 `
+  --eval-every 5 --eval-games 40 --eval-sims 128
+
+# 中断后续训（参数需与首次运行一致或显式重传）
+./.venv/Scripts/python.exe python/selfplay_train.py --ckpt-dir checkpoints/selfplay --resume ...
+```
+
+每轮写出的产物：
+
+```text
+<ckpt-dir>/latest.pt      完整 Trainer 状态（model/optimizer/scheduler/scaler/schema）
+<ckpt-dir>/latest.json    最近完成轮次的编号与摘要，--resume 用它定位轮次
+<ckpt-dir>/best.pt        arena 达标时刷新的参考模型
+<ckpt-dir>/metrics.jsonl  每轮一行的 IterationStats（loss、耗时、胜率、搜索自检计数）
+```
+
+`latest.pt` 与 `best.pt` 都是 Trainer checkpoint，含 `model` 字段，可直接作为
+`python -m brass_ai.replay_worker --ckpt <path>` 的网络座位权重使用。
+循环每一轮做什么、各模块如何衔接见 [architecture.md](architecture.md) 的「训练循环现状」。
+
+| 参数 | 用途 |
+| --- | --- |
+| `--init-from` / `--resume` | 从 imitation checkpoint 热启动 / 从 `<ckpt-dir>/latest.pt` 续训 |
+| `--iterations` / `--games-per-iter` / `--sims` | 训练轮数 / 每轮对局数 / 每步模拟数 |
+| `--workers` | actor 进程数；`1` 为单进程，调试与冒烟用 |
+| `--mm-prob` / `--pool-size` | 对手池 matchmaking 概率 / 保留的历史 checkpoint 数量 |
+| `--buffer-samples` / `--buffer-iterations` | replay window 的双重上限（样本数 / 轮数） |
+| `--recent-fraction` / `--recent-iterations` | 每轮采样中新数据的占比 / "新"的轮数窗口 |
+| `--train-samples` | 每轮从 replay window 抽多少样本训练（训练预算的主旋钮） |
+| `--eval-every` / `--eval-games` / `--eval-sims` | arena 与 heuristic benchmark 的间隔与规模；`0` 关闭评估 |
+| `--heuristic-eval-games` / `--heuristic-eval-sims` | ending benchmark 对 heuristic 的规模 |
+| `--promote-winrate` | 刷新 `best.pt` 所需的 arena 胜率阈值（默认 0.55） |
+| `--prior-top-k` / `--c-puct` / `--no-fpu` | 搜索分支控制，见下 |
+| `--max-depth` / `--mcts-batch` / `--candidate-k` | Rust ISMCTS 参数；`--candidate-k 0` 为 full-legal |
+
+### 价值头兄弟排序基准
+
+```powershell
+& .\.venv\Scripts\python.exe python/bench_value_ranking.py --ckpt checkpoints/bootstrap.pt --positions 36
+```
+
+以终局 rollout 为参照，测 `V(s)` / `Q(s,a)` / 先验 / winner 概率对候选动作的排序能力
+（within-position Spearman）。这是 Q 头方向的 go/no-go：重跑 bootstrap 让 Q 头训起来后，
+Q 的相关性必须显著高于 V，否则"把 Q 接进搜索"没有意义。老 checkpoint 没有 `q_head.*`
+时脚本会提示该头是随机的，输出只能当基线看。
+
+注意 checkpoint 兼容性：新增 Q 头后，`--init-from` / `--resume` 仍然可用（旧检查点缺
+`q_head.*` 时该头从随机初始化开始，`net.load_state_dict_tolerant` 会列出缺失的键），
+但要拿到可用的 Q 值必须重跑 bootstrap。
+
+搜索配置的默认值与理由：
+
+- `--prior-top-k 16`：先对全部合法动作打分算出先验，树里只保留先验最高的 16 个孩子。
+  本作单状态 114–600 个合法动作，P ≈ 1/350 时 PUCT 探索项只有 ~0.08，而未访问孩子
+  的 Q 是 0、已评估孩子 Q ≈ 0.3，未访问孩子永远选不中——搜索会退化成先验的弱锐化器。
+  K = 16 时探索项回到 ~0.9 量级，搜索才真正开始分配访问。
+- `--c-puct 1.0`：**必须随 `--prior-top-k` 一起标定**，两者耦合。K 越小、先验越尖，
+  c 就该越小；沿用 full-legal 时代的 2.5 会继续让探索项压过价值差。
+- `--no-fpu` 关闭 FPU（默认开启）。本作 value = `1 - rank/n` ∈ [0, 0.75]、均值约 0.3，
+  把未访问孩子当 0 等于判定"未访问 = 最差"；FPU 改成取父节点价值。
+
+`--prior-top-k 0` 可退回全合法展开，用于对照。完整的实测数据、仍未解决的问题
+（价值头兄弟层分辨力）见 [roadmap.md](roadmap.md) 的「阶段 3 的已知问题」。
+
+已知边界：
+
+- replay window 不写盘。`--resume` 只恢复模型/优化器与 best 参考，buffer 从空开始重新积累。
+- `metrics.jsonl` 是追加写的，resume 不会截断它；按 `iteration` 去重即可。
+- 自对弈对局超过 `--max-moves` 会被丢弃（没有合法终局就没有 value 目标），
+  单局丢弃不会中止整轮；丢弃数反映在样本数与本轮对局数的差值上。
+
+入口必须保留的几条既有约定：
+
+- **观测与推理一致**：`SelfPlayConfig.determinize_observation`（默认开启）在采集样本时先对真实状态
+  做一次 determinization 再编码，对手手牌来自合法隐藏牌池而不是模拟器的真实手牌；否则训练输入会
+  包含推理时看不到的信息。己方手牌、公共盘面、市场与行动历史不受影响。
+- **每局唯一种子**：`play_batch` 在 `SelfPlayConfig.seed` 给定时按 `seed + game_id` 派生每局种子；
+  `selfplay_loop` 进一步按 `seed + iteration * seed_stride` 错开每一轮，避免整批对局复用同一发牌。
+- **搜索自检**：`play_game_with_roles(..., stats=...)` 会回填 `failed_applies` / `rewritten_applies` /
+  `moves`；`SelfPlayPool.last_diagnostics` 汇总 worker 侧同名计数。两者度量的是同一个问题——搜索树
+  节点会跨 determinization 复用，而节点里的 `ResolvedMove` 保存的是手牌下标：规则重新校验的动作
+  （Build）被拒时计入 `failed_applies`，只做越界检查的动作（Network/Develop/Sell/Loan/Pass）会静默
+  打出另一张牌并计入 `rewritten_applies`。后者才是常见情形，也是判断搜索质量是否退化的一手指标。
+- **样本形态**：`SelfPlayConfig.store_snapshots`（默认开启）让自对弈样本只保存
+  determinize 后的 snapshot 与稀疏 `canonical -> visit`，训练前由 `materialize_sample`
+  还原成密集张量。密集形态每个决策点约 `N*301` 个 float32（N=300 时约 0.4 MB），
+  不压缩成 snapshot 就无法让 replay window 跨轮存在。设为 `False` 则退回密集样本，
+  仅在对照实验与单元测试中使用。
 
 ## 样本与 checkpoint
 

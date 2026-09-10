@@ -429,8 +429,9 @@ impl PyGame {
     /// receives batched state arrays plus flattened padded candidate features
     /// and must return `(candidate_logits (rows,max_candidates), values
     /// (rows,4))`. Returns (best_canonical, root children as (slot, canonical,
-    /// visits) best-first, legal candidate ids).
-    #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64, candidate_k=0))]
+    /// visits) best-first, legal candidate ids, failed child applications,
+    /// child applications that silently executed a different card).
+    #[pyo3(signature = (net_fn, sims, c_puct, max_depth, dirichlet_alpha, dirichlet_weight, add_root_noise, batch_size=64, candidate_k=0, prior_top_k=0, fpu=true, fpu_reduction=0.0))]
     fn search_net(
         &self,
         py: Python<'_>,
@@ -443,7 +444,16 @@ impl PyGame {
         add_root_noise: bool,
         batch_size: usize,
         candidate_k: usize,
-    ) -> PyResult<(Option<String>, Vec<(usize, String, u32)>, Vec<usize>)> {
+        prior_top_k: usize,
+        fpu: bool,
+        fpu_reduction: f64,
+    ) -> PyResult<(
+        Option<String>,
+        Vec<(usize, String, u32)>,
+        Vec<usize>,
+        u32,
+        u32,
+    )> {
         let cfg = crate::nn_mcts::NnMctsConfig {
             c_puct,
             max_depth,
@@ -451,9 +461,18 @@ impl PyGame {
             dirichlet_weight,
             batch_size: batch_size.max(1),
             candidate_k,
+            prior_top_k,
+            fpu,
+            fpu_reduction,
         };
         let res = crate::nn_mcts::search_net(&self.state, &cfg, sims, add_root_noise, &net_fn, py)?;
-        Ok((res.best_canonical, res.children, res.legal_candidate_ids))
+        Ok((
+            res.best_canonical,
+            res.children,
+            res.legal_candidate_ids,
+            res.failed_applies,
+            res.rewritten_applies,
+        ))
     }
 
     /// Apply a canonical move string; returns a human-readable summary.

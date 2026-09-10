@@ -171,17 +171,39 @@ candidate_log_probs = log_softmax(masked_fill(padding, -inf))
 - 搜索尺度：网络叶子值与终局 backup（`nn_mcts.rs terminal_value`）都用 `score_p = 1 − rank_p/n`，MaxN 按行动方取自己的分量最大化。
 - 设计权衡：z-score 类逐局价值跨局只保序不保距、margin 信息丢失；rank/winner 直接对齐"第一名概率"这一最终目标。
 
-### 5.3 Econ head（经济辅助头，按时代拆分）
+### 5.3 Q head（动作条件化价值，搜索排序兄弟招用）
+
+```text
+q_head: Linear(3*action_emb -> trunk) + ReLU + Linear(trunk -> 1)
+输入与 policy 头完全相同： [modulated ⊕ ctx ⊕ (modulated ⊙ ctx)]
+输出:   (B,N)，每个候选动作一个价值，尺度与 value=1-rank/n 相同
+```
+
+- 目标：`Q(s, a_played) → 行动方最终的 1 - rank/n`（与 value 头同一尺度），MSE，权重 `q_lambda`
+  （`TrainConfig`，默认 0.3，在总损失中作为独立项相加）。只有**实际走出**的那一手有终局标签，
+  因此损失 mask 到该候选（`Sample.action_index`，样本里的 `played_canonical` 在物化时映射而来）。
+- 为什么需要它：`rank_head` 只接收状态，两个兄弟招产生两个几乎相同的后继状态——实测 top-16 兄弟的
+  一步 V 只相差 sd 0.014、极差 0.04~0.06，而价值头自身误差 RMSE≈0.14。搜索无法用 V 排序兄弟招
+  （终局 rollout 参照下的 within-position Spearman ≈ 0，见 `python/bench_value_ranking.py`）。
+  Q 头把动作特征直接作为输入，"招 A 优于招 B"对它是一阶差异而不是状态微扰。
+- 现状：头已落地并参与训练；**搜索尚未消费它**（`search_net` 的回调仍只回传 logits 与 value）。
+  把 Q 接进 `select_child`（用边价值初始化未访问孩子的 Q）是下一步，前提是
+  `bench_value_ranking.py` 显示 Q 的兄弟排序相关显著高于 V。
+- checkpoint 兼容：老 checkpoint 没有 `q_head.*`，`net.load_state_dict_tolerant` 允许这些键缺失
+  （该头从随机初始化开始），其余不一致仍然报错。
+
+### 5.4 Econ head（经济辅助头，按时代拆分）
 
 - 结构：**canal 与 rail 两个独立头**（各 `Linear(trunk -> 2)`），输出拼接为 (B,4)；样本按所处时代只训练自己时代的头。
 - 目标：canal 样本盖 canal-end 经济、rail 样本盖终局经济；归一化 income `(x+10)/40`、money `/100`。
 - 负收入加权 `econ_neg_weight` 默认 **1.0（关闭）**，保留开关供 ablation。
 - 总权重 `econ_lambda = 0.2`。
 
-### 5.4 损失汇总与默认超参
+### 5.5 损失汇总与默认超参
 
 ```text
-L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split) + 1e-4 * ||θ||²
+L = policy_CE + rank_MSE + 0.5 * winner_CE + 0.2 * econ_MSE(era-split)
+    + 0.3 * Q_MSE(played action) + 1e-4 * ||θ||²
 ```
 
 网络没有动作类型辅助头，`train.py` 不依赖任何动作块布局约定。

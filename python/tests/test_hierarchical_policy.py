@@ -31,7 +31,10 @@ def test_teacher_candidates_are_engine_aligned_and_schema_versioned():
     assert be.ACTION_FEATURE_SCHEMA_VERSION == ACTION_FEATURE_SCHEMA_VERSION
     assert canonical
     assert 0 <= selected < len(features)
-    assert len(features) <= 14  # top-4 Build + top-4 Network + six other action classes
+    # Generator v4 emits up to SOURCE_VARIANTS (=2) source-identity variants per
+    # geometry, so the per-class bound no longer holds: measured mean ~12.4,
+    # upper bound 22 (docs/ai-action-encoding.md §6).
+    assert len(features) <= 22
     assert features.shape == (len(features), be.ACTION_FEATURE_DIM)
     assert scores.shape == (len(features),)
     assert torch.isfinite(features).all()

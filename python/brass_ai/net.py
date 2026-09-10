@@ -93,6 +93,16 @@ class PolicyValueNet(nn.Module):
             nn.Linear(3 * self.cfg.action_emb, self.cfg.trunk), nn.ReLU(),
             nn.Linear(self.cfg.trunk, 1),
         )
+        # Action-conditioned value. `rank_head` below predicts V(s) from the
+        # state alone, so two sibling moves differ only by a tiny perturbation of
+        # its input: measured sibling spread is 0.014 against a head error of
+        # ~0.14, which is far too small for search to rank children by. This head
+        # receives the same FiLM-modulated candidate embedding as the policy, so
+        # "move A beats move B" is a first-order difference of its input.
+        self.q_head = nn.Sequential(
+            nn.Linear(3 * self.cfg.action_emb, self.cfg.trunk), nn.ReLU(),
+            nn.Linear(self.cfg.trunk, 1),
+        )
         self.rank_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
         self.winner_head = nn.Linear(self.cfg.trunk, N_PLAYERS)
         self.econ_canal_head = nn.Linear(self.cfg.trunk, 2)
@@ -173,9 +183,9 @@ class PolicyValueNet(nn.Module):
         weights = candidate_mask.unsqueeze(-1).to(modulated.dtype)
         ctx = (modulated * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)  # (B,E)
         ctx = ctx.unsqueeze(1).expand(-1, modulated.shape[1], -1)
-        logits = self.action_score(
-            torch.cat([modulated, ctx, modulated * ctx], dim=-1)
-        ).squeeze(-1)
+        scored = torch.cat([modulated, ctx, modulated * ctx], dim=-1)
+        logits = self.action_score(scored).squeeze(-1)
+        candidate_value = self.q_head(scored).squeeze(-1)
 
         rank = self.rank_head(state)
         log_probs = torch.log_softmax(logits.masked_fill(~candidate_mask, float("-inf")), dim=1)
@@ -186,6 +196,7 @@ class PolicyValueNet(nn.Module):
             "candidate_mask": candidate_mask,
             "rank": rank,                       # per-seat normalized final rank
             "value": 1.0 - rank,                # search scale (higher = better)
+            "candidate_value": candidate_value,  # (B,N) action-conditioned value
             "winner_logits": self.winner_head(state),
             "econ": econ,                       # (B,4): canal head | rail head
         }
@@ -199,3 +210,27 @@ class PolicyValueNet(nn.Module):
                 return self.forward(batch, action_features, candidate_mask)
         finally:
             self.train(was_training)
+
+
+#: Heads that may legitimately be absent from an older checkpoint. Loading such a
+#: checkpoint is fine — the head simply starts from scratch — but every other
+#: mismatch is a real error.
+TOLERATED_MISSING_PREFIXES = ("q_head.",)
+
+
+def load_state_dict_tolerant(net: PolicyValueNet, state_dict: dict) -> tuple[list, list]:
+    """Load `state_dict`, tolerating weights for heads added after it was saved.
+
+    Returns ``(missing, unexpected)``. Raises when the only differences are not
+    explainable as newly added heads, so a genuine architecture mismatch still
+    fails loudly.
+    """
+    missing, unexpected = net.load_state_dict(state_dict, strict=False)
+    unexplained = [key for key in missing
+                   if not key.startswith(TOLERATED_MISSING_PREFIXES)]
+    if unexpected or unexplained:
+        raise ValueError(
+            "incompatible checkpoint: "
+            f"missing={sorted(unexplained)} unexpected={sorted(unexpected)}"
+        )
+    return list(missing), list(unexpected)

@@ -48,7 +48,8 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
         cmd = cmd_queue.get()
         if cmd is None:
             break  # shutdown
-        weights, pool_weights, games, sims, seed_offset, mcts_cfg, temperature, mm_prob = cmd
+        (weights, pool_weights, games, sims, seed_offset, mcts_cfg, temperature,
+         mm_prob, selfplay_opts) = cmd
         net = PolicyValueNet()
         net.load_state_dict(weights)
         net.eval()
@@ -61,8 +62,11 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
             pn.eval()
             pool.append(RustISMCTS(pn, RustMCTSConfig(**mcts_cfg, device=device)))
 
-        cfg = SelfPlayConfig(players=4, sims=sims, temperature=temperature, max_moves=600)
+        options = dict(selfplay_opts or {})
+        options.setdefault("max_moves", 600)
+        cfg = SelfPlayConfig(players=4, sims=sims, temperature=temperature, **options)
         for gi in range(games):
+            stats: dict = {}
             try:
                 cfg.seed = seed_base + worker_id * 100_000 + seed_offset + gi
                 if mm_prob > 0.0 and pool:
@@ -76,22 +80,59 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
                         if np.random.rand() < mm_prob:
                             opp = pool[np.random.randint(len(pool))]
                             roles[seat] = opp.search
-                    samples, _ = play_game_with_roles(roles, cfg, collect={learner})
+                    samples, _ = play_game_with_roles(
+                        roles, cfg, collect={learner}, stats=stats
+                    )
                 else:
-                    samples, _ = play_game_with_roles([mcts.search] * 4, cfg)
-                result_queue.put(("SAMPLES", _pack_samples(samples)))
+                    samples, _ = play_game_with_roles(
+                        [mcts.search] * 4, cfg, stats=stats
+                    )
+                result_queue.put(("SAMPLES", _pack_samples(samples, stats)))
+            except RuntimeError as exc:
+                if "samples discarded" not in str(exc):
+                    result_queue.put(("ERROR", f"worker={worker_id} game={gi}: {exc!r}"))
+                    break
+                # A game that ran past max_moves has no valid terminal target:
+                # report the partial diagnostics and move on to the next game.
+                result_queue.put(("SAMPLES", _pack_samples([], stats)))
             except Exception as exc:
                 result_queue.put(("ERROR", f"worker={worker_id} game={gi}: {exc!r}"))
                 break
         result_queue.put(("DONE", worker_id))
 
 
-def _pack_samples(samples: list[Sample]) -> dict:
+def _pack_samples(samples: list[Sample], stats: dict | None = None) -> dict:
     """Pack samples into numpy arrays only (lightweight, picklable)."""
+    diagnostics = {
+        "failed_applies": int((stats or {}).get("failed_applies", 0)),
+        "rewritten_applies": int((stats or {}).get("rewritten_applies", 0)),
+        "moves": int((stats or {}).get("moves", 0)),
+    }
     n = len(samples)
+    if n and samples[0].policy_by_canonical is not None:
+        # Snapshot form: a few KB per sample instead of a dense N*301 matrix.
+        return {
+            **diagnostics,
+            "mode": "snapshot",
+            "count": n,
+            "pid": np.asarray([s.pid for s in samples], dtype=np.int64),
+            "era": np.asarray([s.era for s in samples], dtype=np.int64),
+            "snapshot": [s.snapshot for s in samples],
+            "policy_moves": [list(s.policy_by_canonical) for s in samples],
+            "policy_probs": [
+                np.asarray(list(s.policy_by_canonical.values()), dtype=np.float32)
+                for s in samples
+            ],
+            "played": [s.played_canonical for s in samples],
+            "rank": np.stack([s.rank for s in samples]).astype(np.float32),
+            "winner": np.stack([s.winner for s in samples]).astype(np.float32),
+            "econ": np.stack([s.econ for s in samples]).astype(np.float32),
+        }
     if n == 0:
         return {
             "count": 0,
+            **diagnostics,
+            "mode": "dense",
             "pid": np.empty(0, dtype=np.int64),
             "era": np.empty(0, dtype=np.int64),
             "board": np.empty((0, be.BOARD_PLANES, be.BOARD_CELLS), dtype=np.float32),
@@ -113,6 +154,7 @@ def _pack_samples(samples: list[Sample]) -> dict:
     for i, sample in enumerate(samples):
         policy[i, :len(sample.policy)] = sample.policy
     return {
+        **diagnostics,
         "pid": np.asarray([s.pid for s in samples], dtype=np.int64),
         "era": np.asarray([s.era for s in samples], dtype=np.int64),
         "board": np.stack([s.board for s in samples]).astype(np.float32),
@@ -123,6 +165,7 @@ def _pack_samples(samples: list[Sample]) -> dict:
         "candidates": candidates.numpy(),
         "candidate_mask": candidate_mask.numpy(),
         "policy": policy,
+        "played": [s.played_canonical for s in samples],
         "rank": np.stack([s.rank for s in samples]).astype(np.float32),
         "winner": np.stack([s.winner for s in samples]).astype(np.float32),
         "econ": np.stack([s.econ for s in samples]).astype(np.float32),
@@ -132,6 +175,22 @@ def _pack_samples(samples: list[Sample]) -> dict:
 
 def unpack_samples(packed: dict) -> list[Sample]:
     n = packed["count"]
+    if packed.get("mode") == "snapshot":
+        return [
+            Sample(
+                pid=int(packed["pid"][i]),
+                era=int(packed["era"][i]),
+                snapshot=packed["snapshot"][i],
+                played_canonical=packed["played"][i],
+                policy_by_canonical=dict(
+                    zip(packed["policy_moves"][i], packed["policy_probs"][i])
+                ),
+                rank=packed["rank"][i].astype(np.float32),
+                winner=packed["winner"][i].astype(np.float32),
+                econ=packed["econ"][i].astype(np.float32),
+            )
+            for i in range(n)
+        ]
     out = []
     for i in range(n):
         out.append(
@@ -145,6 +204,7 @@ def unpack_samples(packed: dict) -> list[Sample]:
                 opp_hands=packed["opp_hands"][i],
                 candidates=packed["candidates"][i, packed["candidate_mask"][i]],
                 policy=packed["policy"][i, packed["candidate_mask"][i]],
+                played_canonical=packed["played"][i],
                 rank=packed["rank"][i].astype(np.float32),
                 winner=packed["winner"][i].astype(np.float32),
                 econ=packed["econ"][i].astype(np.float32),
@@ -162,6 +222,8 @@ class SelfPlayPool:
         self.cmd_queue = mp.Queue()
         self.result_queue = mp.Queue()
         self.processes = []
+        # Filled by `generate`: aggregate self-play diagnostics of the last call.
+        self.last_diagnostics: dict = {}
         for wid in range(n_workers):
             p = mp.Process(
                 target=_worker_fn,
@@ -181,6 +243,7 @@ class SelfPlayPool:
         temperature: float = 1.0,
         mm_pool: list | None = None,
         mm_prob: float = 0.0,
+        selfplay_opts: dict | None = None,
         verbose: bool = True,
     ):
         """Broadcast the current weights (plus matchmaking pool) and collect
@@ -188,6 +251,8 @@ class SelfPlayPool:
 
         `mm_pool` is a list of state-dicts of historical nets used as opponent
         seats with probability `mm_prob` per game (learner seat = current net).
+        `selfplay_opts` overrides `SelfPlayConfig` fields in the worker
+        (`store_snapshots`, `determinize_observation`, temperature schedule, ...).
         Returns (samples, per_worker_sample_counts)."""
         weights = {k: v.detach().cpu() for k, v in net.state_dict().items()}
         pool_weights = []  # empty -> workers build no opponent pool (pure self-play)
@@ -196,7 +261,8 @@ class SelfPlayPool:
             pool_weights = [{k: v.detach().cpu() for k, v in pw.items()} for pw in mm_pool]
         for _ in range(self.n_workers):
             self.cmd_queue.put(
-                (weights, pool_weights, games_per_worker, sims, seed, cfg, temperature, mm_prob)
+                (weights, pool_weights, games_per_worker, sims, seed, cfg, temperature,
+                 mm_prob, selfplay_opts)
             )
 
         # Packets and DONE markers arrive interleaved (workers finish at
@@ -205,6 +271,9 @@ class SelfPlayPool:
         prog = Progress(total_games, f"selfplay w={self.n_workers} sims={sims}")
         samples = []
         counts = []
+        failed_applies = 0
+        rewritten_applies = 0
+        move_total = 0
         done = 0
         games_received = 0
         while done < self.n_workers:
@@ -217,11 +286,20 @@ class SelfPlayPool:
             else:  # "SAMPLES"
                 samples.extend(unpack_samples(payload))
                 counts.append(payload["count"])
+                failed_applies += int(payload.get("failed_applies", 0))
+                rewritten_applies += int(payload.get("rewritten_applies", 0))
+                move_total += int(payload.get("moves", 0))
                 games_received += 1
                 if verbose:
                     prog.update(games_received)
         if verbose:
             prog.done()
+        self.last_diagnostics = {
+            "failed_applies": failed_applies,
+            "rewritten_applies": rewritten_applies,
+            "moves": move_total,
+            "games": games_received,
+        }
         return samples, counts
 
     def _get_with_timeout(self):

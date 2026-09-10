@@ -111,16 +111,20 @@ Python 侧位于 `python/`，负责训练编排与模型推理，不重复实现
 python/
 ├─ brass_ai/
 │  ├─ hierarchical_policy.py  Rust 候选动作/teacher 适配、schema 校验与候选 batch padding
-│  ├─ net.py          Policy-Value 网络：候选动作打分（FiLM+集合上下文）+ rank/winner/econ 头
+│  ├─ net.py          Policy-Value 网络：候选动作打分（FiLM+集合上下文）+ rank/winner/econ/Q 头
 │  ├─ rust_mcts.py    `GameState.search_net` 的 PyTorch 回调适配器
 │  ├─ selfplay.py     Sample、imitation 与 MCTS self-play 生成
+│  ├─ selfplay_loop.py 长期 self-play 循环：replay window、对手池、arena、指标
 │  ├─ train.py        损失函数、Trainer、优化器和学习率调度器
 │  ├─ evaluate.py     固定种子、轮换座位的对局评测
 │  ├─ mp_selfplay.py  常驻 multiprocessing worker 池
 │  ├─ replay_worker.py replay-web 网络座位子进程：加载 checkpoint，stdin/stdout JSON 协议应答决策
 │  └─ progress.py     长任务进度与 ETA 输出
 ├─ bootstrap_imitation.py
-│                     用 Rust 启发式教师生成行为克隆预训练数据（当前唯一训练入口）
+│                     用 Rust 启发式教师生成行为克隆预训练数据（阶段 2 入口）
+├─ selfplay_train.py  长期 self-play 训练入口（阶段 3，warm start 自 imitation checkpoint）
+├─ bench_value_ranking.py
+│                     价值头兄弟排序能力的 go/no-go 基准（以终局 rollout 为参照）
 └─ tests/             Rust bridge、搜索、自博弈、训练、replay 分片与 replay worker 测试
 ```
 
@@ -129,6 +133,12 @@ python/
 `brass_ai._engine.GameState` 是 Python 侧唯一的游戏状态对象。它提供：
 
 - `search_net(...)`：Rust 中执行批量网络 ISMCTS；Python callback 输入为 `board`、`links`、`global`、`own_hand`、`opp_hands`、补齐后的 `candidates` 和 `candidate_mask`，返回 `(candidate_logits, values)`。Rust 负责合法动作枚举和 mask，Python 不应重新实现动作映射。
+- `search_net(...)` 除 `(best, children, legal_candidate_ids)` 外还返回两个搜索自检计数：
+  `failed_applies`（复用的树子节点被规则直接拒绝）与 `rewritten_applies`（复用的树子节点通过了
+  规则检查，但实际打出的是另一张牌）。二者用于度量树节点跨 determinization 复用的代价。
+  该调用还接受 `prior_top_k` / `fpu` / `fpu_reduction`：先对全部合法动作打分，再只保留先验最高的
+  K 个孩子（默认 0 = 全合法），并用父节点价值作为未访问孩子的 Q。理由与实测见
+  [roadmap.md](roadmap.md) 的「阶段 3 的已知问题」。
 - `state_to_tensor()`：供训练样本采集使用的单状态特征；当前 state-feature schema v4 的维度固定为 board `(24, 49)`、links `(7, 39)`、global `(168,)`、own hand `(35,)`、 opponent hands `(105,)`。links 同时编码地图静态的水路/铁路可建性、动态建成状态与归属；global 包含每位玩家的手牌数、本回合花费、收入格和收入等级，以及每个商家的收货类型（5 种：Blank/Any/棉纺/制造厂/陶器）与啤酒状态；board 额外携带静态的槽位行业能力与槽位序号平面。Rust 还导出 board-cell/location 与 connection endpoint 拓扑，Python 网络据此做节点-边消息传递。
 - `legal_candidates()`：Rust 返回完整可执行动作及其结构化特征；网络只对当前候选集合执行 softmax。
 
@@ -136,7 +146,9 @@ python/
 
 #### 训练循环现状
 
-当前唯一保留的训练入口是 `bootstrap_imitation.py`（heuristic imitation bootstrap）：
+当前有两个入口，都在 `python/` 下，共用同一套 `Trainer` 与 Rust 搜索。
+
+**阶段 2：heuristic imitation bootstrap**（`bootstrap_imitation.py`）
 
 ```
 Rust heuristic 完整对局
@@ -151,8 +163,24 @@ teacher canonical action（候选集训练前实时物化），监督目标为�
 分布、rank/winner 终局目标与经济辅助目标。只有正常到达 `game_over` 的完整
 对局可以入库；达到 `max_moves` 的截断局会被丢弃，不能以当前盘面伪造终局价值。
 
-面向网络的长期 self-play 训练循环尚未重建顶层入口。`selfplay.py`
-（`play_game` / `play_batch`）、`mp_selfplay.py`（worker 池）与 `train.py`
-（`run_loop`）保留了可复用的模块能力，重新设计自对弈入口时应基于它们构建。
+**阶段 3：self-play 训练**（`selfplay_train.py` + `brass_ai/selfplay_loop.py`）
+
+```
+当前网络 (+ 历史 checkpoint 对手池)
+  -> Rust ISMCTS 自对弈；每个决策点先 determinize 再编码，π = 根 visit 分布
+  -> 样本 = snapshot + 稀疏 canonical->visit（约几 KB，而非 N*301 的密集矩阵）
+  -> rolling replay window（按迭代数 + 样本数双重上限）
+  -> Trainer.train_one_epoch（训练时并行物化，GPU 只跑前向/反向）
+  -> arena(vs best，轮换座位固定 seed) + vs heuristic benchmark
+  -> latest.pt / best.pt + metrics.jsonl
+```
+
+最新的网络始终继续训练；`best.pt` 只决定对手池内容与对外报告的强度。理由是
+40 局 arena 的标准误差约 ±15%，用硬门禁卡晋升会让训练停摆。价值目标来自对局
+终局（rank/winner），不是 bootstrap 自举；MCTS 只负责产出更好的 π。
+
+`train.py::run_loop` 是早期的单进程示例循环，保留但不再是推荐入口；重建后的
+入口基于 `play_game_with_roles` / `SelfPlayPool` / `Trainer.train_one_epoch` 组合。
+机器命令与参数见 [ai-tools.md](./ai-tools.md)。
 
 搜索树以 Rust `RustISMCTS` 为唯一实现，Python 侧不做搜索、不实现规则。任何规则或特征变更必须同时更新 Rust bridge 契约、Python 测试和本节。state-feature schema 或 action-feature schema 升级会拒绝旧 checkpoint/样本，必须重新采样训练。

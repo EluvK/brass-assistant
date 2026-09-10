@@ -118,7 +118,7 @@ samples, _ = play_game_with_roles(roles, cfg, collect={learner})  # 只收集学
 ### 其余的多样性旋钮
 
 - **根噪声**（05 章 5.3 的 Dirichlet）：self-play 恒开（`add_root_noise=True`），防止开局死板；
-- **温度**（05 章 5.4）：目前 `SelfPlayConfig.temperature` 对整局统一。AlphaZero 的经典做法是**按手数衰减**——前 N 手高温（多探不同开局），之后降温贪心（认真分胜负）。这个改动落在 `_sample_move` 的调用处，是 08 章练习的题目；
+- **温度**（05 章 5.4）：`SelfPlayConfig` 默认前 30 手保持 1.0，随后 30 手线性降到 0，之后按访问数贪心；可用 `temperature_warmup_moves`、`temperature_decay_moves`、`temperature_final` 调整，或用 `temperature_by_move(move_index)` 提供自定义调度。评测路径始终关闭根噪声并取 MCTS 的 `best`，保持确定性；
 - **seed**：每局独立 seed（`SelfPlayPool` 里 `seed_base + worker_id*100_000 + …`），洗牌器/发牌天然多样。
 
 ---
@@ -228,7 +228,7 @@ for it in 1..I:
 ## 练习
 
 1. **跑通骨架**：写 20 行脚本实例化 `PolicyValueNet` + `Trainer` + `RustISMCTS`，调 `run_loop(LoopConfig(iterations=2, games_per_iter=2, mcts_sims=20), on_iters=lambda it, t, s: print(s) or False)`，亲眼看到闭环转两圈（CPU 也能跑，就是慢）。
-2. **温度调度**：给 `SelfPlayConfig` 加一个 `temperature_by_move(move_index) -> float` 钩子（如前 30 手 1.0，之后线性降到 0.1），在 `play_game_with_roles` 的 `_sample_move(result, cfg.temperature)` 调用处接入。注意保持默认行为不变（这是一次无风险的第一次改造）。
+2. **温度调度实验**：调整 `SelfPlayConfig` 的热身、降温和终值，比较不同开局探索强度对训练稳定性与最终棋力的影响；需要完全自定义时可传入 `temperature_by_move(move_index) -> float`。
 3. **门禁函数**：把 8.5 的示意 `benchmark_net_vs_net` 写成真实代码（放进 `evaluate.py` 或独立脚本），用 bootstrap checkpoint 对抗它自己的浅搜索版（sims=15 vs sims=60），验证"高 sims 应该赢"——这同时是你对评测管线的一次校准。
 4. **组装最小闭环**：按 8.6 伪代码实现 `python/train_selfplay.py`（迭代 3 轮、每轮 4 局、缓冲窗口 2），打印每轮的门禁结果。跑完你会拥有这个项目第一个端到端的自我提升入口。
 

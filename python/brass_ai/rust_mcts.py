@@ -67,6 +67,13 @@ class RustMCTSConfig:
     # Zero expands every concrete legal move; positive values enable the
     # optional heuristic shortlist for controlled experiments.
     candidate_k: int = 0
+    # Prior top-K pruning: score all legal candidates, then search only the K
+    # highest-prior ones. Zero keeps every legal move. Needed at this branching
+    # factor — see `NnMctsConfig::prior_top_k` in engine/src/ai/nn_mcts.rs.
+    prior_top_k: int = 0
+    # First-play urgency for unvisited children (never treat them as worthless).
+    fpu: bool = True
+    fpu_reduction: float = 0.0
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -75,6 +82,14 @@ class SearchResult:
     best: str | None = None
     visits: dict = field(default_factory=dict)
     canon_by_candidate: dict = field(default_factory=dict)
+    # Simulations whose selected child could not be executed in the current
+    # determinization (stale hand index in a reused tree node). Diagnostics
+    # only; see `engine/src/ai/nn_mcts.rs` `descend`.
+    failed_applies: int = 0
+    # Simulations that executed a stored child whose hand index now names a
+    # different card (rules that only bound-check the index accept it), so the
+    # search silently played a card the move did not enumerate.
+    rewritten_applies: int = 0
 
 
 class RustISMCTS:
@@ -87,7 +102,7 @@ class RustISMCTS:
         self.net_fn = make_net_fn(net, self.cfg.device)
 
     def search(self, state, sims: int, add_root_noise: bool = False) -> SearchResult:
-        best, children, _legal = state.search_net(
+        best, children, _legal, failed_applies, rewritten_applies = state.search_net(
             self.net_fn,
             sims,
             self.cfg.c_puct,
@@ -97,7 +112,16 @@ class RustISMCTS:
             add_root_noise,
             self.cfg.batch_size,
             self.cfg.candidate_k,
+            self.cfg.prior_top_k,
+            self.cfg.fpu,
+            self.cfg.fpu_reduction,
         )
         visits = {candidate_id: count for candidate_id, _canon, count in children}
         canon_by_candidate = {candidate_id: canon for candidate_id, canon, _count in children}
-        return SearchResult(best=best, visits=visits, canon_by_candidate=canon_by_candidate)
+        return SearchResult(
+            best=best,
+            visits=visits,
+            canon_by_candidate=canon_by_candidate,
+            failed_applies=int(failed_applies),
+            rewritten_applies=int(rewritten_applies),
+        )

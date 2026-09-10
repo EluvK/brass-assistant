@@ -9,7 +9,7 @@ a one-hot winner target. The search value for a seat is 1 - rank.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import multiprocessing as mp
 import os
@@ -57,6 +57,16 @@ class Sample:
     econ: np.ndarray = None  # (2,) = (income_level, money) target for this sample
     snapshot: bytes | None = None  # independent full GameState snapshot
     teacher_canonical: str | None = None
+    # Self-play snapshot form: the visit distribution as a sparse
+    # canonical -> probability map, materialized against the live candidate
+    # matrix at training time. `None` for the dense and teacher forms.
+    policy_by_canonical: dict | None = None
+    # The move actually played at this decision point, as a canonical string.
+    # The action-conditioned value head is trained on (state, played move) -> the
+    # mover's final `1 - rank/n`, so the sample has to remember which sibling it
+    # took. Materialization turns this into `action_index`.
+    played_canonical: str | None = None
+    action_index: int = -1
 
 
 def _rank_targets(ranking: list[int], n_players: int) -> tuple[np.ndarray, np.ndarray]:
@@ -79,9 +89,16 @@ def materialize_sample(sample: Sample) -> Sample:
     (`_engine.GameState.materialize_snapshot`) so no per-float Python objects
     are ever created for the ~N*301 candidate matrix. Candidates come back as
     lossless uint8 quarter-steps (see `compress_candidate_features`).
+
+    Self-play samples (`policy_by_canonical`) take the generic path instead:
+    their target is a visit distribution over many canonical moves rather than
+    a single teacher action, so the policy is aligned in Python against the
+    restored candidate list.
     """
     if sample.snapshot is None:
         return sample
+    if sample.policy_by_canonical is not None:
+        return _materialize_selfplay_sample(sample)
     (pid, era, board, links, global_vec, own_hand, opp_hands,
      candidates, teacher_index, policy) = be.GameState.materialize_snapshot(
         sample.snapshot, sample.teacher_canonical or "")
@@ -92,7 +109,48 @@ def materialize_sample(sample: Sample) -> Sample:
         global_vec=global_vec, own_hand=own_hand, opp_hands=opp_hands,
         candidates=candidates, policy=policy, rank=sample.rank,
         winner=sample.winner, econ=sample.econ, snapshot=sample.snapshot,
-        teacher_canonical=sample.teacher_canonical,
+        teacher_canonical=sample.teacher_canonical, action_index=teacher_index,
+        played_canonical=sample.teacher_canonical,
+    )
+
+
+def _materialize_selfplay_sample(sample: Sample) -> Sample:
+    """Rebuild dense tensors for a self-play (snapshot + sparse visit) sample."""
+    state = be.GameState.from_snapshot(sample.snapshot)
+    canonical, features = state.legal_candidates()
+    features = np.asarray(features, dtype=np.float32)
+    if features.ndim != 2 or len(canonical) != features.shape[0] or not canonical:
+        raise ValueError("engine returned an invalid candidate matrix")
+    position: dict[str, int] = {}
+    for index, move in enumerate(canonical):
+        position.setdefault(move, index)
+    policy = np.zeros(len(canonical), dtype=np.float32)
+    for move, probability in sample.policy_by_canonical.items():
+        index = position.get(move)
+        if index is None:
+            raise ValueError(
+                f"self-play policy references a move that is not legal in its "
+                f"own snapshot: {move!r}"
+            )
+        policy[index] += float(probability)
+    if policy.sum() <= 0.0:
+        raise ValueError("self-play policy has no mass after candidate alignment")
+    policy = coalesce_equivalent_policy(features, policy)
+
+    action_index = -1
+    if sample.played_canonical is not None:
+        action_index = position.get(sample.played_canonical, -1)
+
+    pid = state.current_player_id
+    if pid != sample.pid or state.era != sample.era:
+        raise ValueError("self-play snapshot does not match its player/era metadata")
+    board, links, global_vec, own_hand, opp_hands = state.state_to_tensor()
+    return Sample(
+        pid=pid, era=state.era, board=board, links=links, global_vec=global_vec,
+        own_hand=own_hand, opp_hands=opp_hands, candidates=features,
+        policy=policy, rank=sample.rank, winner=sample.winner, econ=sample.econ,
+        snapshot=sample.snapshot, policy_by_canonical=sample.policy_by_canonical,
+        played_canonical=sample.played_canonical, action_index=action_index,
     )
 
 
@@ -157,6 +215,49 @@ class SelfPlayConfig:
     temperature: float = 1.0
     max_moves: int = 600
     seed: int | None = None
+    temperature_warmup_moves: int = 30
+    temperature_decay_moves: int = 30
+    temperature_final: float = 0.0
+    temperature_by_move: Callable[[int], float] | None = None
+    # Record the training observation from a determinization of the true state
+    # (opponent hands re-sampled from the hidden pool) instead of the
+    # simulator's full-information state. Search evaluates leaves under
+    # per-simulation determinization, so sampling the true opponent hands here
+    # would train the network on inputs it never sees at inference time.
+    # The current player's own hand, the public board, the market and the
+    # discard history are identical either way.
+    determinize_observation: bool = True
+    # Store a decision point as (determinized snapshot, sparse visit
+    # distribution over canonical moves) instead of dense state tensors plus the
+    # full candidate matrix. A full-legal point carries ~N*301 float32 (~0.4 MB
+    # at N=300); the snapshot form is a few KB, which is what makes a
+    # multi-iteration replay buffer affordable. Materialization happens in the
+    # trainer (`materialize_sample`, parallelized by `Trainer._materialize_pool`).
+    store_snapshots: bool = True
+
+    def temperature_for_move(self, move_index: int) -> float:
+        """Return the self-play sampling temperature for a zero-based move.
+
+        A custom callback takes precedence.  Otherwise the default schedule
+        keeps the initial temperature during a short exploration warmup,
+        linearly interpolates to ``temperature_final``, then stays there.
+        """
+        if self.temperature_by_move is not None:
+            temperature = self.temperature_by_move(move_index)
+        else:
+            start = max(float(self.temperature), 0.0)
+            final = max(float(self.temperature_final), 0.0)
+            warmup = max(int(self.temperature_warmup_moves), 0)
+            decay = max(int(self.temperature_decay_moves), 0)
+            if move_index < warmup or decay == 0:
+                temperature = start if move_index < warmup else final
+            else:
+                progress = min((move_index - warmup) / decay, 1.0)
+                temperature = start + (final - start) * progress
+        temperature = float(temperature)
+        if not np.isfinite(temperature):
+            raise ValueError("temperature schedule returned a non-finite value")
+        return max(temperature, 0.0)
 
 
 def _candidate_policy(canonicals: list[str], result: SearchResultLike) -> np.ndarray:
@@ -178,16 +279,28 @@ def _sample_move(result: SearchResultLike, temperature: float):
     """Return the canonical for a slot sampled from the visit distribution."""
     if not result.visits:
         return result.best
+    temperature = float(temperature)
+    if not np.isfinite(temperature):
+        raise ValueError("temperature must be finite")
     if temperature <= 0.0:
         slot = max(result.visits, key=result.visits.get)
         return result.canon_by_candidate[slot]
     slots = list(result.visits)
     counts = np.asarray([result.visits[s] for s in slots], dtype=np.float64)
-    # Numerically stable softmax-temperature: subtract the max before exp, or
-    # a concentrated visit distribution (one child with hundreds of visits)
-    # overflows exp(counts/temp) -> inf/inf -> NaN probabilities.
-    w = np.exp((counts - counts.max()) / max(temperature, 1e-6))
-    probs = w / w.sum()
+    if np.any(counts < 0.0) or not np.isfinite(counts).all():
+        raise ValueError("search visits must be finite and non-negative")
+    # AlphaZero temperature sampling raises visit counts to 1/T.  In
+    # particular, [60, 30] at T=1 yields [2/3, 1/3], unlike exp(visits/T).
+    with np.errstate(over="ignore", invalid="ignore"):
+        weights = (counts + 1e-8) ** (1.0 / temperature)
+    # Very small temperatures can overflow the direct power even though the
+    # normalized distribution is well-defined.  Recompute in log space while
+    # preserving the same power-law probabilities.
+    if not np.isfinite(weights).all() or weights.sum() <= 0.0:
+        log_weights = np.log(counts + 1e-8) / temperature
+        log_weights -= np.max(log_weights)
+        weights = np.exp(log_weights)
+    probs = weights / weights.sum()
     slot = np.random.choice(slots, p=probs)
     return result.canon_by_candidate[slot]
 
@@ -195,15 +308,17 @@ def _sample_move(result: SearchResultLike, temperature: float):
 def play_game(
     mcts: SearchLike,
     cfg: SelfPlayConfig | None = None,
+    stats: dict | None = None,
 ) -> tuple[list, list]:
     """Play one self-play game; returns (samples, final_vps)."""
-    return play_game_with_roles([mcts.search] * 4, cfg)
+    return play_game_with_roles([mcts.search] * 4, cfg, stats=stats)
 
 
 def play_game_with_roles(
     roles,
     cfg: SelfPlayConfig | None = None,
     collect: set | None = None,
+    stats: dict | None = None,
 ) -> tuple[list, list]:
     """Play one game where each seat is driven by its own search role.
 
@@ -211,6 +326,11 @@ def play_game_with_roles(
     (used for matchmaking: opponent seats may run a different network).
     Samples are recorded for every move whose pid is in `collect` (default:
     all seats, matching the pure self-play path). Returns (samples, final_vps).
+
+    When ``stats`` is given it is filled with run diagnostics, currently
+    ``failed_applies`` (reused tree children the rules rejected) and
+    ``rewritten_applies`` (reused tree children that silently executed a
+    different card than enumerated).
 
     Economic-supervision targets (segmented by era, per the 2026-08 design):
       * canal-era samples  -> that player's income/money at the CANAL-ERA END
@@ -225,26 +345,50 @@ def play_game_with_roles(
     if collect is None:
         collect = set(range(cfg.players))
     canal_samples: list[Sample] = []
+    failed_applies = 0
+    rewritten_applies = 0
     moves = 0
     while not state.game_over and moves < cfg.max_moves:
         moves += 1
         pid = state.current_player_id
         canonical_candidates, candidate_tensor = encode_legal_candidates(state)
         result = roles[pid](state, cfg.sims, True)
+        failed_applies += int(getattr(result, "failed_applies", 0) or 0)
+        rewritten_applies += int(getattr(result, "rewritten_applies", 0) or 0)
         if result.best is None:
             break
+        recorded: Sample | None = None
         if pid in collect:
-            board, links, g, oh, op = state.state_to_tensor()
-            policy = coalesce_equivalent_policy(
-                candidate_tensor.numpy(), _candidate_policy(canonical_candidates, result)
-            )
-            s = Sample(pid=pid, board=board, links=links, global_vec=g,
-                       own_hand=oh, opp_hands=op, policy=policy, rank=0.0,
-                       winner=0.0, candidates=candidate_tensor.numpy(), era=state.era)
+            observed = state.determinize() if cfg.determinize_observation else state
+            if cfg.store_snapshots:
+                # Store the observation itself, so the sparse target is aligned
+                # against exactly the candidate set the network will be shown.
+                visits = _candidate_policy(canonical_candidates, result)
+                sparse = {
+                    move: float(probability)
+                    for move, probability in zip(canonical_candidates, visits)
+                    if probability > 0.0
+                }
+                s = Sample(pid=pid, era=state.era, rank=0.0, winner=0.0,
+                           snapshot=bytes(observed.snapshot()),
+                           policy_by_canonical=sparse)
+            else:
+                board, links, g, oh, op = observed.state_to_tensor()
+                policy = coalesce_equivalent_policy(
+                    candidate_tensor.numpy(), _candidate_policy(canonical_candidates, result)
+                )
+                s = Sample(pid=pid, board=board, links=links, global_vec=g,
+                           own_hand=oh, opp_hands=op, policy=policy, rank=0.0,
+                           winner=0.0, candidates=candidate_tensor.numpy(), era=state.era)
             samples.append(s)
+            recorded = s
             if state.era == 0:
                 canal_samples.append(s)
-        chosen = _sample_move(result, cfg.temperature)
+        chosen = _sample_move(result, cfg.temperature_for_move(moves - 1))
+        if recorded is not None:
+            # The sampled move is the only sibling with an outcome label, so it
+            # is the supervision for the action-conditioned value head.
+            recorded.played_canonical = chosen
         try:
             summary, ok = state.apply_move_raw(chosen)
         except ValueError:
@@ -293,6 +437,10 @@ def play_game_with_roles(
         s.winner = winner
         if s.econ is None:
             s.econ = np.asarray(final_econ[s.pid], dtype=np.float32)
+    if stats is not None:
+        stats["failed_applies"] = failed_applies
+        stats["rewritten_applies"] = rewritten_applies
+        stats["moves"] = moves
     return samples, vps
 
 
@@ -603,8 +751,14 @@ def play_batch(
     all_samples = []
     vps_sum = np.zeros(cfg.players, dtype=np.float64)
     per_game = []
-    for _ in range(n_games):
-        samples, vps = play_game(mcts, cfg)
+    base_seed = cfg.seed
+    for game_id in range(n_games):
+        # Reusing one fixed seed for every game replays the same deal, so the
+        # batch degenerates into one correlated sample. Derive a unique seed
+        # per game; callers running several iterations should keep
+        # ``base_seed`` disjoint across iterations (e.g. iteration * 1_000_000).
+        game_cfg = cfg if base_seed is None else replace(cfg, seed=base_seed + game_id)
+        samples, vps = play_game(mcts, game_cfg)
         all_samples.extend(samples)
         vps_sum += vps
         per_game.append(vps)

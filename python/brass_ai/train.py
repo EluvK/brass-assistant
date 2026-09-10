@@ -59,6 +59,10 @@ class TrainConfig:
     grad_clip_norm: float = 5.0
     econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
     econ_neg_weight: float = 1.0  # extra weight on samples with negative income (1.0 = off, kept for ablation)
+    # Weight of the action-conditioned value loss (Q(s, played) -> mover's final
+    # 1 - rank/n). See docs/roadmap.md「阶段 3 的已知问题」for why V(s) alone
+    # cannot rank sibling moves.
+    q_lambda: float = 0.3
     # Bound the largest padded candidate matrix in one GPU batch. Full-legal
     # states can have hundreds of candidates, so a fixed sample batch is unsafe.
     max_candidate_batch: int = 65536
@@ -259,7 +263,7 @@ class Trainer:
 
 def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
                  econ_lambda: float = 0.2, econ_neg_weight: float = 1.0,
-                 winner_weight: float = 0.5):
+                 winner_weight: float = 0.5, q_lambda: float = 0.3):
     tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
     out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
     target = tensors["policy"]
@@ -273,6 +277,23 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
 
     # Winner head: one-hot official winner after VP/income/cash tie-breaks.
     winner_loss = -(tensors["winner"] * F.log_softmax(out["winner_logits"], dim=1)).sum(dim=1).mean()
+
+    # Action-conditioned value: Q(s, played) -> the mover's own final
+    # `1 - rank/n`, the same scale the search's backup uses. Only the played
+    # sibling has an outcome label, so the loss is masked to it. This is the
+    # head that can actually rank sibling moves: V(s) sees two nearly identical
+    # states and moves by ~2% of its range (see docs/roadmap.md), while this one
+    # receives the action embedding itself.
+    played = tensors["played"]
+    has_label = played >= 0
+    q_loss = torch.zeros((), device=device)
+    if bool(has_label.any()):
+        seat_rank = tensors["rank"].gather(1, tensors["pid"].unsqueeze(1)).squeeze(1)
+        q_target = 1.0 - seat_rank / 4.0
+        q_pred = out["candidate_value"].gather(
+            1, played.clamp_min(0).unsqueeze(1)
+        ).squeeze(1)
+        q_loss = F.mse_loss(q_pred[has_label], q_target[has_label]) * q_lambda
 
     # Economic-supervision auxiliary loss, SPLIT BY ERA (each sample trains the
     # head of its own era: canal samples -> canal-end economy, rail samples ->
@@ -298,8 +319,8 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
     econ_loss = econ_lambda * era_loss
 
     l2_loss = sum(p.pow(2).sum() for p in net.parameters()) * l2
-    total = policy_loss + rank_loss + winner_weight * winner_loss + econ_loss + l2_loss
-    return total, policy_loss, rank_loss, winner_loss, econ_loss, l2_loss
+    total = policy_loss + rank_loss + winner_weight * winner_loss + econ_loss + q_loss + l2_loss
+    return total, policy_loss, rank_loss, winner_loss, econ_loss, l2_loss, q_loss
 
 
 def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
@@ -321,7 +342,8 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
             scaler = torch.amp.GradScaler("cuda")
         with torch.autocast(device_type=cfg.device):
             losses = compute_loss(
-                batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
+                batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight,
+                q_lambda=cfg.q_lambda)
         total = losses[0]
         if not torch.isfinite(total):
             raise FloatingPointError("non-finite loss before AMP backward")
@@ -340,7 +362,8 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
         scaler.update()
     else:
         losses = compute_loss(
-            batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight)
+            batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight,
+            q_lambda=cfg.q_lambda)
         if not torch.isfinite(losses[0]):
             raise FloatingPointError("non-finite loss before backward")
         losses[0].backward()
@@ -354,12 +377,13 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
         optimizer.step()
     if deep and gradients_finite and not all(torch.isfinite(p).all().item() for p in net.parameters()):
         raise FloatingPointError("optimizer produced non-finite parameters")
-    _, pl, rl, wl, el, ll = losses
+    _, pl, rl, wl, el, ll, ql = losses
     return {
         "policy": pl.detach().item(),
         "rank": rl.detach().item(),
         "winner": wl.detach().item(),
         "econ": el.detach().item(),
+        "q": ql.detach().item(),
         "l2": ll.detach().item(),
         "skipped": float(not gradients_finite),
     }
@@ -420,12 +444,14 @@ def _to_batch(samples: list[Sample]) -> dict:
     win = np.stack([s.winner for s in samples]).astype(np.float32)
     econ = np.stack([s.econ for s in samples]).astype(np.float32)
     era = np.asarray([s.era for s in samples], dtype=np.int64)
+    pid = np.asarray([s.pid for s in samples], dtype=np.int64)
+    played = np.asarray([s.action_index for s in samples], dtype=np.int64)
     return {
         "board": b, "links": l, "global": g,
         "own_hand": o, "opp_hands": p, "policy": pol, "rank": val,
         "winner": win,
         "candidates": candidates, "candidate_mask": candidate_mask,
-        "econ": econ, "era": era,
+        "econ": econ, "era": era, "pid": pid, "played": played,
     }
 
 

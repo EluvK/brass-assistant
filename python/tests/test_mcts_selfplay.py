@@ -4,6 +4,7 @@ import torch
 
 from brass_ai import _engine as be
 
+from brass_ai import selfplay as selfplay_module
 from brass_ai.net import PolicyValueNet
 from brass_ai.rust_mcts import RustISMCTS, RustMCTSConfig
 from brass_ai.selfplay import SelfPlayConfig, play_game
@@ -30,7 +31,9 @@ def test_rust_search_returns_executable_move_and_visits():
 
 def test_rust_selfplay_produces_complete_game_samples():
     samples, vps = play_game(
-        _make(), SelfPlayConfig(sims=2, max_moves=600, seed=5, temperature=0.0)
+        _make(),
+        SelfPlayConfig(sims=2, max_moves=600, seed=5, temperature=0.0,
+                       store_snapshots=False),
     )
     assert samples
     assert len(vps) == 4
@@ -44,3 +47,87 @@ def test_rust_selfplay_produces_complete_game_samples():
 def test_truncated_selfplay_is_rejected():
     with pytest.raises(RuntimeError, match="samples discarded"):
         play_game(_make(), SelfPlayConfig(sims=1, max_moves=1, seed=5))
+
+
+def test_search_reports_tree_reuse_diagnostics():
+    mcts = _make()
+    game = be.GameState(seed=11, players=4)
+    result = mcts.search(game, sims=12)
+    # Both counters are surfaced so a training loop can monitor how often the
+    # tree reuses a node expanded under a different determinization.
+    assert result.failed_applies >= 0
+    assert result.rewritten_applies >= 0
+
+
+def test_search_expands_every_legal_candidate_without_pruning():
+    torch.manual_seed(0)
+    net = PolicyValueNet()
+    mcts = RustISMCTS(net, RustMCTSConfig(device="cpu", max_depth=4, batch_size=8))
+    game = be.GameState(seed=11, players=4)
+    legal = len(game.legal_candidates()[0])
+    result = mcts.search(game, sims=8)
+    assert len(result.visits) == legal
+
+
+def test_prior_top_k_prunes_the_searched_branching_factor():
+    torch.manual_seed(0)
+    net = PolicyValueNet()
+    mcts = RustISMCTS(
+        net,
+        RustMCTSConfig(device="cpu", max_depth=4, batch_size=8, prior_top_k=6),
+    )
+    game = be.GameState(seed=11, players=4)
+    legal = len(game.legal_candidates()[0])
+    assert legal > 6
+    result = mcts.search(game, sims=8)
+    # Only the highest-prior children survive, so the visit vector is bounded by
+    # the shortlist even though every legal move was scored for the prior.
+    assert 0 < len(result.visits) <= 6
+
+
+def test_selfplay_observation_is_determinized_by_default():
+    mcts = _make()
+    state = be.GameState(seed=5, players=4)
+    true_opp = state.state_to_tensor()[4]
+    samples, _ = play_game(
+        mcts, SelfPlayConfig(sims=2, seed=5, temperature=0.0, store_snapshots=False)
+    )
+    # The first recorded decision is the opening position, whose true opponent
+    # hands are known; training must not see them.
+    assert samples
+    assert not np.allclose(samples[0].opp_hands, true_opp)
+
+
+def test_selfplay_observation_can_use_the_true_state():
+    mcts = _make()
+    state = be.GameState(seed=5, players=4)
+    true_opp = state.state_to_tensor()[4]
+    samples, _ = play_game(
+        mcts,
+        SelfPlayConfig(sims=2, seed=5, temperature=0.0, determinize_observation=False,
+                       store_snapshots=False),
+    )
+    assert samples
+    assert np.allclose(samples[0].opp_hands, true_opp)
+
+
+def test_selfplay_stats_report_reuse_counters():
+    mcts = _make()
+    stats: dict = {}
+    play_game(mcts, SelfPlayConfig(sims=2, seed=9, temperature=0.0), stats=stats)
+    assert set(stats) == {"failed_applies", "rewritten_applies", "moves"}
+    assert stats["moves"] > 0
+    assert stats["failed_applies"] >= 0
+    assert stats["rewritten_applies"] >= 0
+
+
+def test_play_batch_derives_a_distinct_seed_per_game(monkeypatch):
+    seen = []
+
+    def fake_play_game(_mcts, cfg):
+        seen.append(cfg.seed)
+        return [], np.zeros(4)
+
+    monkeypatch.setattr(selfplay_module, "play_game", fake_play_game)
+    selfplay_module.play_batch(None, 3, SelfPlayConfig(seed=100))
+    assert seen == [100, 101, 102]
