@@ -5,7 +5,7 @@
 //!
 //! Plays one heuristic game, snapshots every position, then measures the
 //! per-position cost of each stage used by the Python training pipeline:
-//!   legal move enumeration, candidate feature encoding, state_to_tensor,
+//!   legal move enumeration, candidate feature encoding, state_tokens,
 //!   snapshot serialize/restore, determinize, state clone, teacher scoring.
 
 use std::time::Instant;
@@ -82,8 +82,8 @@ fn main() {
                 let _ = action_features::encode_move(&work, mv);
             }
         });
-        bench("state_to_tensor", iters, || {
-            let _ = encode::state_to_tensor(&work, work.current_player_id());
+        bench("state_tokens", iters, || {
+            let _ = encode::state_tokens(&work, work.current_player_id());
         });
         bench("snapshot_bytes", iters, || {
             let _ = work.snapshot_bytes();
@@ -122,7 +122,7 @@ fn main() {
         }
         encode_t += s1.elapsed().as_secs_f64();
         let s2 = Instant::now();
-        let _ = encode::state_to_tensor(&work, work.current_player_id());
+        let _ = encode::state_tokens(&work, work.current_player_id());
         tensor_t += s2.elapsed().as_secs_f64();
     }
     println!(
@@ -134,7 +134,7 @@ fn main() {
         encode_t / n as f64 * 1e6
     );
     println!(
-        "  state_to_tensor                 {:>10.3} us/pos",
+        "  state_tokens                    {:>10.3} us/pos",
         tensor_t / n as f64 * 1e6
     );
     println!("  total bench time {:.2?}", start.elapsed());

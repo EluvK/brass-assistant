@@ -1477,26 +1477,28 @@ fn discarding_a_wild_returns_it_to_supply_and_skips_played() {
 }
 
 /// Holding a wild card is public information: the engine exposes it per player
-/// and the training tensor encodes both flags separately in the global vector.
+/// and the training tensor encodes both flags separately on the seat token.
 #[test]
-fn wild_holding_is_public_and_encoded_in_training_tensor() {
+fn wild_holding_is_public_and_encoded_in_seat_token() {
     let mut state = setup(4);
     let pid = state.current_player_id();
-    let base = 4 + pid * 17;
-    let t = _engine::encode::state_to_tensor(&state, pid);
-    assert_eq!(t.global[base + 8], 0.0, "no wilds held before scout");
-    assert_eq!(t.global[base + 9], 0.0, "no wilds held before scout");
+    // Seat 0 of the encoding is always the perspective player.
+    let base = _engine::encode::SEAT_WILD_LOCATION;
+    let industry = _engine::encode::SEAT_WILD_INDUSTRY;
+    let t = _engine::encode::state_tokens(&state, pid);
+    assert_eq!(t.seats[base], 0.0, "no wilds held before scout");
+    assert_eq!(t.seats[industry], 0.0, "no wilds held before scout");
 
     let res = _engine::rules::execute_scout(&mut state, pid, [0, 1, 2]);
     assert!(res.is_ok(), "scout failed: {res:?}");
-    let t = _engine::encode::state_to_tensor(&state, pid);
+    let t = _engine::encode::state_tokens(&state, pid);
     assert_eq!(
-        t.global[base + 8],
+        t.seats[base],
         1.0,
         "wild-location holding encoded separately"
     );
     assert_eq!(
-        t.global[base + 9],
+        t.seats[industry],
         1.0,
         "wild-industry holding encoded separately"
     );
@@ -1507,13 +1509,13 @@ fn wild_holding_is_public_and_encoded_in_training_tensor() {
         .position(|c| matches!(c, Card::WildLocation))
         .unwrap();
     _engine::rules::discard_card(&mut state, pid, wl_idx);
-    let t = _engine::encode::state_to_tensor(&state, pid);
+    let t = _engine::encode::state_tokens(&state, pid);
     assert_eq!(
-        t.global[base + 8],
+        t.seats[base],
         0.0,
         "wild-location flag reflects the discard"
     );
-    assert_eq!(t.global[base + 9], 1.0, "wild-industry flag unaffected");
+    assert_eq!(t.seats[industry], 1.0, "wild-industry flag unaffected");
 }
 
 #[test]

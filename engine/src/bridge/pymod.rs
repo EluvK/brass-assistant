@@ -16,7 +16,7 @@
 //!         one-hot equivalence-class policy (see the method docs)
 //!     .apply_move(canonical:str) -> str     # full step; ValueError if illegal
 //!     .determinize() -> GameState            # opponent-hand sampling
-//!     .state_to_tensor() -> (board, links, global, own_hand, opp_hands)
+//!     .state_tokens() -> (cells, links, merchants, seats, global)
 //!     .choose_heuristic() -> (canonical, describe, score)
 //!   module: action/state feature schemas and state-graph topology constants
 //!
@@ -129,14 +129,12 @@ impl PyGame {
     ///
     /// Restores the snapshot, then computes everything
     /// `selfplay.materialize_sample` needs in Rust:
-    ///   (pid, era, board, links, global, own_hand, opp_hands,
-    ///    candidates u8 (N,301), teacher_index, policy f32 (N,))
+    ///   (pid, era, cells, links, merchants, seats, global,
+    ///    candidates f32 (N, ACTION_FEATURE_DIM), teacher_index, policy f32 (N,))
     ///
-    /// * `candidates` rows are the v4 action features packed as lossless
-    ///   uint8 quarter-steps (x4), matching `hierarchical_policy.
-    ///   compress_candidate_features`; a non-quarter-step value raises.
+    /// * `candidates` rows are action references (docs/ai-action-encoding.md §3).
     /// * `policy` is the teacher one-hot spread uniformly over the complete
-    ///   v4-observable equivalence class (rows identical to the teacher row),
+    ///   observable equivalence class (rows identical to the teacher row),
     ///   mirroring `hierarchical_policy.teacher_equivalence_policy`.
     /// * `teacher_index` is the position of `teacher_canonical`; ValueError
     ///   when it is not a legal concrete move of the restored state.
@@ -151,10 +149,10 @@ impl PyGame {
         u8,
         Bound<'py, PyArray2<f32>>,
         Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
         Bound<'py, PyArray1<f32>>,
-        Bound<'py, PyArray1<f32>>,
-        Bound<'py, PyArray1<f32>>,
-        Bound<'py, PyArray2<u8>>,
+        Bound<'py, PyArray2<f32>>,
         usize,
         Bound<'py, PyArray1<f32>>,
     )> {
@@ -185,22 +183,12 @@ impl PyGame {
                 )
             })?;
 
-        // Encode every candidate row and quantize to uint8 quarter-steps.
-        let mut packed = vec![0u8; n * dim];
+        // Encode every candidate row.
+        let mut packed = vec![0.0f32; n * dim];
         let mut row = Vec::with_capacity(dim);
         for (i, mv) in legal.iter().enumerate() {
             crate::bridge::action_features::encode_move_into(&work, mv, &mut row);
-            let dst = &mut packed[i * dim..(i + 1) * dim];
-            for (o, &v) in dst.iter_mut().zip(row.iter()) {
-                let scaled = v * 4.0;
-                let r = scaled.round();
-                if !(0.0..=255.0).contains(&r) || (scaled - r).abs() > 1e-3 {
-                    return Err(PyValueError::new_err(format!(
-                        "action features contain values outside the quarter-step schema: {v}"
-                    )));
-                }
-                *o = r as u8;
-            }
+            packed[i * dim..(i + 1) * dim].copy_from_slice(&row);
         }
 
         // Teacher mass spread uniformly over the identical-feature class.
@@ -219,19 +207,23 @@ impl PyGame {
             }
         }
 
-        let t = encode::state_to_tensor(&work, pid);
-        let board =
-            PyArray1::from_vec(py, t.board).reshape((encode::BOARD_PLANES, encode::BOARD_CELLS))?;
+        let t = encode::state_tokens(&work, pid);
+        let cells =
+            PyArray1::from_vec(py, t.cells).reshape((encode::BOARD_CELLS, encode::F_CELL))?;
         let links =
-            PyArray1::from_vec(py, t.links).reshape((encode::LINK_PLANES, encode::LINK_CELLS))?;
+            PyArray1::from_vec(py, t.links).reshape((encode::LINK_CELLS, encode::F_LINK))?;
+        let merchants = PyArray1::from_vec(py, t.merchants)
+            .reshape((encode::MERCHANT_COUNT, encode::F_MERCHANT))?;
+        let seats =
+            PyArray1::from_vec(py, t.seats).reshape((encode::SEAT_COUNT, encode::F_SEAT))?;
         Ok((
             pid,
             era,
-            board,
+            cells,
             links,
+            merchants,
+            seats,
             PyArray1::from_vec(py, t.global),
-            PyArray1::from_vec(py, t.own_hand),
-            PyArray1::from_vec(py, t.opp_hands),
             PyArray1::from_vec(py, packed).reshape((n, dim))?,
             teacher_index,
             PyArray1::from_vec(py, policy),
@@ -673,20 +665,21 @@ impl PyGame {
         PyGame { state }
     }
 
-    /// Encode the state into numpy arrays:
-    /// board (24,49), links (7,39), global (168,), own_hand (35,), opp_hands (105,).
-    /// `perspective` defaults to the current player; pass another player id to
-    /// encode from that player's viewpoint (used for MaxN value evaluation).
+    /// Encode the state into the token groups of docs/ai-action-encoding.md §2.
+    ///
+    /// Returns (cells (49,F_CELL), links (39,F_LINK), merchants (9,F_MERCHANT),
+    /// seats (4,F_SEAT), global (F_GLOBAL,)), rotated so that seat 0 is the
+    /// acting player.
     #[pyo3(signature = (perspective=None))]
-    fn state_to_tensor<'py>(
+    fn state_tokens<'py>(
         &self,
         py: Python<'py>,
         perspective: Option<usize>,
     ) -> PyResult<(
         Bound<'py, PyArray2<f32>>,
         Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray1<f32>>,
-        Bound<'py, PyArray1<f32>>,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
         Bound<'py, PyArray1<f32>>,
     )> {
         let pid = perspective.unwrap_or_else(|| self.state.current_player_id());
@@ -696,15 +689,15 @@ impl PyGame {
                 self.state.player_count()
             )));
         }
-        let t = encode::state_to_tensor(&self.state, pid);
+        let t = encode::state_tokens(&self.state, pid);
 
-        let board = reshape2(py, &t.board, encode::BOARD_PLANES, encode::BOARD_CELLS)?;
-        let links = reshape2(py, &t.links, encode::LINK_PLANES, encode::LINK_CELLS)?;
+        let cells = reshape2(py, &t.cells, encode::BOARD_CELLS, encode::F_CELL)?;
+        let links = reshape2(py, &t.links, encode::LINK_CELLS, encode::F_LINK)?;
+        let merchants = reshape2(py, &t.merchants, encode::MERCHANT_COUNT, encode::F_MERCHANT)?;
+        let seats = reshape2(py, &t.seats, encode::SEAT_COUNT, encode::F_SEAT)?;
         let global = PyArray1::from_vec(py, t.global);
-        let own_hand = PyArray1::from_vec(py, t.own_hand);
-        let opp_hands = PyArray1::from_vec(py, t.opp_hands);
 
-        Ok((board, links, global, own_hand, opp_hands))
+        Ok((cells, links, merchants, seats, global))
     }
 
     /// Final VP per player (index order), for value targets & evaluation.
@@ -826,22 +819,45 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crate::bridge::action_features::ACTION_FEATURE_DIM,
     )?;
     m.add(
-        "ACTION_FEATURE_SCHEMA_VERSION",
-        crate::bridge::action_features::ACTION_FEATURE_SCHEMA_VERSION,
+        "ACTION_SCHEMA_VERSION",
+        crate::bridge::action_features::ACTION_SCHEMA_VERSION,
     )?;
-    m.add("BOARD_PLANES", encode::BOARD_PLANES)?;
-    m.add("BOARD_CELLS", encode::BOARD_CELLS)?;
-    m.add("LINK_PLANES", encode::LINK_PLANES)?;
-    m.add("LINK_CELLS", encode::LINK_CELLS)?;
-    m.add("GLOBAL_LEN", encode::GLOBAL_LEN)?;
-    m.add("HAND_LEN", encode::HAND_LEN)?;
-    m.add("MAX_PLAYERS", encode::MAX_PLAYERS)?;
     m.add(
-        "STATE_FEATURE_SCHEMA_VERSION",
-        encode::STATE_FEATURE_SCHEMA_VERSION,
+        "ACTION_REF_CAP",
+        crate::bridge::action_features::ACTION_REF_CAP,
     )?;
-    m.add("LOCATION_COUNT", encode::LOC_COUNT)?;
+    m.add(
+        "ACTION_KIND_COUNT",
+        crate::bridge::action_features::ACTION_KIND_COUNT,
+    )?;
+    m.add(
+        "ACTION_NUMBERS",
+        crate::bridge::action_features::ACTION_NUMBERS,
+    )?;
+    m.add(
+        "REF_KIND_COUNT",
+        crate::bridge::action_features::REF_KIND_COUNT,
+    )?;
+    m.add("BOARD_CELLS", encode::BOARD_CELLS)?;
+    m.add("LINK_CELLS", encode::LINK_CELLS)?;
+    m.add("MERCHANT_COUNT", encode::MERCHANT_COUNT)?;
+    m.add("SEAT_COUNT", encode::SEAT_COUNT)?;
+    m.add("INDUSTRY_COUNT", encode::INDUSTRY_COUNT)?;
+    m.add("CARD_SEMANTIC_COUNT", encode::CARD_SEMANTIC_COUNT)?;
+    m.add("TOKEN_COUNT", encode::TOKEN_COUNT)?;
+    m.add("F_CELL", encode::F_CELL)?;
+    m.add("F_LINK", encode::F_LINK)?;
+    m.add("F_MERCHANT", encode::F_MERCHANT)?;
+    m.add("F_SEAT", encode::F_SEAT)?;
+    m.add("F_GLOBAL", encode::F_GLOBAL)?;
+    m.add("VP_SCALE", crate::bridge::VP_SCALE)?;
+    m.add(
+        "STATE_TOKEN_SCHEMA_VERSION",
+        encode::STATE_TOKEN_SCHEMA_VERSION,
+    )?;
+    m.add("LOCATION_COUNT", encode::LOCATION_COUNT)?;
     m.add("BOARD_CELL_LOCATIONS", encode::board_cell_locations())?;
+    m.add("BOARD_CELL_SLOTS", encode::board_cell_slots())?;
     m.add("CONNECTION_ENDPOINTS", encode::connection_endpoints())?;
     m.add("CONNECTION_VIA_FARMS", encode::connection_via_farms())?;
     Ok(())

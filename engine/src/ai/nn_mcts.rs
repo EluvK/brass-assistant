@@ -670,22 +670,23 @@ fn flush_net(
     requests: &[Request],
 ) -> PyResult<Vec<BatchResult>> {
     let n_rows = requests.len();
-    let board_len = crate::encode::BOARD_PLANES * crate::encode::BOARD_CELLS;
-    let link_len = crate::encode::LINK_PLANES * crate::encode::LINK_CELLS;
-    let mut boards: Vec<f32> = Vec::with_capacity(n_rows * board_len);
+    let cell_len = crate::encode::BOARD_CELLS * crate::encode::F_CELL;
+    let link_len = crate::encode::LINK_CELLS * crate::encode::F_LINK;
+    let merchant_len = crate::encode::MERCHANT_COUNT * crate::encode::F_MERCHANT;
+    let seat_len = crate::encode::SEAT_COUNT * crate::encode::F_SEAT;
+    let mut cells: Vec<f32> = Vec::with_capacity(n_rows * cell_len);
     let mut links: Vec<f32> = Vec::with_capacity(n_rows * link_len);
-    let mut globals: Vec<f32> = Vec::with_capacity(n_rows * crate::encode::GLOBAL_LEN);
-    let mut own_hands: Vec<f32> = Vec::with_capacity(n_rows * crate::encode::HAND_LEN);
-    let mut opp_hands: Vec<f32> =
-        Vec::with_capacity(n_rows * (MAX_PLAYERS - 1) * crate::encode::HAND_LEN);
+    let mut merchants: Vec<f32> = Vec::with_capacity(n_rows * merchant_len);
+    let mut seats: Vec<f32> = Vec::with_capacity(n_rows * seat_len);
+    let mut globals: Vec<f32> = Vec::with_capacity(n_rows * crate::encode::F_GLOBAL);
     for req in requests {
         let pid = req.state.current_player_id();
-        let t = crate::encode::state_to_tensor(&req.state, pid);
-        boards.extend_from_slice(&t.board);
+        let t = crate::encode::state_tokens(&req.state, pid);
+        cells.extend_from_slice(&t.cells);
         links.extend_from_slice(&t.links);
+        merchants.extend_from_slice(&t.merchants);
+        seats.extend_from_slice(&t.seats);
         globals.extend_from_slice(&t.global);
-        own_hands.extend_from_slice(&t.own_hand);
-        opp_hands.extend_from_slice(&t.opp_hands);
     }
 
     let max_candidates = requests
@@ -718,13 +719,12 @@ fn flush_net(
         }
     }
 
-    let board_arr = PyArray1::from_vec(py, boards).reshape((n_rows, board_len))?;
+    let cells_arr = PyArray1::from_vec(py, cells).reshape((n_rows, cell_len))?;
     let links_arr = PyArray1::from_vec(py, links).reshape((n_rows, link_len))?;
+    let merchants_arr = PyArray1::from_vec(py, merchants).reshape((n_rows, merchant_len))?;
+    let seats_arr = PyArray1::from_vec(py, seats).reshape((n_rows, seat_len))?;
     let global_arr =
-        PyArray1::from_vec(py, globals).reshape((n_rows, crate::encode::GLOBAL_LEN))?;
-    let own_arr = PyArray1::from_vec(py, own_hands).reshape((n_rows, crate::encode::HAND_LEN))?;
-    let opp_arr = PyArray1::from_vec(py, opp_hands)
-        .reshape((n_rows, (MAX_PLAYERS - 1) * crate::encode::HAND_LEN))?;
+        PyArray1::from_vec(py, globals).reshape((n_rows, crate::encode::F_GLOBAL))?;
     let candidates_arr =
         PyArray1::from_vec(py, candidate_rows).reshape((n_rows, max_candidates * dim))?;
     let candidate_mask_arr =
@@ -733,11 +733,11 @@ fn flush_net(
     let out = net_fn.call1(
         py,
         (
-            board_arr,
+            cells_arr,
             links_arr,
+            merchants_arr,
+            seats_arr,
             global_arr,
-            own_arr,
-            opp_arr,
             candidates_arr,
             candidate_mask_arr,
         ),

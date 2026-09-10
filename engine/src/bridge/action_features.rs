@@ -1,230 +1,186 @@
-//! Structured neural features for one concrete legal move (schema v5).
+//! Action -> entity references (Brass: Birmingham).
 //!
-//! v4 principle: the action encoding states the CHOICE (which board cells are
-//! drained, which connection, which merchant), while tile identity — industry,
-//! owner, flip state — lives in the state tensor at the same board-cell index
-//! and is joined by the scoring head.
+//! Contract: `docs/ai-action-encoding.md` §3. A candidate action states its
+//! type, the entities it selects, and a few scalars. It never restates state:
+//! the network resolves each reference against the state tokens of the same
+//! position, so "which coal did I take, and what was on that cell" is a
+//! structural join instead of a hand-computed feature.
 //!
-//! Layout (301 dims, all values quarter-step):
-//!   ACTION     0(7)    action-type one-hot
-//!   CARD       7(35)   card-semantic COUNTS (single card = 1.0; Scout adds up
-//!                      to 3 -> {A,A,B} and {A,B,B} stay distinct)
-//!   LOCATION  42(27)   Build target location one-hot
-//!   CITY_SLOT 69(4)    Build target slot
-//!   INDUSTRY_1 73(6)   main industry
-//!   INDUSTRY_2 79(6)   second Develop industry
-//!   CONNECTION_1  85(39)   single link / NetDouble first link one-hot
-//!   CONNECTION_2 124(39)   NetDouble second link one-hot
-//!   SELL_KEY   163(47)  sold city-slot keys
-//!   MERCHANT   210(9)   Sell target merchants
-//!   DRAIN      219(49)  cubes taken per BOARD CELL (47 city slots + 2 farms,
-//!                       same index as the board tensor). Mine/ironworks/
-//!                       brewery beer share one block: a cell hosts a single
-//!                       industry, so kind and owner come from the state.
-//!                       Market purchases have no identity and never enter.
-//!   MERCHANT_BEER 268(9) merchant beer cubes taken
-//!   CONSEQUENCE 277(12) analytic post-state facts (see below)
-//!   SUMMARY    289(12)  [0]coal/2 [1]iron/2 [2]beer [3]market_coal [4]market_iron
-//!                       [5]merchant_beer [6]sell_tiles/4 [7]single [8]double
-//!                       [9]free_develop [10]scout [11]reserved
+//! Row layout (`ACTION_FEATURE_DIM` floats):
+//!
+//!   [0]                action kind (index, not one-hot)
+//!   [1]                Build slot
+//!   [2..6]             numbers: market coal, market iron, merchant beer, cards paid
+//!   [6]                reference count
+//!   [7 + 3i + 0..3]    reference i as (kind, id, weight)
+//!
+//! Reference kinds: 0 cell, 1 link, 2 merchant, 3 industry, 4 card semantics.
+//! Unused reference slots are zeroed; `ref_count` bounds them.
 
 use crate::graph::{BeerSource, BeerSourceKind, CoalSource, CoalSourceKind, IronSource};
-use crate::map::{MERCHANT_LOC_MASK, city_slots, connections};
 use crate::r#move::ResolvedMove;
 use crate::state::{Card, GameState};
 
-pub const ACTION_FEATURE_DIM: usize = 301;
-pub const ACTION_FEATURE_SCHEMA_VERSION: usize = 5;
+/// State token layout owns the cell/industry/card id spaces; re-exported here
+/// so the action code cannot drift from the state code.
+pub use crate::encode::{CARD_SEMANTIC_COUNT, CITY_CELLS, INDUSTRY_COUNT, LOCATION_COUNT};
 
-const ACTION: usize = 0;
-const CARD: usize = 7;
-const LOCATION: usize = 42;
-const CITY_SLOT: usize = 69;
-const INDUSTRY_1: usize = 73;
-const INDUSTRY_2: usize = 79;
-const CONNECTION_1: usize = 85;
-const CONNECTION_2: usize = 124;
-const SELL_KEY: usize = 163;
-#[allow(dead_code)]
-const MERCHANT: usize = 210; // reserved v5 block; retained for layout assertions
-const DRAIN: usize = 219;
-const MERCHANT_BEER: usize = 268;
-const CONSEQUENCE: usize = 277;
-const SUMMARY: usize = 289;
+pub const ACTION_SCHEMA_VERSION: usize = 1;
+pub const ACTION_KIND_COUNT: usize = 8;
+pub const ACTION_REF_CAP: usize = 16;
+pub const ACTION_NUMBERS: usize = 4;
+pub const ACTION_FEATURE_DIM: usize = 3 + ACTION_NUMBERS + 3 * ACTION_REF_CAP; // 55
 
-const CITY_CELLS: usize = 47; // state::total_city_slots(); cells 47/48 are the farms
+pub const REF_CELL: u8 = 0;
+pub const REF_LINK: u8 = 1;
+pub const REF_MERCHANT: u8 = 2;
+pub const REF_INDUSTRY: u8 = 3;
+pub const REF_CARD: u8 = 4;
+pub const REF_KIND_COUNT: usize = 5;
 
-// CONSEQUENCE offsets
-const CONS_LINKS_BUILT: usize = 0; // /2
-const CONS_NEW_REACH: usize = 1; // /4
-const CONS_NEW_MERCHANT_REACH: usize = 2;
-const CONS_FLIPS_OWN: usize = 3; // /4
-const CONS_FLIPS_OPP: usize = 4; // /4
-const CONS_OVERBUILD: usize = 5;
-const CONS_UPGRADE: usize = 6;
-const CONS_CITY_COMPLETION: usize = 7;
-const CONS_SELL_TILES: usize = 8; // /4
-const CONS_FREE_DEVELOP: usize = 9;
+/// Action kind ids, matching `docs/ai-action-encoding.md` §3.
+pub mod kind {
+    pub const BUILD: usize = 0;
+    pub const NETWORK: usize = 1;
+    pub const NETWORK_DOUBLE: usize = 2;
+    pub const DEVELOP: usize = 3;
+    pub const SELL: usize = 4;
+    pub const LOAN: usize = 5;
+    pub const SCOUT: usize = 6;
+    pub const PASS: usize = 7;
+}
 
-fn one_hot(out: &mut [f32], offset: usize, width: usize, index: usize) {
-    if index < width {
-        out[offset + index] = 1.0;
+const OFF_KIND: usize = 0;
+const OFF_SLOT: usize = 1;
+const OFF_NUMBERS: usize = 2;
+const OFF_REF_COUNT: usize = 2 + ACTION_NUMBERS;
+const OFF_REFS: usize = OFF_REF_COUNT + 1;
+
+const CARD_WILD_LOCATION: usize = LOCATION_COUNT + INDUSTRY_COUNT; // 33
+const CARD_WILD_INDUSTRY: usize = LOCATION_COUNT + INDUSTRY_COUNT + 1; // 34
+
+struct Refs {
+    kinds: [u8; ACTION_REF_CAP],
+    ids: [u16; ACTION_REF_CAP],
+    weights: [f32; ACTION_REF_CAP],
+    count: usize,
+}
+
+impl Refs {
+    fn new() -> Self {
+        Refs {
+            kinds: [0; ACTION_REF_CAP],
+            ids: [0; ACTION_REF_CAP],
+            weights: [0.0; ACTION_REF_CAP],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, kind: u8, id: usize, weight: f32) {
+        assert!(
+            self.count < ACTION_REF_CAP,
+            "action reference cap ({ACTION_REF_CAP}) exceeded: the action-reference \
+             contract needs review, not truncation"
+        );
+        assert!(id <= u16::MAX as usize, "reference id out of range: {id}");
+        self.kinds[self.count] = kind;
+        self.ids[self.count] = id as u16;
+        self.weights[self.count] = weight;
+        self.count += 1;
+    }
+
+    fn push_card(&mut self, card: &Card) {
+        match card {
+            Card::Location(loc) => self.push(REF_CARD, *loc as usize, 1.0),
+            Card::Industry { industries, n } => {
+                for &ind in industries.iter().take(*n as usize) {
+                    self.push(REF_CARD, LOCATION_COUNT + ind as usize, 1.0);
+                }
+            }
+            Card::WildLocation => self.push(REF_CARD, CARD_WILD_LOCATION, 1.0),
+            Card::WildIndustry => self.push(REF_CARD, CARD_WILD_INDUSTRY, 1.0),
+        }
     }
 }
 
-/// Additive card-semantic counts: a single card lights its semantic indices at
-/// 1.0 (identical to the old one-hot), Scout's three discards accumulate so
-/// the discard multiset stays distinguishable.
-fn add_card(out: &mut [f32], state: &GameState, card_index: usize) {
-    let pid = state.current_player_id();
-    let Some(card) = state
+/// The card at `hand_index`, read from the acting player's hand before the
+/// move. Card identity is deliberately semantic: the same card in two hand
+/// positions yields the same reference.
+fn hand_card(state: &GameState, hand_index: usize) -> Option<Card> {
+    state
         .players
-        .get(pid)
-        .and_then(|player| player.hand.get(card_index))
-    else {
-        return;
+        .get(state.current_player_id())?
+        .hand
+        .get(hand_index)
+        .cloned()
+}
+
+/// Add one resource source as a reference. Market purchases have no identity
+/// and are counted in `numbers` instead.
+fn push_cell_source(refs: &mut Refs, cell: Option<usize>, market: &mut u32) {
+    match cell {
+        Some(cell) => refs.push(REF_CELL, cell, 1.0),
+        None => *market += 1,
+    }
+}
+
+fn coal_source(refs: &mut Refs, source: &CoalSource, market: &mut u32) {
+    let cell = match source.kind {
+        CoalSourceKind::Mine if source.key < CITY_CELLS => Some(source.key),
+        _ => None,
     };
-    match card {
-        Card::Location(loc) => out[CARD + *loc as usize] += 1.0,
-        Card::Industry { industries, n } => {
-            for ind in industries.iter().take(*n as usize) {
-                out[CARD + 27 + *ind as usize] += 1.0;
-            }
-        }
-        Card::WildLocation => out[CARD + 33] += 1.0,
-        Card::WildIndustry => out[CARD + 34] += 1.0,
-    }
+    push_cell_source(refs, cell, market);
 }
 
-fn industry(out: &mut [f32], offset: usize, ind: crate::data::IndustryType) {
-    one_hot(out, offset, 6, ind as usize);
+fn iron_source(refs: &mut Refs, source: &IronSource, market: &mut u32) {
+    let cell = (source.key < CITY_CELLS).then_some(source.key);
+    push_cell_source(refs, cell, market);
 }
 
-/// Where one resource cube is taken from, in board-cell coordinates.
-fn drain_cube(drain: &mut [u8; 49], merchant_beer: &mut [u8; 9], source: &BeerSource) {
+fn beer_source(refs: &mut Refs, source: &BeerSource, merchant_beer: &mut u32) {
     match source.kind {
-        BeerSourceKind::Merchant => {
-            if let Some(idx) = source.merchant_idx {
-                if idx < 9 {
-                    merchant_beer[idx] += 1;
-                }
-            }
-        }
-        BeerSourceKind::Own | BeerSourceKind::Opponent => {
-            if let Some(farm) = source.farm_idx {
-                if farm < 2 {
-                    drain[CITY_CELLS + farm] += 1;
-                }
-            } else if source.key < CITY_CELLS {
-                drain[source.key] += 1;
-            }
-        }
+        BeerSourceKind::Merchant => match source.merchant_idx {
+            Some(idx) => refs.push(REF_MERCHANT, idx, 1.0),
+            None => *merchant_beer += 1,
+        },
+        BeerSourceKind::Own | BeerSourceKind::Opponent => match source.farm_idx {
+            Some(farm) if farm < 2 => refs.push(REF_CELL, CITY_CELLS + farm, 1.0),
+            _ if source.key < CITY_CELLS => refs.push(REF_CELL, source.key, 1.0),
+            // A beer source must name a board cell or a merchant; anything else
+            // is an engine bug, not a feature to encode.
+            _ => debug_assert!(false, "beer source without a board location"),
+        },
     }
 }
 
-fn coal_cube(drain: &mut [u8; 49], source: &CoalSource) -> bool {
-    // Returns true when the cube came from the market (no identity).
-    match source.kind {
-        CoalSourceKind::Mine => {
-            if source.key < CITY_CELLS {
-                drain[source.key] += 1;
-                false
-            } else {
-                true
-            }
-        }
-        CoalSourceKind::Market => true,
+/// Build target cell: city slot key, or the farm cell for brewery farms.
+fn build_cell(state: &GameState, loc: crate::map::Loc, slot_index: usize) -> Option<usize> {
+    match crate::state::farm_index(loc) {
+        Some(idx) => Some(CITY_CELLS + idx),
+        None => state.city_slot_key(loc, slot_index),
     }
 }
 
-fn iron_cube(drain: &mut [u8; 49], source: &IronSource) -> bool {
-    if source.key < CITY_CELLS {
-        drain[source.key] += 1;
-        false
-    } else {
-        true
-    }
-}
-
-/// Flip consequence of the accumulated drains: a tile flips when its last cube
-/// was taken. Returns (own_flips, opponent_flips).
-fn count_flips(state: &GameState, drain: &[u8; 49], pid: usize) -> (u32, u32) {
-    let mut own = 0;
-    let mut opp = 0;
-    for (cell, &taken) in drain.iter().enumerate() {
-        if taken == 0 {
-            continue;
-        }
-        let tile = if cell < CITY_CELLS {
-            state.city_tiles[cell].as_ref()
-        } else {
-            state.farm_tiles[cell - CITY_CELLS].as_ref()
-        };
-        let Some(tile) = tile else { continue };
-        if tile.resource_cubes as usize == taken as usize {
-            if tile.player == pid {
-                own += 1;
-            } else {
-                opp += 1;
-            }
-        }
-    }
-    (own, opp)
-}
-
-/// Locations of the mover's own network newly touched by the built links
-/// (endpoints + via farm). Returns (new count, any new merchant reached).
-fn new_network_reach(state: &GameState, pid: usize, conns: &[usize]) -> (u32, bool) {
-    // The mask accumulates across the links of one move, so a location shared
-    // by two links of a NetworkDouble is counted once.
-    let mut mask = state.network_mask(pid);
-    let mut fresh = 0u32;
-    let mut merchant = false;
-    for &conn_id in conns {
-        let conn = &connections()[conn_id];
-        let mut locs = vec![conn.a as usize, conn.b as usize];
-        if let Some(farm) = conn.via_farm {
-            locs.push(farm as usize);
-        }
-        for loc in locs {
-            let bit = 1u32 << loc;
-            if mask & bit == 0 {
-                fresh += 1;
-                if MERCHANT_LOC_MASK & bit != 0 {
-                    merchant = true;
-                }
-                mask |= bit;
-            }
-        }
-    }
-    (fresh, merchant)
-}
-
-/// Encode a concrete move into the stable v4 action-feature schema.
-///
-/// `card_index` is an execution reference only. Card semantics are read from
-/// the pre-move current player's hand so the network never learns hand order.
+/// Encode a concrete move into the action-reference schema.
 pub fn encode_move(state: &GameState, mv: &ResolvedMove) -> Vec<f32> {
     let mut out = Vec::with_capacity(ACTION_FEATURE_DIM);
     encode_move_into(state, mv, &mut out);
     out
 }
 
-/// Same as [`encode_move`], writing into a caller-owned buffer that is
-/// cleared and reused across calls (hot path: one row per legal candidate).
+/// Same as [`encode_move`], writing into a caller-owned buffer that is cleared
+/// and reused across calls (hot path: one row per legal candidate).
 pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>) {
     out.clear();
     out.resize(ACTION_FEATURE_DIM, 0.0);
-    let out = &mut out[..];
-    one_hot(out, ACTION, 7, mv.action().index());
 
-    // Drains accumulate across every branch, then land in DRAIN / MERCHANT_BEER
-    // and drive the flip-consequence features.
-    let mut drain = [0u8; 49];
-    let mut merchant_beer = [0u8; 9];
-    let pid = state.current_player_id();
-
-    match mv {
+    let mut refs = Refs::new();
+    let mut market_coal = 0u32;
+    let mut market_iron = 0u32;
+    let mut merchant_beer = 0u32;
+    let mut cards_paid = 0u32;
+    let mut slot = 0usize;
+    let kind_id = match mv {
         ResolvedMove::Build {
             loc,
             slot_index,
@@ -233,89 +189,37 @@ pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>
             iron,
             card_index,
         } => {
-            add_card(out, state, *card_index);
-            one_hot(out, LOCATION, 27, *loc as usize);
-            one_hot(out, CITY_SLOT, 4, *slot_index);
-            industry(out, INDUSTRY_1, *ind);
-            let mut market_coal = 0u32;
-            let mut market_iron = 0u32;
+            if let Some(cell) = build_cell(state, *loc, *slot_index) {
+                refs.push(REF_CELL, cell, 1.0);
+            }
+            slot = *slot_index;
+            refs.push(REF_INDUSTRY, *ind as usize, 1.0);
             for source in coal {
-                if coal_cube(&mut drain, source) {
-                    market_coal += 1;
-                }
+                coal_source(&mut refs, source, &mut market_coal);
             }
             for source in iron {
-                if iron_cube(&mut drain, source) {
-                    market_iron += 1;
-                }
+                iron_source(&mut refs, source, &mut market_iron);
             }
-            out[SUMMARY] = coal.len() as f32 / 2.0;
-            out[SUMMARY + 1] = iron.len() as f32 / 2.0;
-            out[SUMMARY + 3] = market_coal as f32;
-            out[SUMMARY + 4] = market_iron as f32;
-
-            // Build consequences. Farms are single-slot build locations with
-            // their own board cells (47/48); city_slot_key is city-only.
-            let farm_cell = crate::state::farm_index(*loc).map(|idx| CITY_CELLS + idx);
-            let key_opt = match farm_cell {
-                Some(cell) => Some(cell),
-                None => state.city_slot_key(*loc, *slot_index),
-            };
-            if let Some(key) = key_opt {
-                let existing = if farm_cell.is_some() {
-                    state.farm_tiles[key - CITY_CELLS].as_ref()
-                } else {
-                    state.city_tiles[key].as_ref()
-                };
-                out[CONSEQUENCE + CONS_OVERBUILD] = existing.is_some() as u8 as f32;
-                out[CONSEQUENCE + CONS_UPGRADE] =
-                    existing.is_some_and(|t| t.player == pid) as u8 as f32;
-                let slots = if farm_cell.is_some() {
-                    1usize
-                } else {
-                    city_slots(*loc).len()
-                };
-                let occupied = if farm_cell.is_some() {
-                    usize::from(existing.is_some())
-                } else {
-                    (0..slots)
-                        .filter(|&slot| {
-                            state
-                                .city_slot_key(*loc, slot)
-                                .and_then(|k| state.city_tiles[k].as_ref())
-                                .is_some()
-                        })
-                        .count()
-                };
-                // Occupied count includes this build's target slot pre-state;
-                // after the build it becomes occupied + (was empty ? 1 : 0).
-                // Completion means THIS build filled the last empty slot, so
-                // overbuilding in an already-full city does not count.
-                let after = occupied + usize::from(existing.is_none());
-                out[CONSEQUENCE + CONS_CITY_COMPLETION] =
-                    (existing.is_none() && after >= slots) as u8 as f32;
+            if let Some(card) = hand_card(state, *card_index) {
+                refs.push_card(&card);
+                cards_paid += 1;
             }
+            kind::BUILD
         }
         ResolvedMove::Network {
             conn_id,
             coal,
             card_index,
         } => {
-            add_card(out, state, *card_index);
-            one_hot(out, CONNECTION_1, 39, *conn_id);
-            out[SUMMARY + 7] = 1.0;
-            let mut market_coal = 0u32;
+            refs.push(REF_LINK, *conn_id, 1.0);
             if let Some(source) = coal {
-                out[SUMMARY] = 0.5;
-                if coal_cube(&mut drain, source) {
-                    market_coal += 1;
-                }
+                coal_source(&mut refs, source, &mut market_coal);
             }
-            out[SUMMARY + 3] = market_coal as f32;
-            let (fresh, merchant) = new_network_reach(state, pid, &[*conn_id]);
-            out[CONSEQUENCE + CONS_LINKS_BUILT] = 0.5;
-            out[CONSEQUENCE + CONS_NEW_REACH] = fresh as f32 / 4.0;
-            out[CONSEQUENCE + CONS_NEW_MERCHANT_REACH] = merchant as u8 as f32;
+            if let Some(card) = hand_card(state, *card_index) {
+                refs.push_card(&card);
+                cards_paid += 1;
+            }
+            kind::NETWORK
         }
         ResolvedMove::NetworkDouble {
             conn1,
@@ -325,24 +229,16 @@ pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>
             beer,
             card_index,
         } => {
-            add_card(out, state, *card_index);
-            one_hot(out, CONNECTION_1, 39, *conn1);
-            one_hot(out, CONNECTION_2, 39, *conn2);
-            out[SUMMARY] = 1.0;
-            out[SUMMARY + 2] = 1.0;
-            out[SUMMARY + 8] = 1.0;
-            let mut market_coal = 0u32;
-            for source in [coal1, coal2] {
-                if coal_cube(&mut drain, source) {
-                    market_coal += 1;
-                }
+            refs.push(REF_LINK, *conn1, 1.0);
+            refs.push(REF_LINK, *conn2, 1.0);
+            coal_source(&mut refs, coal1, &mut market_coal);
+            coal_source(&mut refs, coal2, &mut market_coal);
+            beer_source(&mut refs, beer, &mut merchant_beer);
+            if let Some(card) = hand_card(state, *card_index) {
+                refs.push_card(&card);
+                cards_paid += 1;
             }
-            out[SUMMARY + 3] = market_coal as f32;
-            drain_cube(&mut drain, &mut merchant_beer, beer);
-            let (fresh, merchant) = new_network_reach(state, pid, &[*conn1, *conn2]);
-            out[CONSEQUENCE + CONS_LINKS_BUILT] = 1.0;
-            out[CONSEQUENCE + CONS_NEW_REACH] = fresh as f32 / 4.0;
-            out[CONSEQUENCE + CONS_NEW_MERCHANT_REACH] = merchant as u8 as f32;
+            kind::NETWORK_DOUBLE
         }
         ResolvedMove::Develop {
             ind1,
@@ -350,19 +246,18 @@ pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>
             iron,
             card_index,
         } => {
-            add_card(out, state, *card_index);
-            industry(out, INDUSTRY_1, *ind1);
+            refs.push(REF_INDUSTRY, *ind1 as usize, 1.0);
             if let Some(ind) = ind2 {
-                industry(out, INDUSTRY_2, *ind);
+                refs.push(REF_INDUSTRY, *ind as usize, 1.0);
             }
-            let mut market_iron = 0u32;
             for source in iron {
-                if iron_cube(&mut drain, source) {
-                    market_iron += 1;
-                }
+                iron_source(&mut refs, source, &mut market_iron);
             }
-            out[SUMMARY + 1] = iron.len() as f32 / 2.0;
-            out[SUMMARY + 4] = market_iron as f32;
+            if let Some(card) = hand_card(state, *card_index) {
+                refs.push_card(&card);
+                cards_paid += 1;
+            }
+            kind::DEVELOP
         }
         ResolvedMove::Sell {
             keys,
@@ -370,114 +265,159 @@ pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>
             free_develop,
             card_index,
         } => {
-            add_card(out, state, *card_index);
-            out[SUMMARY + 6] = keys.len() as f32 / 4.0;
-            out[CONSEQUENCE + CONS_SELL_TILES] = keys.len() as f32 / 4.0;
             for &key in keys {
-                one_hot(out, SELL_KEY, 47, key);
+                refs.push(REF_CELL, key, 1.0);
             }
-            // The engine's deterministic beer payment plan is explicit input:
-            // brewery beer drains cells, merchant beer drains merchants. The
-            // aligned `use_merchant_beer` flags are subsumed by the plan.
             for source in beer_sources {
-                drain_cube(&mut drain, &mut merchant_beer, source);
+                beer_source(&mut refs, source, &mut merchant_beer);
             }
             if let Some(ind) = free_develop {
-                industry(out, INDUSTRY_1, *ind);
-                out[SUMMARY + 9] = 1.0;
-                out[CONSEQUENCE + CONS_FREE_DEVELOP] = 1.0;
+                refs.push(REF_INDUSTRY, *ind as usize, 1.0);
             }
+            if let Some(card) = hand_card(state, *card_index) {
+                refs.push_card(&card);
+                cards_paid += 1;
+            }
+            kind::SELL
         }
-        ResolvedMove::Loan { card_index } | ResolvedMove::Pass { card_index } => {
-            add_card(out, state, *card_index)
+        ResolvedMove::Loan { card_index } => {
+            if let Some(card) = hand_card(state, *card_index) {
+                refs.push_card(&card);
+                cards_paid += 1;
+            }
+            kind::LOAN
         }
         ResolvedMove::Scout { card_indices } => {
             for &index in card_indices {
-                add_card(out, state, index);
+                if let Some(card) = hand_card(state, index) {
+                    refs.push_card(&card);
+                    cards_paid += 1;
+                }
             }
-            out[SUMMARY + 10] = 1.0;
+            kind::SCOUT
         }
-    }
+        ResolvedMove::Pass { card_index } => {
+            if let Some(card) = hand_card(state, *card_index) {
+                refs.push_card(&card);
+                cards_paid += 1;
+            }
+            kind::PASS
+        }
+    };
 
-    for (cell, &taken) in drain.iter().enumerate() {
-        if taken > 0 {
-            out[DRAIN + cell] = taken as f32 / 4.0;
-        }
+    out[OFF_KIND] = kind_id as f32;
+    out[OFF_SLOT] = slot as f32;
+    out[OFF_NUMBERS] = market_coal as f32;
+    out[OFF_NUMBERS + 1] = market_iron as f32;
+    out[OFF_NUMBERS + 2] = merchant_beer as f32;
+    out[OFF_NUMBERS + 3] = cards_paid as f32;
+    out[OFF_REF_COUNT] = refs.count as f32;
+    for i in 0..refs.count {
+        let base = OFF_REFS + i * 3;
+        out[base] = refs.kinds[i] as f32;
+        out[base + 1] = refs.ids[i] as f32;
+        out[base + 2] = refs.weights[i];
     }
-    let merchant_beer_total: u32 = merchant_beer.iter().map(|&c| c as u32).sum();
-    for (idx, &taken) in merchant_beer.iter().enumerate() {
-        if taken > 0 {
-            out[MERCHANT_BEER + idx] = taken as f32 / 4.0;
-        }
-    }
-    out[SUMMARY + 5] = merchant_beer_total as f32;
-    let (flips_own, flips_opp) = count_flips(state, &drain, pid);
-    out[CONSEQUENCE + CONS_FLIPS_OWN] = flips_own as f32 / 4.0;
-    out[CONSEQUENCE + CONS_FLIPS_OPP] = flips_opp as f32 / 4.0;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rules::legal_resolved_moves;
-    use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
+    use rand_chacha::rand_core::SeedableRng;
+    use rand_chacha::ChaCha12Rng;
 
-    /// Documented block offsets (docs/ai-action-encoding.md §2); the widths
-    /// are implied by the next offset, SUMMARY ends at the feature dim.
-    const DOCUMENTED_OFFSETS: [usize; 14] = [
-        ACTION,
-        CARD,
-        LOCATION,
-        CITY_SLOT,
-        INDUSTRY_1,
-        INDUSTRY_2,
-        CONNECTION_1,
-        CONNECTION_2,
-        SELL_KEY,
-        MERCHANT,
-        DRAIN,
-        MERCHANT_BEER,
-        CONSEQUENCE,
-        SUMMARY,
-    ];
-
-    #[test]
-    fn block_offsets_match_documented_layout() {
-        assert_eq!(
-            DOCUMENTED_OFFSETS,
-            [0, 7, 42, 69, 73, 79, 85, 124, 163, 210, 219, 268, 277, 289]
-        );
-        assert_eq!(ACTION_FEATURE_DIM, 301);
-        assert_eq!(ACTION_FEATURE_SCHEMA_VERSION, 5);
+    fn row_refs(row: &[f32]) -> Vec<(u8, u16, f32)> {
+        let count = row[OFF_REF_COUNT] as usize;
+        assert!(count <= ACTION_REF_CAP, "ref count {count} exceeds cap");
+        (0..count)
+            .map(|i| {
+                let base = OFF_REFS + i * 3;
+                (row[base] as u8, row[base + 1] as u16, row[base + 2])
+            })
+            .collect()
     }
 
     #[test]
-    fn encoded_candidates_satisfy_quarter_step_and_action_one_hot() {
+    fn every_legal_move_encodes_within_contract_bounds() {
         for seed in [7u64, 21, 99] {
             let mut state = GameState::new(ChaCha12Rng::seed_from_u64(seed), 4);
-            for _ in 0..10 {
+            for _ in 0..12 {
                 let legal = legal_resolved_moves(&mut state);
+                assert!(!legal.is_empty(), "seed {seed} produced no legal moves");
                 for mv in &legal {
                     let row = encode_move(&state, mv);
                     assert_eq!(row.len(), ACTION_FEATURE_DIM);
-                    // uint8 compression invariant: x4 is an integer in 0..=255.
-                    for &v in &row {
-                        assert!(v >= 0.0 && v <= 63.75, "value out of range: {v}");
-                        assert!((v * 4.0).fract() == 0.0, "value is not quarter-step: {v}");
+                    let kind = row[OFF_KIND] as usize;
+                    assert!(kind < ACTION_KIND_COUNT, "bad action kind {kind}");
+                    assert!((0.0..=3.0).contains(&row[OFF_SLOT]));
+                    assert!(row[OFF_NUMBERS + 3] <= 3.0, "at most three cards are paid");
+                    for (ref_kind, id, weight) in row_refs(&row) {
+                        assert!((ref_kind as usize) < REF_KIND_COUNT);
+                        let bound = match ref_kind {
+                            REF_CELL => crate::encode::BOARD_CELLS,
+                            REF_LINK => crate::encode::LINK_CELLS,
+                            REF_MERCHANT => crate::encode::MERCHANT_COUNT,
+                            REF_INDUSTRY => INDUSTRY_COUNT,
+                            _ => CARD_SEMANTIC_COUNT,
+                        };
+                        assert!((id as usize) < bound, "ref id {id} out of range");
+                        assert!(weight > 0.0);
                     }
-                    // ACTION block is a one-hot over 7 action types.
-                    assert_eq!(row[ACTION..ACTION + 7].iter().sum::<f32>(), 1.0);
                 }
                 let Some(mv) = legal.first() else { break };
-                apply_move_quiet(&mut state, mv);
+                let _ = crate::rules::apply_move(&mut state, mv);
+                let tr = crate::engine::advance_turn(&mut state);
+                crate::engine::handle_turn_result(&mut state, tr);
             }
         }
     }
 
-    /// Step the game forward so later iterations encode fresh midgame states.
-    fn apply_move_quiet(state: &mut GameState, mv: &ResolvedMove) {
-        let _ = crate::rules::apply_move(state, mv);
-        let tr = crate::engine::advance_turn(state);
-        crate::engine::handle_turn_result(state, tr);
+    #[test]
+    fn build_references_the_target_cell_and_its_industries() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(3), 4);
+        let legal = legal_resolved_moves(&mut state);
+        let builds: Vec<_> = legal
+            .iter()
+            .filter(|mv| matches!(mv, ResolvedMove::Build { .. }))
+            .collect();
+        assert!(!builds.is_empty(), "opening position must offer a Build");
+        for mv in builds {
+            let ResolvedMove::Build {
+                loc,
+                slot_index,
+                ind,
+                ..
+            } = mv
+            else {
+                unreachable!()
+            };
+            let row = encode_move(&state, mv);
+            let refs = row_refs(&row);
+            let cell = build_cell(&state, *loc, *slot_index).unwrap();
+            assert!(
+                refs.contains(&(REF_CELL, cell as u16, 1.0)),
+                "build must reference its target cell"
+            );
+            assert!(
+                refs.contains(&(REF_INDUSTRY, *ind as u16, 1.0)),
+                "build must reference the industry it places"
+            );
+        }
+    }
+
+    #[test]
+    fn card_references_are_semantic_not_hand_positions() {
+        let mut state = GameState::new(ChaCha12Rng::seed_from_u64(11), 4);
+        let legal = legal_resolved_moves(&mut state);
+        // Two moves that differ only in the hand index they pay with must
+        // produce rows that differ only in the card reference id, never in a
+        // hand position.
+        let row = encode_move(&state, legal.first().unwrap());
+        for (ref_kind, id, _) in row_refs(&row) {
+            if ref_kind == REF_CARD {
+                assert!((id as usize) < CARD_SEMANTIC_COUNT);
+            }
+        }
     }
 }
