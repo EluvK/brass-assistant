@@ -262,7 +262,9 @@ pub(crate) fn score_top_network_doubles(
         let income_level = state.players[pid].income_level();
         if income_level < 0 {
             let debt_per_round = (-income_level) as i32;
-            let total_cost = cost1 + cost2 + (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST);
+            let total_cost = cost1
+                + cost2
+                + (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST);
             let remaining = state.players[pid].money - total_cost;
             if remaining < debt_per_round {
                 total -= 6.0 + (debt_per_round - remaining).max(0) as f64 * 0.8;

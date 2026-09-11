@@ -11,7 +11,7 @@ use super::config::HeuristicConfig;
 use super::{Decision, RoundDecision, candidate_actions_k, pass_decision};
 use crate::data::IndustryType;
 use crate::engine::{advance_turn, handle_turn_result};
-use crate::map::{CANAL_LINK_COST, connections};
+use crate::map::{CANAL_LINK_COST, Loc, connections};
 use crate::rules::{ResolvedMove, apply_move, iron_source_options};
 use crate::state::{Card, GameState};
 
@@ -259,9 +259,36 @@ const BREWERY_DEVELOP_SUPPORT_MIN: usize = 3;
 const DEVELOP_MAX_IRON_PRICE: u8 = 3;
 const RESOURCE_FLEX_COAL_SUPPORT_MIN: usize = 1;
 const RESOURCE_FLEX_IRON_SUPPORT_MIN: usize = 1;
+/// Minimum count of iron industry cards or Birmingham cluster city cards
+/// (Coventry, Birmingham, Dudley, Walsall, Tamworth) required to commit
+/// to the fixed resource network opening; otherwise fall back to a loan.
+const RESOURCE_NETWORK_CARD_SUPPORT_MIN: usize = 2;
 /// Fixed openings carry no calibrated VP score: they are not chosen against
 /// scored candidates, so callers must not compare this with evaluator scores.
 const FIXED_OPENING_SCORE: f64 = 0.0;
+
+/// Check if a hand card is an iron industry card or a location card in the
+/// Birmingham cluster (Coventry, Birmingham, Dudley, Walsall, Tamworth).
+/// Wild industry and wild location cards also qualify.
+fn is_birmingham_cluster_or_iron_card(card: &Card) -> bool {
+    match card {
+        Card::Industry { .. } => card.is_industry(IndustryType::IronWorks),
+        Card::Location(loc) => matches!(
+            loc,
+            Loc::Coventry | Loc::Birmingham | Loc::Dudley | Loc::Walsall | Loc::Tamworth
+        ),
+        Card::WildIndustry | Card::WildLocation => true,
+    }
+}
+
+/// Count of iron industry cards and Birmingham cluster location cards held in hand.
+fn birmingham_cluster_or_iron_card_count(state: &GameState, pid: usize) -> usize {
+    state.players[pid]
+        .hand
+        .iter()
+        .filter(|card| is_birmingham_cluster_or_iron_card(card))
+        .count()
+}
 
 /// Candidate pool for the fixed "resource link" opening (rule 3's road
 /// alternative).  Every entry is a Canal-era connection that touches a
@@ -270,28 +297,26 @@ const FIXED_OPENING_SCORE: f64 = 0.0;
 /// per-position hash so different seeds/players/hands do not always open the
 /// same first route.
 #[rustfmt::skip]
-const RESOURCE_OPENING_ROUTES: [usize; 8] = [
-    // Routes whose two endpoints both offer coal or iron.
-    17, // Cannock-Walsall
+const RESOURCE_OPENING_ROUTES: [usize; 4] = [
+    7,  // Birmingham-Tamworth
+    8,  // Birmingham-Walsall
+    14, // Burton-Walsall
+    21, // Coalbrookdale-Wolverhampton
+    // 17, // Cannock-Walsall
     // 11, // Burton-Derby
-    38, // Walsall-Wolverhampton
+    // 38, // Walsall-Wolverhampton
     // 0,  // Belper-Derby
     // 34, // Stoke-Stone
     // 30, // Leek-Stoke
-    // Routes that put a coal/iron city within one link of the network core.
-    7,  // Birmingham-Tamworth
-    8,  // Birmingham-Walsall
     // 3,  // Birmingham-Dudley
     // 2,  // Birmingham-Coventry
-    13, // Burton-Tamworth
-    12, // Burton-Stone
+    // 13, // Burton-Tamworth
+    // 12, // Burton-Stone
     // 9,  // Birmingham-Worcester
-    14, // Burton-Walsall
     // 15, // Cannock-Stafford
     // 16, // Cannock-BreweryNorth
     // 18, // Cannock-Wolverhampton
     // 19, // Coalbrookdale-Kidderminster
-    21, // Coalbrookdale-Wolverhampton
     // 25, // Dudley-Kidderminster
     // 26, // Dudley-Wolverhampton
     // 29, // Kidderminster-Worcester
@@ -316,9 +341,15 @@ enum OpeningRule {
     /// pivots to the fixed coal+iron double-develop.
     ResourceDevelop,
     /// Same predecessor/hand situation as [`OpeningRule::ResourceDevelop`],
-    /// but when market iron is above the develop cap the fixed fallback lays
-    /// a resource link instead (no direct merchant route).
+    /// but when market iron is above the develop cap and the hand holds
+    /// ≥2 iron industry or Birmingham cluster cards, the fixed fallback
+    /// lays a resource link instead (no direct merchant route).
     ResourceNetwork,
+    /// A predecessor already spent £0 and market iron is above the develop
+    /// cap, but the hand lacks sufficient Birmingham cluster / iron support
+    /// (≥2 cards) for a safe network opening: take a second loan to secure
+    /// round-2 position and cash.
+    SecondLoan,
 }
 
 impl OpeningRule {
@@ -328,7 +359,7 @@ impl OpeningRule {
     /// always executable, so no fallible result is needed here.
     fn fixed_move(self, state: &GameState) -> ResolvedMove {
         match self {
-            OpeningRule::LoanForInitiative => ResolvedMove::Loan {
+            OpeningRule::LoanForInitiative | OpeningRule::SecondLoan => ResolvedMove::Loan {
                 card_index: weakest_discard_index(state),
             },
             OpeningRule::BreweryDevelop => {
@@ -491,7 +522,10 @@ fn opening_rule(state: &GameState) -> Option<OpeningRule> {
         if state.iron_price() <= DEVELOP_MAX_IRON_PRICE {
             return Some(OpeningRule::ResourceDevelop);
         }
-        return Some(OpeningRule::ResourceNetwork);
+        if birmingham_cluster_or_iron_card_count(state, pid) >= RESOURCE_NETWORK_CARD_SUPPORT_MIN {
+            return Some(OpeningRule::ResourceNetwork);
+        }
+        return Some(OpeningRule::SecondLoan);
     }
     None
 }
@@ -702,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_network_is_the_fixed_fallback_when_iron_is_too_expensive() {
+    fn second_loan_is_the_fixed_fallback_when_iron_is_too_expensive_and_support_lacking() {
         let mut state = first_round_state(55, 4, 1);
         let pid = state.current_player_id();
         let mut hand = vec![
@@ -710,6 +744,28 @@ mod tests {
             industry(IndustryType::IronWorks),
         ];
         hand.extend(filler_cards(6));
+        state.players[pid].hand = hand;
+        state.iron_market = 0; // empty market: iron price 6 > 3, no develop
+        state.money_spent_this_round[0] = 0;
+
+        assert_eq!(opening_rule(&state), Some(OpeningRule::SecondLoan));
+        let decision = choose_opening(&mut state).expect("opening candidate");
+        match decision.mv {
+            ResolvedMove::Loan { .. } => {}
+            other => panic!("insufficient support should fall back to second loan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resource_network_is_the_fixed_fallback_when_iron_is_too_expensive() {
+        let mut state = first_round_state(55, 4, 1);
+        let pid = state.current_player_id();
+        let mut hand = vec![
+            industry(IndustryType::CoalMine),
+            industry(IndustryType::IronWorks),
+            Card::Location(Loc::Birmingham),
+        ];
+        hand.extend(filler_cards(5));
         state.players[pid].hand = hand;
         state.iron_market = 0; // empty market: iron price 6 > 3, no develop
         state.money_spent_this_round[0] = 0;
