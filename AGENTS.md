@@ -14,6 +14,7 @@ docs 目录下的 `*.md` 为本项目有效文档，需要优先参考这些文�
 
 - `docs/brass-birmingham-rules.md`：完整游戏规则文档
 - `docs/ai-tools.md`：Python AI 模块架构与操作手册
+- `docs/training-guide.md`：AI 训练全流程、指标速查与模型资产管理手册
 - `docs/ai-action-encoding.md`：动作特征编码说明
 - `docs/engine-tools.md`：Rust 游戏引擎相关文档
 

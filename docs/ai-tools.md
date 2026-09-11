@@ -55,6 +55,8 @@ Python adapter 与 checkpoint 会拒绝未知 schema（`ACTION_SCHEMA_VERSION`�
 python/
 |- bootstrap_imitation.py     heuristic imitation warm-start 入口
 |- selfplay_train.py          长期 self-play 训练入口（阶段 3）
+|- bench_value_ranking.py     Q(s,a) 与 V(s) 动作/价值排序体检探针
+|- inspect_ckpt.py            模型权重、Schema 兼容性与元数据检查工具
 |- brass_ai/
 |  |- hierarchical_policy.py  Rust 候选动作和 teacher adapter
 |  |- net.py                  PolicyValueNet

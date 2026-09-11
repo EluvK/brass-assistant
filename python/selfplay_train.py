@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -206,7 +207,22 @@ def main() -> int:
 
         def on_iteration(stats, live_net, live_trainer) -> None:
             write_metrics(metrics_path, stats)
-            _atomic_save(live_trainer.state_dict(), latest)
+            payload = live_trainer.state_dict()
+            payload["meta"] = {
+                "type": "selfplay",
+                "run_id": ckpt_dir.name,
+                "iteration": stats.iteration,
+                "parent": str(args.init_from) if args.init_from else ("resumed" if args.resume else "scratch"),
+                "avg_vp": round(stats.avg_vp, 2),
+                "winner_avg_vp": round(stats.winner_avg_vp, 2),
+                "min_vp": stats.min_vp,
+                "max_vp": stats.max_vp,
+                "arena_winrate": round(stats.arena_winrate, 3),
+                "heuristic_winrate": round(stats.heuristic_winrate, 3) if stats.heuristic_winrate is not None else None,
+                "promoted": stats.promoted,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            _atomic_save(payload, latest)
             meta_path.write_text(json.dumps({
                 "iteration": stats.iteration,
                 "samples": stats.samples,
@@ -219,7 +235,7 @@ def main() -> int:
                 "promoted": stats.promoted,
             }, indent=2))
             if stats.promoted:
-                _atomic_save(live_trainer.state_dict(), best)
+                _atomic_save(payload, best)
             loss = stats.losses
             vp_str = (
                 f"vp {stats.avg_vp:.1f} (win {stats.winner_avg_vp:.1f} min {stats.min_vp:.0f} max {stats.max_vp:.0f})"

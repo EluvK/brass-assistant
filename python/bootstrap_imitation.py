@@ -136,7 +136,7 @@ def main():
             trainer.load_state_dict(checkpoint)
             print(f"resumed trainer state from {ckpt_path} (completed epochs: {trainer.epoch_count})")
 
-        def save_checkpoint() -> None:
+        def save_checkpoint(extra_meta: dict | None = None) -> None:
             """Avoid leaving a half-written checkpoint after an interruption."""
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
@@ -145,7 +145,19 @@ def main():
             ) as f:
                 tmp_path = Path(f.name)
             try:
-                torch.save(trainer.state_dict(), tmp_path)
+                payload = trainer.state_dict()
+                meta = {
+                    "type": "imitation_bootstrap",
+                    "games": args.games,
+                    "epochs": args.epochs,
+                    "epoch": trainer.epoch_count,
+                    "min_vp_filter": args.min_vp,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                if extra_meta:
+                    meta.update(extra_meta)
+                payload["meta"] = meta
+                torch.save(payload, tmp_path)
                 os.replace(tmp_path, ckpt_path)
             finally:
                 if tmp_path.exists():
@@ -208,6 +220,11 @@ def main():
         print(f"MCTS(bootstrap net) vs heuristic: win_rate={result['win_rate']:.0%} "
               f"(mcts_vp={result['mcts_mean']:.1f} "
               f"vs heuristic_vp={result['base_mean']:.1f})")
+        save_checkpoint({
+            "vs_heuristic_winrate": round(float(result["win_rate"]), 3),
+            "vs_heuristic_mcts_vp": round(float(result["mcts_mean"]), 1),
+            "vs_heuristic_vp": round(float(result["base_mean"]), 1),
+        })
         print(f"checkpoint saved: {ckpt_path}")
         succeeded = True
     finally:
