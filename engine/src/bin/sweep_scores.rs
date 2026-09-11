@@ -12,6 +12,7 @@ use _engine::game_loop::{self, AfterEra, GameHooks, LoopOutcome};
 use _engine::state::GameState;
 use rand_chacha::rand_core::SeedableRng;
 use rayon::prelude::*;
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 #[derive(Default)]
@@ -147,10 +148,12 @@ fn main() {
     let canal_only = matches!(args.get(4).map(String::as_str), Some("canal"));
     let players: usize = 4;
 
+    let sweep_start = Instant::now();
     let results: Vec<SweepResult> = (start..end)
         .into_par_iter()
         .map(|seed| play_one(seed, players, canal_only))
         .collect();
+    let total_elapsed = sweep_start.elapsed();
 
     if canal_only {
         println!(
@@ -161,19 +164,28 @@ fn main() {
             "seed,p0,p1,p2,p3,avg,income0,income1,income2,income3,money0,money1,money2,money3,canal_income0,canal_income1,canal_income2,canal_income3,elapsed_us"
         );
     }
+
+    if results.is_empty() {
+        eprintln!("[sweep_scores]: 0 games evaluated");
+        return;
+    }
+
+    let n = results.len() as f64;
     let mut illegal = 0;
     let mut stuck = 0;
-    let game_mean = mean(
-        results
-            .iter()
-            .map(|r| r.vp.iter().sum::<i64>() as f64 / players as f64),
-    );
-    let winner_mean = mean(
-        results
-            .iter()
-            .map(|r| r.vp.iter().max().copied().unwrap_or(0) as f64),
-    );
-    let time_mean = mean(results.iter().map(|r| r.elapsed_us as f64));
+
+    let mut winner_scores = Vec::with_capacity(results.len());
+    let mut min_scores = Vec::with_capacity(results.len());
+    let mut game_avgs = Vec::with_capacity(results.len());
+
+    let mut seat_vp_sums = [0i64; 4];
+    let mut seat_wins = [0usize; 4];
+    let mut seat_final_income_sums = [0i64; 4];
+    let mut seat_final_money_sums = [0i64; 4];
+    let mut seat_canal_income_sums = [0i64; 4];
+    let mut action_sums = [0u64; 6];
+    let mut flipped_sum = 0u64;
+    let mut links_sum = 0u64;
 
     for r in &results {
         if r.illegal {
@@ -182,7 +194,31 @@ fn main() {
         if r.stuck {
             stuck += 1;
         }
+
+        let w = r.vp.iter().copied().max().unwrap_or(0);
+        let m = r.vp.iter().copied().min().unwrap_or(0);
         let avg = r.vp.iter().sum::<i64>() as f64 / players as f64;
+
+        winner_scores.push(w);
+        min_scores.push(m);
+        game_avgs.push(avg);
+
+        for p in 0..players.min(4) {
+            seat_vp_sums[p] += r.vp[p];
+            if r.vp[p] == w {
+                seat_wins[p] += 1;
+            }
+            seat_final_income_sums[p] += r.final_income[p] as i64;
+            seat_final_money_sums[p] += r.final_money[p] as i64;
+            seat_canal_income_sums[p] += r.canal_income[p] as i64;
+        }
+
+        for (i, &act) in r.actions.iter().enumerate() {
+            action_sums[i] += act;
+        }
+        flipped_sum += r.flipped;
+        links_sum += r.links;
+
         if canal_only {
             println!(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -191,7 +227,7 @@ fn main() {
                 r.vp[1],
                 r.vp[2],
                 r.vp[3],
-                r.vp.iter().max().copied().unwrap_or(0),
+                w,
                 r.actions[0],
                 r.actions[1],
                 r.actions[2],
@@ -227,15 +263,138 @@ fn main() {
             );
         }
     }
+
+    let winner_mean = mean(winner_scores.iter().map(|&s| s as f64));
+    let winner_min = winner_scores.iter().copied().min().unwrap_or(0);
+    let winner_max = winner_scores.iter().copied().max().unwrap_or(0);
+
+    let game_mean = mean(game_avgs.iter().copied());
+    let game_min = game_avgs.iter().copied().fold(f64::INFINITY, f64::min);
+    let game_max = game_avgs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    let min_mean = mean(min_scores.iter().map(|&s| s as f64));
+    let min_min = min_scores.iter().copied().min().unwrap_or(0);
+    let min_max = min_scores.iter().copied().max().unwrap_or(0);
+
+    let time_mean = mean(results.iter().map(|r| r.elapsed_us as f64));
+
     eprintln!(
-        "[sweep_scores]:\n\nscope={} games={} policy={} illegal={} stuck={}\nwinner_mean={:.3}\ngame_mean={:.3}\ntime_mean_us={:.1}",
+        "\n[sweep_scores]:\nscope={} games={} policy={} illegal={} stuck={}\nwinner_mean={:.3} (min={}, max={})\ngame_mean={:.3} (min={:.1}, max={:.1})\nlowest_mean={:.3} (min={}, max={})\ntime_mean_us={:.1} (total={:.2?}, {:.1} games/s)",
         if canal_only { "canal" } else { "full" },
         results.len(),
         policy,
         illegal,
         stuck,
         winner_mean,
+        winner_min,
+        winner_max,
         game_mean,
+        game_min,
+        game_max,
+        min_mean,
+        min_min,
+        min_max,
         time_mean,
+        total_elapsed,
+        if total_elapsed.as_secs_f64() > 0.0 {
+            results.len() as f64 / total_elapsed.as_secs_f64()
+        } else {
+            0.0
+        },
     );
+
+    if canal_only {
+        eprintln!("\nSeat Breakdown:");
+        eprintln!(
+            "  {:>4}   {:>8}   {:>8}   {:>12}",
+            "Seat", "Avg VP", "Win Rate", "Canal Income"
+        );
+        eprintln!("  {:-<4}   {:-<8}   {:-<8}   {:-<12}", "", "", "", "");
+        for p in 0..players.min(4) {
+            eprintln!(
+                "    P{}   {:>8.2}   {:>7.1}%   {:>12.2}",
+                p,
+                seat_vp_sums[p] as f64 / n,
+                (seat_wins[p] as f64 / n) * 100.0,
+                seat_canal_income_sums[p] as f64 / n,
+            );
+        }
+
+        let total_actions: u64 = action_sums.iter().sum();
+        eprintln!("\nCanal Actions Breakdown (total={}):", total_actions);
+        let act_names = ["Build", "Network", "Develop", "Sell", "Loan", "Pass"];
+        for (i, name) in act_names.iter().enumerate() {
+            let cnt = action_sums[i];
+            let pct = if total_actions > 0 {
+                (cnt as f64 / total_actions as f64) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("  {:>8}: {:>6} ({:>5.1}%)", name, cnt, pct);
+        }
+        eprintln!(
+            "  Avg Flipped Tiles: {:.2}, Avg Built Links: {:.2}",
+            flipped_sum as f64 / n,
+            links_sum as f64 / n
+        );
+    } else {
+        eprintln!("\nSeat Breakdown:");
+        eprintln!(
+            "  {:>4}   {:>8}   {:>8}   {:>12}   {:>11}   {:>12}",
+            "Seat", "Avg VP", "Win Rate", "Final Income", "Final Money", "Canal Income"
+        );
+        eprintln!(
+            "  {:-<4}   {:-<8}   {:-<8}   {:-<12}   {:-<11}   {:-<12}",
+            "", "", "", "", "", ""
+        );
+        for p in 0..players.min(4) {
+            eprintln!(
+                "    P{}   {:>8.2}   {:>7.1}%   {:>12.2}   {:>11.2}   {:>12.2}",
+                p,
+                seat_vp_sums[p] as f64 / n,
+                (seat_wins[p] as f64 / n) * 100.0,
+                seat_final_income_sums[p] as f64 / n,
+                seat_final_money_sums[p] as f64 / n,
+                seat_canal_income_sums[p] as f64 / n,
+            );
+        }
+    }
+
+    let min_tier = min_min.div_euclid(20) * 20;
+    let max_tier = min_max.div_euclid(20) * 20;
+
+    let mut tier_counts = BTreeMap::<i64, usize>::new();
+    for &score in &min_scores {
+        *tier_counts.entry(score.div_euclid(20) * 20).or_insert(0) += 1;
+    }
+
+    let max_count = tier_counts.values().copied().max().unwrap_or(1);
+    let max_bar_width = 40;
+
+    eprintln!("\nLowest Score Distribution (20 VP tiers):");
+    eprintln!(
+        "  {:>11}   {:>6}   {:>7}   {}",
+        "Tier Range", "Count", "Percent", "Histogram"
+    );
+    eprintln!("  {:-<11}   {:-<6}   {:-<7}   {:-<40}", "", "", "", "");
+    let mut tier = min_tier;
+    while tier <= max_tier {
+        let count = tier_counts.get(&tier).copied().unwrap_or(0);
+        let pct = (count as f64 / n) * 100.0;
+        let bar_len = if max_count > 0 {
+            ((count as f64 / max_count as f64) * max_bar_width as f64).round() as usize
+        } else {
+            0
+        };
+        let bar = "#".repeat(bar_len);
+        eprintln!(
+            "  [{:>3}, {:>3}]:   {:>6}   {:>6.1}%   {}",
+            tier,
+            tier + 19,
+            count,
+            pct,
+            bar
+        );
+        tier += 20;
+    }
 }
