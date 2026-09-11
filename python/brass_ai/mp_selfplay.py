@@ -80,13 +80,14 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
                         if np.random.rand() < mm_prob:
                             opp = pool[np.random.randint(len(pool))]
                             roles[seat] = opp.search
-                    samples, _ = play_game_with_roles(
+                    samples, vps = play_game_with_roles(
                         roles, cfg, collect={learner}, stats=stats
                     )
                 else:
-                    samples, _ = play_game_with_roles(
+                    samples, vps = play_game_with_roles(
                         [mcts.search] * 4, cfg, stats=stats
                     )
+                stats["vps"] = [float(x) for x in vps]
                 result_queue.put(("SAMPLES", _pack_samples(samples, stats)))
             except RuntimeError as exc:
                 if "samples discarded" not in str(exc):
@@ -107,6 +108,7 @@ def _pack_samples(samples: list[Sample], stats: dict | None = None) -> dict:
         "failed_applies": int((stats or {}).get("failed_applies", 0)),
         "rewritten_applies": int((stats or {}).get("rewritten_applies", 0)),
         "moves": int((stats or {}).get("moves", 0)),
+        "vps": [float(x) for x in (stats or {}).get("vps", [])],
     }
     n = len(samples)
     if n and samples[0].policy_by_canonical is not None:
@@ -271,6 +273,7 @@ class SelfPlayPool:
         prog = Progress(total_games, f"selfplay w={self.n_workers} sims={sims}")
         samples = []
         counts = []
+        game_vps = []
         failed_applies = 0
         rewritten_applies = 0
         move_total = 0
@@ -289,6 +292,8 @@ class SelfPlayPool:
                 failed_applies += int(payload.get("failed_applies", 0))
                 rewritten_applies += int(payload.get("rewritten_applies", 0))
                 move_total += int(payload.get("moves", 0))
+                if payload.get("vps"):
+                    game_vps.append(payload["vps"])
                 games_received += 1
                 if verbose:
                     prog.update(games_received)
@@ -299,6 +304,7 @@ class SelfPlayPool:
             "rewritten_applies": rewritten_applies,
             "moves": move_total,
             "games": games_received,
+            "game_vps": game_vps,
         }
         return samples, counts
 

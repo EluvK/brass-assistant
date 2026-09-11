@@ -39,6 +39,7 @@ import torch
 from .evaluate import benchmark_net_vs_heuristic
 from .mp_selfplay import SelfPlayPool
 from .net import PolicyValueNet
+from .progress import Progress
 from .rust_mcts import RustISMCTS, RustMCTSConfig
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .train import TrainConfig, Trainer
@@ -173,6 +174,10 @@ class IterationStats:
     failed_applies: int = 0
     rewritten_applies: int = 0
     moves: int = 0
+    avg_vp: float = 0.0
+    min_vp: float = 0.0
+    max_vp: float = 0.0
+    winner_avg_vp: float = 0.0
     arena_wins: int = 0
     arena_games: int = 0
     arena_winrate: float = 0.0
@@ -203,6 +208,7 @@ def arena_winrate(
     noise; seeds are fixed per index so every checkpoint faces the same deals.
     """
     wins = 0
+    prog = Progress(games, f"arena sims={sims}")
     for game in range(games):
         seat = game % players
         roles = [opponent.search] * players
@@ -217,6 +223,8 @@ def arena_winrate(
         samples, _ = play_game_with_roles(roles, game_cfg, collect={seat})
         if samples and int(np.argmax(samples[0].winner)) == seat:
             wins += 1
+        prog.update(game + 1)
+    prog.done()
     return wins, games
 
 
@@ -286,6 +294,9 @@ def run_selfplay(
                         "dirichlet_weight": cfg.mcts.dirichlet_weight,
                         "batch_size": cfg.mcts.batch_size,
                         "candidate_k": cfg.mcts.candidate_k,
+                        "prior_top_k": cfg.mcts.prior_top_k,
+                        "fpu": cfg.mcts.fpu,
+                        "q_init": cfg.mcts.q_init,
                     },
                     temperature=cfg.selfplay.temperature,
                     mm_pool=opponent_pool,
@@ -302,6 +313,13 @@ def run_selfplay(
             stats.failed_applies = int(diagnostics.get("failed_applies", 0))
             stats.rewritten_applies = int(diagnostics.get("rewritten_applies", 0))
             stats.moves = int(diagnostics.get("moves", 0))
+            game_vps = diagnostics.get("game_vps", [])
+            if game_vps:
+                all_vps = [float(vp) for g in game_vps for vp in g]
+                stats.avg_vp = float(np.mean(all_vps))
+                stats.min_vp = float(np.min(all_vps))
+                stats.max_vp = float(np.max(all_vps))
+                stats.winner_avg_vp = float(np.mean([max(g) for g in game_vps]))
 
             buffer.add(samples)
             buffer.trim()
@@ -360,7 +378,7 @@ def _play_batch_local(
     """Single-process actor path (workers == 1); also used by smoke tests."""
     samples: list[Sample] = []
     totals = {"failed_applies": 0, "rewritten_applies": 0, "moves": 0,
-              "games": 0, "truncated": 0}
+              "games": 0, "truncated": 0, "game_vps": []}
     for game in range(cfg.games_per_iter):
         game_cfg = replace(
             cfg.selfplay,
@@ -369,7 +387,7 @@ def _play_batch_local(
         )
         stats: dict = {}
         try:
-            game_samples, _ = play_game_with_roles(
+            game_samples, vps = play_game_with_roles(
                 [mcts.search] * 4, game_cfg, stats=stats
             )
         except RuntimeError as exc:
@@ -380,6 +398,8 @@ def _play_batch_local(
             totals["truncated"] += 1
             continue
         samples.extend(game_samples)
+        if vps:
+            totals["game_vps"].append([float(x) for x in vps])
         for key in totals:
             if key in stats:
                 totals[key] += int(stats[key])

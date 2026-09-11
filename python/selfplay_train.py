@@ -88,10 +88,18 @@ def main() -> int:
     parser.add_argument("--max-candidate-batch", type=int, default=65_536)
     parser.add_argument("--materialize-workers", type=int, default=min(8, os.cpu_count() or 1))
     # Search.
-    parser.add_argument("--c-puct", type=float, default=1.0,
-                        help="PUCT exploration constant; re-tune whenever --prior-top-k changes")
+    parser.add_argument("--c-puct", type=float, default=0.25,
+                        help="PUCT exploration constant (scaled to VP_SCALE=50, default: 0.25)")
     parser.add_argument("--prior-top-k", type=int, default=16,
                         help="search only the K highest-prior legal moves (0 = search every legal move)")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="initial move sampling temperature (default: 0.0 for greedy best-visit)")
+    parser.add_argument("--temperature-warmup-moves", type=int, default=0,
+                        help="moves to hold initial temperature before decay")
+    parser.add_argument("--temperature-decay-moves", type=int, default=0,
+                        help="moves over which temperature decays to temperature-final")
+    parser.add_argument("--temperature-final", type=float, default=0.0,
+                        help="final sampling temperature")
     parser.add_argument("--no-fpu", action="store_true",
                         help="treat unvisited children as worth 0 instead of the parent's value")
     parser.add_argument("--no-q-init", action="store_true",
@@ -173,7 +181,13 @@ def main() -> int:
                 q_init=not args.no_q_init,
                 device=args.device,
             ),
-            selfplay=SelfPlayConfig(max_moves=args.max_moves),
+            selfplay=SelfPlayConfig(
+                max_moves=args.max_moves,
+                temperature=args.temperature,
+                temperature_warmup_moves=args.temperature_warmup_moves,
+                temperature_decay_moves=args.temperature_decay_moves,
+                temperature_final=args.temperature_final,
+            ),
             mm_prob=args.mm_prob,
             pool_size=args.pool_size,
             max_buffer_samples=args.buffer_samples,
@@ -198,6 +212,8 @@ def main() -> int:
                 "samples": stats.samples,
                 "buffer": stats.buffer,
                 "trained": stats.trained,
+                "avg_vp": stats.avg_vp,
+                "winner_avg_vp": stats.winner_avg_vp,
                 "arena_winrate": stats.arena_winrate,
                 "heuristic_winrate": stats.heuristic_winrate,
                 "promoted": stats.promoted,
@@ -205,15 +221,21 @@ def main() -> int:
             if stats.promoted:
                 _atomic_save(live_trainer.state_dict(), best)
             loss = stats.losses
+            vp_str = (
+                f"vp {stats.avg_vp:.1f} (win {stats.winner_avg_vp:.1f} min {stats.min_vp:.0f} max {stats.max_vp:.0f})"
+                if stats.games > 0 and stats.avg_vp > 0 else "vp --"
+            )
             print(
-                f"it {stats.iteration:>4}  samples {stats.samples:>6}  "
-                f"buffer {stats.buffer:>7}  "
-                f"policy {loss.get('policy', float('nan')):.3f} "
-                f"rank {loss.get('rank', float('nan')):.3f}  "
-                f"sp {stats.selfplay_sec:5.1f}s tr {stats.train_sec:5.1f}s "
-                f"ev {stats.eval_sec:5.1f}s  "
+                f"it {stats.iteration:>4}  samples {stats.samples:>5}  "
+                f"buf {stats.buffer:>6}  "
+                f"pol {loss.get('policy', float('nan')):.3f} "
+                f"val {loss.get('value', float('nan')):.3f} "
+                f"win {loss.get('winner', float('nan')):.3f} "
+                f"q {loss.get('q', float('nan')):.3f}  "
+                f"{vp_str}  "
+                f"sp {stats.selfplay_sec:4.0f}s tr {stats.train_sec:3.0f}s ev {stats.eval_sec:3.0f}s  "
                 f"arena {stats.arena_winrate:.0%} (lo {stats.arena_lower:.0%})  "
-                f"heuristic {('%.0f%%' % (100 * stats.heuristic_winrate)) if stats.heuristic_winrate is not None else '--'}  "
+                f"heur {('%.0f%%' % (100 * stats.heuristic_winrate)) if stats.heuristic_winrate is not None else '--'}  "
                 f"reuse {stats.rewritten_applies}/{stats.failed_applies}"
                 + ("  PROMOTED" if stats.promoted else "")
             )
