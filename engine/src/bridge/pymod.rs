@@ -25,7 +25,7 @@
 //! (~100x the Rust compute for a full-legal candidate matrix).
 
 use numpy::{PyArray1, PyArray2, PyArrayMethods};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use rand::SeedableRng;
@@ -157,7 +157,7 @@ impl PyGame {
         Bound<'py, PyArray1<f32>>,
     )> {
         let dim = crate::bridge::action_features::ACTION_FEATURE_DIM;
-        let PyGame { state } = restore_snapshot(&snapshot)?;
+        let PyGame { state, .. } = restore_snapshot(&snapshot)?;
         let pid = state.current_player_id();
         let era = match state.era {
             crate::data::Era::Canal => 0u8,
@@ -732,6 +732,16 @@ impl PyGame {
             d.score,
         )
     }
+
+    fn choose_heuristic_round(&self) -> (String, Option<String>, f64) {
+        let mut state = self.state.clone();
+        let d = heuristic_ai::choose_action(&mut state);
+        (
+            move_codec::encode(&d.mv),
+            d.second.as_ref().map(|s| move_codec::encode(&s.mv)),
+            d.score,
+        )
+    }
 }
 
 fn restore_snapshot(snapshot: &[u8]) -> PyResult<PyGame> {
@@ -819,10 +829,94 @@ fn coalesce_equivalent_policy<'py>(
     Ok(PyArray1::from_vec(py, out))
 }
 
+/// Play one complete game with the engine's default heuristic policy (including
+/// lookahead round planning) and record the per-move snapshots and canonical moves.
+/// Returns (steps, canal_econ, final_econ, vps, final_ranking).
+#[pyfunction]
+#[pyo3(signature = (seed, players=4, max_moves=600))]
+fn simulate_heuristic_game<'py>(
+    py: Python<'py>,
+    seed: u64,
+    players: usize,
+    max_moves: usize,
+) -> PyResult<(
+    Vec<(usize, u8, Bound<'py, PyBytes>, String)>,
+    Vec<(i32, i32)>,
+    Vec<(i32, i32)>,
+    Vec<i32>,
+    Vec<usize>,
+)> {
+    if !(2..=4).contains(&players) {
+        return Err(PyValueError::new_err(format!(
+            "players must be 2..=4, got {players}"
+        )));
+    }
+    let rng = ChaCha12Rng::seed_from_u64(seed);
+    let mut state = GameState::new(rng, players);
+    let mut steps = Vec::new();
+    let mut canal_econ = Vec::new();
+
+    let mut before_move = |s: &mut GameState, mv: &crate::rules::ResolvedMove| {
+        let pid = s.current_player_id();
+        let era = match s.era {
+            crate::data::Era::Canal => 0u8,
+            crate::data::Era::Rail => 1u8,
+        };
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(SNAPSHOT_MAGIC);
+        snapshot.push(SNAPSHOT_VERSION);
+        if let Ok(b) = s.snapshot_bytes() {
+            snapshot.extend_from_slice(&b);
+        }
+        let py_bytes = PyBytes::new(py, &snapshot);
+        let canon = move_codec::encode(mv);
+        steps.push((pid, era, py_bytes, canon));
+    };
+
+    let mut after_era = |s: &mut GameState, era: crate::data::Era| {
+        if era == crate::data::Era::Canal {
+            canal_econ = s
+                .players
+                .iter()
+                .map(|p| (p.income_level() as i32, p.money))
+                .collect();
+        }
+    };
+
+    let hooks = crate::gameplay::game_loop::GameHooks {
+        before_move: Some(&mut before_move),
+        after_era: Some(&mut after_era),
+        ..Default::default()
+    };
+
+    let outcome = crate::gameplay::game_loop::play_rounds(&mut state, max_moves, hooks, |s| {
+        heuristic_ai::choose_action(s).into_moves()
+    });
+
+    if outcome != crate::gameplay::game_loop::LoopOutcome::GameOver {
+        return Err(PyRuntimeError::new_err(format!(
+            "heuristic game seed={seed} did not reach game over (outcome: {outcome:?})"
+        )));
+    }
+
+    crate::gameplay::game_loop::finish_game(&mut state);
+
+    let final_econ = state
+        .players
+        .iter()
+        .map(|p| (p.income_level() as i32, p.money))
+        .collect();
+    let vps = state.players.iter().map(|p| p.vp as i32).collect();
+    let final_ranking = crate::scoring::final_ranking(&state);
+
+    Ok((steps, canal_econ, final_econ, vps, final_ranking))
+}
+
 #[pymodule(name = "_engine")]
 fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
     m.add_function(wrap_pyfunction!(coalesce_equivalent_policy, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate_heuristic_game, m)?)?;
     m.add(
         "ACTION_FEATURE_DIM",
         crate::bridge::action_features::ACTION_FEATURE_DIM,

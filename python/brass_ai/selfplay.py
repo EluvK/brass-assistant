@@ -442,50 +442,21 @@ def _generate_imitation_game(args):
     """Generate one heuristic game in a worker process."""
     seed, players, max_moves = args
 
-    state = be.GameState(seed=seed, players=players)
+    steps, canal_econ_raw, final_econ_raw, vps_raw, ranking = be.simulate_heuristic_game(
+        seed=seed, players=players, max_moves=max_moves
+    )
+    vps = np.asarray(vps_raw, dtype=np.float64)
+    value, winner = _value_targets(vps, ranking, players)
+    canal_econ = {p: np.asarray(e, dtype=np.float32) for p, e in enumerate(canal_econ_raw)}
+    final_econ = {p: np.asarray(e, dtype=np.float32) for p, e in enumerate(final_econ_raw)}
+
     local = []
-    canal_samples: list[Sample] = []
-    moves = 0
-    while not state.game_over and moves < max_moves:
-        moves += 1
-        pid = state.current_player_id
-        # Full-legal training stores only a snapshot and teacher action. The
-        # complete candidate matrix is materialized once in the trainer.
-        _features, _scores, _card_scores, canon, _index, _score, _card_score = (
-            encode_teacher_candidates(state)
-        )
+    for pid, era, snapshot, canon in steps:
+        econ = canal_econ[pid] if era == 0 else final_econ[pid]
         local.append(Sample(
-            pid=pid, era=state.era, value=0.0, winner=0.0,
-            snapshot=bytes(state.snapshot()), teacher_canonical=canon,
+            pid=pid, era=era, value=value, winner=winner,
+            econ=econ, snapshot=bytes(snapshot), teacher_canonical=canon,
         ))
-        if state.era == 0:
-            canal_samples.append(local[-1])
-        try:
-            prev_era = state.era
-            state.apply_move(canon)
-        except ValueError:
-            break
-        if prev_era == 0 and state.era == 1:
-            # `apply_move` performs the complete era transition. Era-end
-            # scoring does not alter money/income, so this is the canal-end
-            # economic state for every canal-era decision.
-            econ = {p: e for p, e in enumerate(state.canal_econ())}
-            for sample in canal_samples:
-                sample.econ = np.asarray(econ[sample.pid], dtype=np.float32)
-
-    if not state.game_over:
-        raise RuntimeError(
-            f"heuristic game seed={seed} exceeded max_moves={max_moves}; samples discarded"
-        )
-
-    vps = np.asarray(state.player_vps(), dtype=np.float64)
-    value, winner = _value_targets(vps, state.final_ranking(), state.player_count)
-    final_econ = {p: e for p, e in enumerate(state.final_econ())}
-    for sample in local:
-        sample.value = value
-        sample.winner = winner
-        if sample.econ is None:
-            sample.econ = np.asarray(final_econ[sample.pid], dtype=np.float32)
     # Keep unnormalised scores until the parent process has decided whether
     # this game belongs in a quality-filtered imitation batch.
     return local, vps
@@ -556,9 +527,13 @@ def generate_imitation_samples(
     progress = Progress(total=n_games, label="accepted imitation game")
     accepted_games = 0
     attempted_games = 0
+    total_table_vp = 0.0
+    total_winner_vp = 0.0
+    min_vp_observed = float("inf")
+    max_vp_observed = float("-inf")
 
     def consume(result) -> bool:
-        nonlocal accepted_games, attempted_games
+        nonlocal accepted_games, attempted_games, total_table_vp, total_winner_vp, min_vp_observed, max_vp_observed
         attempted_games += 1
         local, vps = result
         if accepted(vps):
@@ -570,10 +545,20 @@ def generate_imitation_samples(
                 # Keep lightweight test/dry-run producers compatible.
                 samples.extend(local)
             accepted_games += 1
+            total_table_vp += float(vps.sum())
+            total_winner_vp += float(vps.max())
+            min_vp_observed = min(min_vp_observed, float(vps.min()))
+            max_vp_observed = max(max_vp_observed, float(vps.max()))
+
+        avg_table = total_table_vp / (accepted_games * players) if accepted_games > 0 else 0.0
+        avg_winner = total_winner_vp / accepted_games if accepted_games > 0 else 0.0
+        min_str = f"min {min_vp_observed:.0f}" if min_vp_observed != float("inf") else "min --"
         progress.update(
             accepted_games,
-            extra=(f"accepted: {accepted_games}/{n_games}, attempted: {attempted_games}, "
-                   f"samples: {len(samples)}"),
+            extra=(
+                f"vp {avg_table:.1f} (win {avg_winner:.1f} {min_str}) | "
+                f"accepted: {accepted_games}/{n_games} (att: {attempted_games})"
+            ),
         )
         return accepted_games == n_games
 
@@ -692,17 +677,33 @@ def _generate_imitation_with_sink(
             os.environ[name] = "1"
     jobs = [(gi, players, max_moves) for gi in range(max_attempts)]
     accepted_games = attempted_games = 0
+    total_table_vp = 0.0
+    total_winner_vp = 0.0
+    min_vp_observed = float("inf")
+    max_vp_observed = float("-inf")
     progress = Progress(total=n_games, label="accepted imitation game")
+
     def consume(result):
-        nonlocal accepted_games, attempted_games
+        nonlocal accepted_games, attempted_games, total_table_vp, total_winner_vp, min_vp_observed, max_vp_observed
         attempted_games += 1
         local, vps = result
         if accepted(vps):
             sink(local, vps)
             accepted_games += 1
+            total_table_vp += float(vps.sum())
+            total_winner_vp += float(vps.max())
+            min_vp_observed = min(min_vp_observed, float(vps.min()))
+            max_vp_observed = max(max_vp_observed, float(vps.max()))
+
+        avg_table = total_table_vp / (accepted_games * players) if accepted_games > 0 else 0.0
+        avg_winner = total_winner_vp / accepted_games if accepted_games > 0 else 0.0
+        min_str = f"min {min_vp_observed:.0f}" if min_vp_observed != float("inf") else "min --"
         progress.update(
             accepted_games,
-            extra=(f"accepted: {accepted_games}/{n_games}, attempted: {attempted_games}"),
+            extra=(
+                f"vp {avg_table:.1f} (win {avg_winner:.1f} {min_str}) | "
+                f"accepted: {accepted_games}/{n_games} (att: {attempted_games})"
+            ),
         )
         return accepted_games == n_games
     if worker_count == 1:
@@ -733,6 +734,14 @@ def _generate_imitation_with_sink(
     if accepted_games != n_games:
         raise RuntimeError(f"only accepted {accepted_games}/{n_games} imitation games after {attempted_games} attempts; relax min_avg_vp/min_vp or increase max_attempts")
     progress.done()
+    if accepted_games > 0:
+        avg_table = total_table_vp / (accepted_games * players)
+        avg_winner = total_winner_vp / accepted_games
+        print(
+            f"Imitation generation complete: {accepted_games} games | "
+            f"table avg {avg_table:.1f} VP, winner avg {avg_winner:.1f} VP, "
+            f"range [{min_vp_observed:.0f}..{max_vp_observed:.0f}]"
+        )
 
 
 def play_batch(

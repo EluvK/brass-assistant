@@ -194,3 +194,16 @@ class GameState:
     def player_vps(self) -> List[int]: ...
     def final_ranking(self) -> List[int]: ...
     def choose_heuristic(self) -> Tuple[str, str, float]: ...
+    def choose_heuristic_round(self) -> Tuple[str, Optional[str], float]: ...
+
+
+def simulate_heuristic_game(
+    seed: int, players: int = 4, max_moves: int = 600
+) -> Tuple[
+    List[Tuple[int, int, bytes, str]],
+    List[Tuple[int, int]],
+    List[Tuple[int, int]],
+    List[int],
+    List[int],
+]: ...
+

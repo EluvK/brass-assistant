@@ -244,6 +244,21 @@ fn score_sellable_build(
         + tile.income as f64 * flip_prob * BuildIncomeWeight::factor(state)
         + sellable_economy(state, pid, cand, tile.beers_to_sell);
 
+    // In early Canal era (Rounds 1-3), building goods (Cotton, Manufacturer, Pottery)
+    // requires heavy capital lockup while providing zero immediate liquidity.
+    // Pottery Lv1 is especially dangerous (£17+ cost, cannot flip without beer/merchant).
+    if state.is_canal_era() && state.round <= 3 {
+        if cand.ind == IndustryType::Pottery && tile.level == 1 {
+            score -= 4.0;
+        } else {
+            score -= 1.5;
+        }
+        let cash_after = state.players[pid].money as f64 - cost;
+        if cash_after < 15.0 {
+            score -= (15.0 - cash_after) * 0.2;
+        }
+    }
+
     score
 }
 
