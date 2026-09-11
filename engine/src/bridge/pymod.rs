@@ -661,6 +661,10 @@ impl PyGame {
             .collect()
     }
 
+    fn is_bankrupt(&self, pid: usize) -> bool {
+        self.state.players.get(pid).map_or(false, |p| p.is_bankrupt)
+    }
+
     /// Determinize: sample opponent hands from the hidden card pool. The
     /// resulting state's RNG is seeded from the sampling stream, so subsequent
     /// draws vary per determinization.

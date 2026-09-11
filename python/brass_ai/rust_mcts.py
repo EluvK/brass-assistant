@@ -136,3 +136,9 @@ class RustISMCTS:
             failed_applies=int(failed_applies),
             rewritten_applies=int(rewritten_applies),
         )
+
+
+def heuristic_search(state, sims: int = 0, add_root_noise: bool = False) -> SearchResult:
+    """Zero-overhead search adapter that uses the Rust heuristic teacher directly."""
+    move, _, _ = state.choose_heuristic()
+    return SearchResult(best=move)

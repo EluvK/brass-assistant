@@ -31,6 +31,7 @@ import torch
 
 from . import _engine as be
 from .progress import Progress
+from .rust_mcts import RustISMCTS, RustMCTSConfig, heuristic_search
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .hierarchical_policy import ACTION_FEATURE_DIM, pad_candidate_features
 
@@ -49,7 +50,7 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
         if cmd is None:
             break  # shutdown
         (weights, pool_weights, games, sims, seed_offset, mcts_cfg, temperature,
-         mm_prob, selfplay_opts) = cmd
+         mm_prob, heuristic_prob, selfplay_opts) = cmd
         net = PolicyValueNet()
         net.load_state_dict(weights)
         net.eval()
@@ -69,24 +70,29 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
             stats: dict = {}
             try:
                 cfg.seed = seed_base + worker_id * 100_000 + seed_offset + gi
-                if mm_prob > 0.0 and pool:
-                    # Rotating learner seat; opponents = historical pool (with
-                    # probability mm_prob) else the current net.
-                    learner = gi % 4
-                    roles = [mcts.search] * 4
-                    for seat in range(4):
-                        if seat == learner:
-                            continue
-                        if np.random.rand() < mm_prob:
-                            opp = pool[np.random.randint(len(pool))]
-                            roles[seat] = opp.search
-                    samples, vps = play_game_with_roles(
-                        roles, cfg, collect={learner}, stats=stats
-                    )
-                else:
-                    samples, vps = play_game_with_roles(
-                        [mcts.search] * 4, cfg, stats=stats
-                    )
+                learner = gi % 4
+                roles = [mcts.search] * 4
+                collect = {0, 1, 2, 3}
+                has_mixed_opponents = False
+
+                for seat in range(4):
+                    if seat == learner:
+                        continue
+                    r = np.random.rand()
+                    if heuristic_prob > 0.0 and r < heuristic_prob:
+                        roles[seat] = heuristic_search
+                        has_mixed_opponents = True
+                    elif mm_prob > 0.0 and pool and r < (heuristic_prob + mm_prob):
+                        opp = pool[np.random.randint(len(pool))]
+                        roles[seat] = opp.search
+                        has_mixed_opponents = True
+
+                if has_mixed_opponents:
+                    collect = {learner}
+
+                samples, vps = play_game_with_roles(
+                    roles, cfg, collect=collect, stats=stats
+                )
                 stats["vps"] = [float(x) for x in vps]
                 result_queue.put(("SAMPLES", _pack_samples(samples, stats)))
             except RuntimeError as exc:
@@ -245,6 +251,7 @@ class SelfPlayPool:
         temperature: float = 1.0,
         mm_pool: list | None = None,
         mm_prob: float = 0.0,
+        heuristic_prob: float = 0.0,
         selfplay_opts: dict | None = None,
         verbose: bool = True,
     ):
@@ -253,6 +260,7 @@ class SelfPlayPool:
 
         `mm_pool` is a list of state-dicts of historical nets used as opponent
         seats with probability `mm_prob` per game (learner seat = current net).
+        `heuristic_prob` mixes in the fast Rust heuristic teacher as opponent seats.
         `selfplay_opts` overrides `SelfPlayConfig` fields in the worker
         (`store_snapshots`, `determinize_observation`, temperature schedule, ...).
         Returns (samples, per_worker_sample_counts)."""
@@ -264,7 +272,7 @@ class SelfPlayPool:
         for _ in range(self.n_workers):
             self.cmd_queue.put(
                 (weights, pool_weights, games_per_worker, sims, seed, cfg, temperature,
-                 mm_prob, selfplay_opts)
+                 mm_prob, heuristic_prob, selfplay_opts)
             )
 
         # Packets and DONE markers arrive interleaved (workers finish at

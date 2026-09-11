@@ -116,6 +116,11 @@ pub enum ResolvedMove {
 }
 
 impl Move {
+    #[inline]
+    pub fn is_productive(&self) -> bool {
+        !matches!(self, Move::Pass { .. } | Move::Scout { .. })
+    }
+
     pub fn action(&self) -> Action {
         match self {
             Move::Build { .. } => Action::Build,
@@ -268,6 +273,11 @@ impl Move {
 }
 
 impl ResolvedMove {
+    #[inline]
+    pub fn is_productive(&self) -> bool {
+        !matches!(self, ResolvedMove::Pass { .. } | ResolvedMove::Scout { .. })
+    }
+
     pub fn action(&self) -> Action {
         match self {
             ResolvedMove::Build { .. } => Action::Build,

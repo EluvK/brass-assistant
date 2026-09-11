@@ -78,6 +78,8 @@ def main() -> int:
     # Matchmaking / opponent pool.
     parser.add_argument("--mm-prob", type=float, default=0.25)
     parser.add_argument("--pool-size", type=int, default=6)
+    parser.add_argument("--heuristic-opponent-prob", type=float, default=0.25,
+                        help="probability an opponent seat is played by the heuristic AI directly (breaks collusion, default: 0.25)")
     # Replay window and training budget.
     parser.add_argument("--buffer-samples", type=int, default=400_000)
     parser.add_argument("--buffer-iterations", type=int, default=20)
@@ -91,8 +93,8 @@ def main() -> int:
     # Search.
     parser.add_argument("--c-puct", type=float, default=0.25,
                         help="PUCT exploration constant (scaled to VP_SCALE=50, default: 0.25)")
-    parser.add_argument("--prior-top-k", type=int, default=16,
-                        help="search only the K highest-prior legal moves (0 = search every legal move)")
+    parser.add_argument("--prior-top-k", type=int, default=32,
+                        help="search only the K highest-prior moves with stratified category preservation (0 = search every legal move, default: 32)")
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="initial move sampling temperature (default: 0.0 for greedy best-visit)")
     parser.add_argument("--temperature-warmup-moves", type=int, default=0,
@@ -191,6 +193,7 @@ def main() -> int:
             ),
             mm_prob=args.mm_prob,
             pool_size=args.pool_size,
+            heuristic_prob=args.heuristic_opponent_prob,
             max_buffer_samples=args.buffer_samples,
             max_buffer_iterations=args.buffer_iterations,
             recent_fraction=args.recent_fraction,

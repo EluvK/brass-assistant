@@ -78,8 +78,13 @@ pub fn score_era(state: &mut GameState) -> Vec<ScoreBreakdown> {
     // Apply.
     for s in scores.iter_mut() {
         let p = &mut state.players[s.player_id];
-        p.vp += s.link_vp + s.industry_vp;
-        s.total_vp = p.vp;
+        if p.is_bankrupt {
+            p.vp = 0;
+            s.total_vp = 0;
+        } else {
+            p.vp += s.link_vp + s.industry_vp;
+            s.total_vp = p.vp;
+        }
     }
 
     scores
@@ -91,10 +96,11 @@ pub fn final_ranking(state: &GameState) -> Vec<usize> {
     order.sort_by(|a, b| {
         let pa = &state.players[*a];
         let pb = &state.players[*b];
-        pb.vp
-            .cmp(&pa.vp)
-            .then(pb.income_level().cmp(&pa.income_level()))
-            .then(pb.money.cmp(&pa.money))
+        pa.is_bankrupt
+            .cmp(&pb.is_bankrupt)
+            .then_with(|| pb.vp.cmp(&pa.vp))
+            .then_with(|| pb.income_level().cmp(&pa.income_level()))
+            .then_with(|| pb.money.cmp(&pa.money))
     });
     order
 }

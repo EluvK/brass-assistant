@@ -352,7 +352,7 @@ def play_game_with_roles(
         if result.best is None:
             break
         recorded: Sample | None = None
-        if pid in collect:
+        if pid in collect and not state.is_bankrupt(pid):
             observed = state.determinize() if cfg.determinize_observation else state
             if cfg.store_snapshots:
                 # Store the observation itself, so the sparse target is aligned

@@ -40,7 +40,7 @@ from .evaluate import benchmark_net_vs_heuristic
 from .mp_selfplay import SelfPlayPool
 from .net import PolicyValueNet
 from .progress import Progress
-from .rust_mcts import RustISMCTS, RustMCTSConfig
+from .rust_mcts import RustISMCTS, RustMCTSConfig, heuristic_search
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .train import TrainConfig, Trainer
 
@@ -144,6 +144,9 @@ class LoopConfig:
     # plays a checkpoint from the pool instead of the current network.
     mm_prob: float = 0.25
     pool_size: int = 6
+    # Heuristic teacher matchmaking: with this probability an opponent seat
+    # plays the engine heuristic AI directly (zero NN cost, breaks self-play collusion).
+    heuristic_prob: float = 0.0
     # Replay window and per-iteration training budget.
     max_buffer_samples: int = 400_000
     max_buffer_iterations: int = 20
@@ -301,6 +304,7 @@ def run_selfplay(
                     temperature=cfg.selfplay.temperature,
                     mm_pool=opponent_pool,
                     mm_prob=cfg.mm_prob if opponent_pool else 0.0,
+                    heuristic_prob=cfg.heuristic_prob,
                     selfplay_opts=_selfplay_opts(cfg),
                 )
                 diagnostics = pool.last_diagnostics
@@ -387,8 +391,19 @@ def _play_batch_local(
         )
         stats: dict = {}
         try:
+            learner = game % 4
+            roles = [mcts.search] * 4
+            collect = {0, 1, 2, 3}
+            if cfg.heuristic_prob > 0.0:
+                has_mixed = False
+                for seat in range(4):
+                    if seat != learner and np.random.rand() < cfg.heuristic_prob:
+                        roles[seat] = heuristic_search
+                        has_mixed = True
+                if has_mixed:
+                    collect = {learner}
             game_samples, vps = play_game_with_roles(
-                [mcts.search] * 4, game_cfg, stats=stats
+                roles, game_cfg, collect=collect, stats=stats
             )
         except RuntimeError as exc:
             # A game that exceeds max_moves has no valid terminal target; drop

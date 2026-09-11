@@ -93,7 +93,8 @@ python python/selfplay_train.py \
   --sims 128 \
   --workers 8 \
   --c-puct 0.25 \
-  --prior-top-k 16 \
+  --prior-top-k 32 \
+  --heuristic-opponent-prob 0.25 \
   --temperature 0.0 \
   --eval-every 2 \
   --eval-games 12 \
@@ -107,7 +108,8 @@ python python/selfplay_train.py \
 | `--init-from` | `checkpoints/v1/bootstrap/b2000.pt` | 干净的高质量预训练底座，跳过前期盲目随机探索 |
 | `--sims` | `128` | 每步 MCTS 模拟推演次数（兼顾搜索质量与生成吞吐量） |
 | `--c-puct` | `0.25` | 探索常数，与 $VP\_SCALE=50$ 深度对齐 |
-| `--prior-top-k` | `16` | 仅保留先验 Top-16 孩子深入展开，防止树被 350+ 全合法分支摊平 |
+| `--prior-top-k` | `32` | **分层保底 Top-K**：确保 6 大基础动作类型（Build/Network/Develop/Sell/Loan/Pass）各保底保留前 3~4 个最优候选，彻底避免建厂动作挤占卖货/借贷名额 |
+| `--heuristic-opponent-prob` | `0.25` | **启发式高水平陪练**：每局有 25% 概率混入 1~2 个启发式 AI 同台对弈，打破全网络镜像内卷，注入 130 分繁荣经济环境（且启发式计算零延迟） |
 | `--temperature` | `0.0` | 确定性走步，依赖根节点 Dirichlet 噪声探索，避免开局自毁走法 |
 | `--eval-every` | `2` | 每 2 轮进行一次正规对决评估，保持高频监控 |
 | `--eval-games` | `12` | 挑战历史最佳 `best.pt` 的竞技局数（3 组严格轮换座位） |
@@ -126,7 +128,8 @@ python python/selfplay_train.py \
   --sims 128 \
   --workers 8 \
   --c-puct 0.25 \
-  --prior-top-k 16 \
+  --prior-top-k 32 \
+  --heuristic-opponent-prob 0.25 \
   --temperature 0.0 \
   --eval-every 2 \
   --eval-games 12 \

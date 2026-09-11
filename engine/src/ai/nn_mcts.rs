@@ -207,7 +207,7 @@ pub fn search_net(
     py: Python<'_>,
 ) -> PyResult<NnSearchResult> {
     let root_pid = state.current_player_id();
-    let n_players = state.player_count();
+    let _n_players = state.player_count();
 
     let mut arena: Vec<Node> = vec![Node::new(root_pid)];
 
@@ -398,6 +398,13 @@ fn descend(
                 value: terminal_value(work, work.player_count()),
             };
         }
+        let current_pid = work.current_player_id();
+        if node_idx > 0 && work.players[current_pid].is_bankrupt {
+            return ParkedOutcome::Terminal {
+                path,
+                value: bankrupt_terminal_value(work, work.player_count(), current_pid),
+            };
+        }
         if depth >= cfg.max_depth {
             return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
         }
@@ -416,6 +423,23 @@ fn descend(
                     .map(|decision| decision.mv)
                     .collect()
             };
+
+            let pid = work.current_player_id();
+            let has_productive = moves.iter().any(|m| m.is_productive());
+            if !has_productive {
+                work.players[pid].consecutive_stalled_actions = work.players[pid]
+                    .consecutive_stalled_actions
+                    .saturating_add(1);
+                if node_idx > 0 && work.players[pid].consecutive_stalled_actions >= 2 {
+                    work.players[pid].is_bankrupt = true;
+                    return ParkedOutcome::Terminal {
+                        path,
+                        value: bankrupt_terminal_value(work, work.player_count(), pid),
+                    };
+                }
+            } else {
+                work.players[pid].consecutive_stalled_actions = 0;
+            }
             let mut children: Vec<Child> = Vec::new();
             let mut legal_candidate_ids: Vec<usize> = Vec::new();
             let mut candidate_features: Vec<Vec<f32>> = Vec::new();
@@ -668,24 +692,63 @@ fn apply_priors(
         return;
     }
     let children = std::mem::take(&mut arena[node_idx].children);
-    let mut ranked: Vec<(usize, Child)> = children.into_iter().enumerate().collect();
-    ranked.sort_by(|(ia, _), (ib, _)| {
-        priors[*ib]
-            .partial_cmp(&priors[*ia])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    ranked.truncate(top_k);
+    let mut by_category: std::collections::HashMap<crate::data::Action, Vec<(usize, Child)>> =
+        std::collections::HashMap::new();
+    for (orig_idx, child) in children.into_iter().enumerate() {
+        let act = child.mv.action();
+        by_category.entry(act).or_default().push((orig_idx, child));
+    }
+
+    // Sort each category by prior descending.
+    for list in by_category.values_mut() {
+        list.sort_by(|(ia, _), (ib, _)| {
+            priors[*ib]
+                .partial_cmp(&priors[*ia])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    // Guarantee each available action category gets a quota of best candidates,
+    // preventing homogeneous moves (e.g. hundreds of Builds) from starving Loans/Sells.
+    let per_category_quota = (top_k / 7).clamp(2, 4);
+    let mut selected: Vec<(usize, Child)> = Vec::with_capacity(top_k);
+    let mut remaining_pool: Vec<(usize, Child)> = Vec::new();
+
+    for (_act, mut list) in by_category {
+        let take_n = list.len().min(per_category_quota);
+        let remainder = list.split_off(take_n);
+        selected.extend(list);
+        remaining_pool.extend(remainder);
+    }
+
+    if selected.len() < top_k {
+        remaining_pool.sort_by(|(ia, _), (ib, _)| {
+            priors[*ib]
+                .partial_cmp(&priors[*ia])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let needed = top_k - selected.len();
+        selected.extend(remaining_pool.into_iter().take(needed));
+    } else if selected.len() > top_k {
+        selected.sort_by(|(ia, _), (ib, _)| {
+            priors[*ib]
+                .partial_cmp(&priors[*ia])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        selected.truncate(top_k);
+    }
+
     // Restore the engine's candidate order so ties and the returned child list
     // stay deterministic regardless of the sort's instability.
-    ranked.sort_by_key(|(index, _)| *index);
-    let kept: Vec<f64> = ranked.iter().map(|(index, _)| priors[*index]).collect();
+    selected.sort_by_key(|(index, _)| *index);
+    let kept: Vec<f64> = selected.iter().map(|(index, _)| priors[*index]).collect();
     let total: f64 = kept.iter().sum();
     arena[node_idx].prior = if total > 0.0 {
         kept.iter().map(|p| p / total).collect()
     } else {
         vec![1.0 / kept.len() as f64; kept.len()]
     };
-    arena[node_idx].children = ranked.into_iter().map(|(_, child)| child).collect();
+    arena[node_idx].children = selected.into_iter().map(|(_, child)| child).collect();
 }
 
 fn add_value(arena: &mut Vec<Node>, path: &[usize], value: &[f64]) {
@@ -707,6 +770,17 @@ fn terminal_value(state: &GameState, n_players: usize) -> Vec<f64> {
     let mean = scores.iter().sum::<f64>() / n as f64;
     let scale = crate::bridge::VP_SCALE as f64;
     scores.iter().map(|s| (s - mean) / scale).collect()
+}
+
+fn bankrupt_terminal_value(state: &GameState, n_players: usize, bankrupt_pid: usize) -> Vec<f64> {
+    let n = n_players.max(1).min(state.players.len());
+    let mut scores: Vec<f64> = (0..n).map(|p| state.players[p].vp as f64).collect();
+    scores[bankrupt_pid] = 0.0;
+    let mean = scores.iter().sum::<f64>() / n as f64;
+    let scale = crate::bridge::VP_SCALE as f64;
+    let mut values: Vec<f64> = scores.iter().map(|s| (s - mean) / scale).collect();
+    values[bankrupt_pid] = -2.5;
+    values
 }
 
 /// Clamp a raw network value onto the terminal utility scale. An untrained or
@@ -1016,5 +1090,74 @@ mod tests {
             }
             other => panic!("unexpected move {other:?}"),
         }
+    }
+
+    #[test]
+    fn apply_priors_stratified_preserves_non_build_actions() {
+        use super::{Child, Node, apply_priors};
+        use crate::data::IndustryType;
+
+        let mut arena = vec![Node::new(0)];
+        let mut children = Vec::new();
+        let mut priors = Vec::new();
+
+        // Add 50 Build moves with high priors (0.95 total probability mass)
+        for i in 0..50 {
+            children.push(Child {
+                candidate_id: i,
+                cards: vec![],
+                q_prior: 0.0,
+                mv: ResolvedMove::Build {
+                    loc: Loc::Derby,
+                    slot_index: 0,
+                    ind: IndustryType::CottonMill,
+                    coal: vec![],
+                    iron: vec![],
+                    card_index: 0,
+                },
+                node: 0,
+            });
+            priors.push(0.019);
+        }
+
+        // Add 1 Loan move with relatively lower prior
+        children.push(Child {
+            candidate_id: 50,
+            cards: vec![],
+            q_prior: 0.0,
+            mv: ResolvedMove::Loan { card_index: 0 },
+            node: 0,
+        });
+        priors.push(0.005);
+
+        // Add 1 Sell move with lower prior
+        children.push(Child {
+            candidate_id: 51,
+            cards: vec![],
+            q_prior: 0.0,
+            mv: ResolvedMove::Sell {
+                keys: vec![],
+                beer_sources: vec![],
+                free_develop: None,
+                card_index: 0,
+            },
+            node: 0,
+        });
+        priors.push(0.005);
+
+        arena[0].children = children;
+        // Even with top_k = 16, Loan and Sell MUST be preserved due to stratification
+        apply_priors(&mut arena, 0, priors, None, 16);
+
+        let actions: Vec<_> = arena[0].children.iter().map(|c| c.mv.action()).collect();
+        assert!(
+            actions.contains(&crate::data::Action::Loan),
+            "Loan was starved by Builds!"
+        );
+        assert!(
+            actions.contains(&crate::data::Action::Sell),
+            "Sell was starved by Builds!"
+        );
+        assert_eq!(arena[0].children.len(), 16);
     }
 }
