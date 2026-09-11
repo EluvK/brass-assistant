@@ -153,14 +153,15 @@ class LoopConfig:
     recent_fraction: float = 0.75
     recent_iterations: int = 4
     train_samples: int = 40_000
+    train_epochs: int = 1
     train: TrainConfig = field(default_factory=TrainConfig)
     # Evaluation.
     eval_every: int = 5
-    eval_games: int = 40
+    eval_games: int = 12
     eval_sims: int = 128
-    heuristic_eval_games: int = 20
+    heuristic_eval_games: int = 12
     heuristic_eval_sims: int = 128
-    promote_winrate: float = 0.55
+    promote_winrate: float = 0.35
 
 
 @dataclass
@@ -223,7 +224,9 @@ def arena_winrate(
             temperature_final=0.0,
             sims=sims,
         )
-        samples, _ = play_game_with_roles(roles, game_cfg, collect={seat})
+        samples, _ = play_game_with_roles(
+            roles, game_cfg, collect={seat}, add_root_noise=False
+        )
         if samples and int(np.argmax(samples[0].winner)) == seat:
             wins += 1
         prog.update(game + 1)
@@ -311,7 +314,9 @@ def run_selfplay(
                 stats.games = int(diagnostics.get("games", 0))
             else:
                 assert local_mcts is not None
-                samples, diagnostics = _play_batch_local(local_mcts, cfg, base_seed)
+                samples, diagnostics = _play_batch_local(
+                    local_mcts, cfg, base_seed, opponent_pool=opponent_pool
+                )
             stats.selfplay_sec = time.time() - t0
             stats.samples = len(samples)
             stats.failed_applies = int(diagnostics.get("failed_applies", 0))
@@ -334,7 +339,10 @@ def run_selfplay(
                 cfg.train_samples, cfg.recent_fraction, cfg.recent_iterations, rng
             )
             if draw:
-                losses = trainer.train_one_epoch(draw, f"train it{iteration}")
+                losses = []
+                for ep in range(max(1, cfg.train_epochs)):
+                    label = f"train it{iteration}" if cfg.train_epochs <= 1 else f"train it{iteration} e{ep+1}"
+                    losses.extend(trainer.train_one_epoch(draw, label))
                 stats.trained = len(draw)
                 if losses:
                     stats.losses = {
@@ -356,8 +364,12 @@ def run_selfplay(
                 stats.heuristic_winrate = benchmark_net_vs_heuristic(
                     net, cfg.heuristic_eval_sims, cfg.heuristic_eval_games,
                     device=cfg.device,
+                    mcts_cfg=cfg.mcts,
+                    workers=min(cfg.workers, 4),
                 )["win_rate"]
-                if stats.arena_winrate >= cfg.promote_winrate and wins > games - wins:
+                # 4-player game (1 candidate vs 3 opponents): baseline winrate is 25%.
+                # Promotion requires beating the winrate threshold AND Wilson lower bound > 0.25.
+                if stats.arena_winrate >= cfg.promote_winrate and stats.arena_lower > 0.25:
                     best_net.load_state_dict(_cpu_state_dict(net))
                     stats.promoted = True
             stats.eval_sec = time.time() - t2
@@ -377,12 +389,23 @@ def run_selfplay(
 
 
 def _play_batch_local(
-    mcts: RustISMCTS, cfg: LoopConfig, base_seed: int
+    mcts: RustISMCTS,
+    cfg: LoopConfig,
+    base_seed: int,
+    opponent_pool: list[dict] | None = None,
 ) -> tuple[list[Sample], dict]:
     """Single-process actor path (workers == 1); also used by smoke tests."""
     samples: list[Sample] = []
     totals = {"failed_applies": 0, "rewritten_applies": 0, "moves": 0,
               "games": 0, "truncated": 0, "game_vps": []}
+    pool_mcts: list[RustISMCTS] = []
+    if opponent_pool:
+        for pw in opponent_pool:
+            pn = PolicyValueNet()
+            pn.load_state_dict(pw)
+            pn.eval()
+            pool_mcts.append(RustISMCTS(pn, cfg.mcts))
+
     for game in range(cfg.games_per_iter):
         game_cfg = replace(
             cfg.selfplay,
@@ -394,14 +417,20 @@ def _play_batch_local(
             learner = game % 4
             roles = [mcts.search] * 4
             collect = {0, 1, 2, 3}
-            if cfg.heuristic_prob > 0.0:
-                has_mixed = False
-                for seat in range(4):
-                    if seat != learner and np.random.rand() < cfg.heuristic_prob:
-                        roles[seat] = heuristic_search
-                        has_mixed = True
-                if has_mixed:
-                    collect = {learner}
+            has_mixed = False
+            for seat in range(4):
+                if seat == learner:
+                    continue
+                r = np.random.rand()
+                if cfg.heuristic_prob > 0.0 and r < cfg.heuristic_prob:
+                    roles[seat] = heuristic_search
+                    has_mixed = True
+                elif cfg.mm_prob > 0.0 and pool_mcts and r < (cfg.heuristic_prob + cfg.mm_prob):
+                    opp = pool_mcts[np.random.randint(len(pool_mcts))]
+                    roles[seat] = opp.search
+                    has_mixed = True
+            if has_mixed:
+                collect = {learner}
             game_samples, vps = play_game_with_roles(
                 roles, game_cfg, collect=collect, stats=stats
             )

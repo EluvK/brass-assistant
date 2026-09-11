@@ -86,6 +86,8 @@ def main() -> int:
     parser.add_argument("--recent-fraction", type=float, default=0.75)
     parser.add_argument("--recent-iterations", type=int, default=4)
     parser.add_argument("--train-samples", type=int, default=40_000)
+    parser.add_argument("--train-epochs", type=int, default=1,
+                        help="passes over the drawn replay sample per iteration (default: 1)")
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--max-candidate-batch", type=int, default=65_536)
@@ -113,11 +115,14 @@ def main() -> int:
                         help="0 expands every legal move (default); positive values use the heuristic shortlist")
     # Evaluation.
     parser.add_argument("--eval-every", type=int, default=5)
-    parser.add_argument("--eval-games", type=int, default=40)
+    parser.add_argument("--eval-games", type=int, default=12,
+                        help="arena games against current best (default: 12)")
     parser.add_argument("--eval-sims", type=int, default=128)
-    parser.add_argument("--heuristic-eval-games", type=int, default=20)
+    parser.add_argument("--heuristic-eval-games", type=int, default=12,
+                        help="benchmark games against engine heuristic (default: 12)")
     parser.add_argument("--heuristic-eval-sims", type=int, default=128)
-    parser.add_argument("--promote-winrate", type=float, default=0.55)
+    parser.add_argument("--promote-winrate", type=float, default=0.35,
+                        help="promotion winrate threshold in 4-player arena (default: 0.35 against 0.25 baseline)")
     args = parser.parse_args()
 
     if args.workers < 1:
@@ -199,6 +204,7 @@ def main() -> int:
             recent_fraction=args.recent_fraction,
             recent_iterations=args.recent_iterations,
             train_samples=args.train_samples,
+            train_epochs=args.train_epochs,
             train=trainer.cfg,
             eval_every=args.eval_every,
             eval_games=args.eval_games,

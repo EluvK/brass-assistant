@@ -313,6 +313,7 @@ def play_game_with_roles(
     cfg: SelfPlayConfig | None = None,
     collect: set | None = None,
     stats: dict | None = None,
+    add_root_noise: bool = True,
 ) -> tuple[list, list]:
     """Play one game where each seat is driven by its own search role.
 
@@ -345,8 +346,7 @@ def play_game_with_roles(
     while not state.game_over and moves < cfg.max_moves:
         moves += 1
         pid = state.current_player_id
-        canonical_candidates, candidate_tensor = encode_legal_candidates(state)
-        result = roles[pid](state, cfg.sims, True)
+        result = roles[pid](state, cfg.sims, add_root_noise)
         failed_applies += int(getattr(result, "failed_applies", 0) or 0)
         rewritten_applies += int(getattr(result, "rewritten_applies", 0) or 0)
         if result.best is None:
@@ -355,18 +355,25 @@ def play_game_with_roles(
         if pid in collect and not state.is_bankrupt(pid):
             observed = state.determinize() if cfg.determinize_observation else state
             if cfg.store_snapshots:
-                # Store the observation itself, so the sparse target is aligned
-                # against exactly the candidate set the network will be shown.
-                visits = _candidate_policy(canonical_candidates, result)
-                sparse = {
-                    move: float(probability)
-                    for move, probability in zip(canonical_candidates, visits)
-                    if probability > 0.0
-                }
+                # Fast-path: directly aggregate canonical visit probabilities from the
+                # search result without generating full-legal candidate tensors upfront.
+                total_visits = sum(result.visits.values())
+                if total_visits > 0:
+                    sparse = {}
+                    for cid, count in result.visits.items():
+                        if count > 0:
+                            canon = result.canon_by_candidate.get(cid)
+                            if canon:
+                                sparse[canon] = sparse.get(canon, 0.0) + (float(count) / total_visits)
+                elif result.best:
+                    sparse = {result.best: 1.0}
+                else:
+                    sparse = {}
                 s = Sample(pid=pid, era=state.era, value=0.0, winner=0.0,
                            snapshot=bytes(observed.snapshot()),
                            policy_by_canonical=sparse)
             else:
+                canonical_candidates, candidate_tensor = encode_legal_candidates(state)
                 cells, links, merchants, seats, g = observed.state_tokens()
                 policy = coalesce_equivalent_policy(
                     candidate_tensor.numpy(), _candidate_policy(canonical_candidates, result)
@@ -392,6 +399,8 @@ def play_game_with_roles(
             # to the first legal move if needed.
             try:
                 summary, ok = state.apply_move_raw(result.best)
+                if ok and recorded is not None:
+                    recorded.played_canonical = result.best
             except ValueError:
                 ok = False
             if not ok:
@@ -400,6 +409,8 @@ def play_game_with_roles(
                     break
                 try:
                     summary, ok = state.apply_move_raw(legal[0][1])
+                    if ok and recorded is not None:
+                        recorded.played_canonical = legal[0][1]
                 except ValueError:
                     break
         tr = state.advance_turn_raw()

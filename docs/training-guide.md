@@ -105,7 +105,7 @@ python python/selfplay_train.py \
   --eval-every 2 \
   --eval-games 12 \
   --heuristic-eval-games 12 \
-  --promote-winrate 0.55
+  --promote-winrate 0.35
 ```
 
 #### 关键参数配置指南：
@@ -120,7 +120,7 @@ python python/selfplay_train.py \
 | `--eval-every` | `2` | 每 2 轮进行一次正规对决评估，保持高频监控 |
 | `--eval-games` | `12` | 挑战历史最佳 `best.pt` 的竞技局数（3 组严格轮换座位） |
 | `--heuristic-eval-games`| `12` | 对抗启发式规则裁判的局数（3 组严格轮换座位） |
-| `--promote-winrate` | `0.55` | 晋升胜率门槛（结合 Wilson 下限置信度判定是否刷新 `best.pt`） |
+| `--promote-winrate` | `0.35` | **4人局晋升胜率门槛**：在 1 vs 3 模式下基准期望仅为 25%，0.35 要求胜率明显超越基准，并结合 Wilson 下限置信度判定刷新 `best.pt` |
 
 ### 步骤 4：断点续训 (Resume)
 如需中断（按 `Ctrl+C`，当前轮次跑完后安全退出），之后从断点无缝继续训练：
