@@ -129,10 +129,28 @@ fn score_network_candidate(state: &GameState, pid: usize, conn_id: usize, cost: 
         0.0
     };
 
+    // Solvency guardrail: spending scarce cash while under negative income
+    // risks liquidation or soft-lock bankruptcy at round end.
+    let income_level = state.players[pid].income_level();
+    let solvency_penalty = if income_level < 0 {
+        let debt_per_round = (-income_level) as i32;
+        let remaining = state.players[pid].money - cost;
+        if remaining < debt_per_round {
+            4.0 + (debt_per_round - remaining).max(0) as f64 * 0.5
+        } else if remaining < debt_per_round * 2 {
+            1.5
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
     link_vp + hand_access - cost as f64 * LinkCostWeight::factor(state)
         + merchant_gain
         + exploration
         + beer_lock
+        - solvency_penalty
 }
 
 /// Top-K single network candidates by 1-ply score.
@@ -238,6 +256,21 @@ pub(crate) fn score_top_network_doubles(
         let surcharge = (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST) as f64
             * LinkCostWeight::factor(state);
         let mut total = s1 + s2 - surcharge;
+
+        // Extra solvency guardrail for double rail: spending a huge chunk of cash
+        // (£15+ plus coal) when income is negative leaves no safety buffer.
+        let income_level = state.players[pid].income_level();
+        if income_level < 0 {
+            let debt_per_round = (-income_level) as i32;
+            let total_cost = cost1 + cost2 + (crate::map::RAIL_DOUBLE_LINK_COST - 2 * crate::map::RAIL_LINK_COST);
+            let remaining = state.players[pid].money - total_cost;
+            if remaining < debt_per_round {
+                total -= 6.0 + (debt_per_round - remaining).max(0) as f64 * 0.8;
+            } else if remaining < debt_per_round * 2 {
+                total -= 3.0;
+            }
+        }
+
         // Double-rail synergy: one action builds two links (tempo win),
         // strongest early in Rail while the net is being laid out.
         total += DoubleRailTempoBonus::factor(state);

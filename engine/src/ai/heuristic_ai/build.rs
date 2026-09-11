@@ -278,6 +278,20 @@ fn common_build_score(
     // action on a tile whose inputs opponents can supply for us.
     let ratio = resource_source_ratio(state, cand);
     score += (ratio - FREE_RIDING_THRESHOLD).max(0.0) * FREE_RIDING_BONUS;
+
+    // Solvency guardrail: building when in negative income without enough cash
+    // to survive round-end debt deductions causes tile liquidations.
+    let income_level = state.players[pid].income_level();
+    if income_level < 0 {
+        let debt_per_round = (-income_level) as i32;
+        let remaining = state.players[pid].money as f64 - cost;
+        if remaining < debt_per_round as f64 {
+            score -= 4.0 + (debt_per_round as f64 - remaining).max(0.0) * 0.5;
+        } else if remaining < (debt_per_round * 2) as f64 {
+            score -= 1.5;
+        }
+    }
+
     score
 }
 

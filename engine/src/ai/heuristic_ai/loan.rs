@@ -50,12 +50,17 @@ fn evaluate_loan(state: &GameState, cash: f64, income_level: f64) -> LoanEvaluat
     let new_income = income_level - 3.0;
     let mut penalty = 0.0;
     if new_income <= -8.0 {
-        // Extreme cliff: one step from the absolute engine floor of -10.
-        // Reckless if the player still holds comfortable cash.
+        // Extreme cliff: at or below -8, the engine permanently forbids further loans
+        // (can_take_loan requires income >= -7, since -7 - 3 = -10).
+        // If cash is comfortable, taking this loan is reckless.
+        // Even if cash is low, dropping below -7 permanently surrenders the loan safety valve,
+        // so it must bear an inherent risk penalty unless it is the literal last option.
         if cash >= 15.0 {
-            penalty += 5.0;
+            penalty += 6.0;
         } else if cash >= 8.0 {
-            penalty += 2.5;
+            penalty += 3.5;
+        } else {
+            penalty += 1.5;
         }
     } else if new_income <= -5.0 {
         // Deep debt: penalize unnecessary loans when cash is already sufficient.
