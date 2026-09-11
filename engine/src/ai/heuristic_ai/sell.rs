@@ -11,6 +11,10 @@ const TILE_INCOME_SHARE: f64 = 0.3;
 const DEVELOP_BONUS_VALUE: f64 = 0.5;
 /// Value of one victory point when ranking sell targets.
 const VP_VALUE: f64 = 1.0;
+/// Cash-to-VP equivalent rate for cash bonuses from merchants.
+const MONEY_BONUS_WEIGHT: f64 = 0.6;
+/// Urgency bonus per income level lifted out of negative debt territory.
+const DEBT_RECOVERY_PER_LEVEL: f64 = 0.75;
 
 define_era_round_factor!(
     SellVpFactor,
@@ -29,35 +33,52 @@ pub(super) fn score_sell_plans(state: &mut GameState, cards: &CardChoices) -> Ve
         return Vec::new();
     };
     let pid = state.current_player_id();
+    let current_income = state.players[pid].income_level() as f64;
+
     let mut out: Vec<_> = crate::rules::legal_sell_plans(state, pid)
         .into_iter()
         .map(|(keys, beer_sources, free_develop)| {
             let mut score_vp = 0.0;
             let mut score_income = 0.0;
             let mut other_bonus = 0.0;
+            let mut total_income_gain = 0.0;
             for &key in &keys {
                 if let Some(tile) = state.city_tiles[key].as_ref() {
                     score_vp += tile.def.vp as f64;
                     score_income += tile.def.income as f64 * TILE_INCOME_SHARE;
+                    total_income_gain += tile.def.income as f64;
                 }
             }
             for source in &beer_sources {
-                if source.kind == crate::graph::BeerSourceKind::Merchant {
-                    if let Some(i) = source.merchant_idx {
-                        match crate::map::merchant_bonus_at(state.merchants[i].loc) {
-                            crate::map::MerchantBonus::Vp(v) => score_vp += v as f64 * VP_VALUE,
-                            crate::map::MerchantBonus::Money(v) => other_bonus += v as f64,
-                            crate::map::MerchantBonus::Income(v) => score_income += v as f64,
-                            crate::map::MerchantBonus::Develop(_) => {
-                                other_bonus += DEVELOP_BONUS_VALUE
-                            }
-                        };
-                    }
+                if source.kind == crate::graph::BeerSourceKind::Merchant
+                    && let Some(i) = source.merchant_idx
+                {
+                    match crate::map::merchant_bonus_at(state.merchants[i].loc) {
+                        crate::map::MerchantBonus::Vp(v) => score_vp += v as f64 * VP_VALUE,
+                        crate::map::MerchantBonus::Money(v) => {
+                            other_bonus += v as f64 * MONEY_BONUS_WEIGHT
+                        }
+                        crate::map::MerchantBonus::Income(v) => {
+                            score_income += v as f64;
+                            total_income_gain += v as f64;
+                        }
+                        crate::map::MerchantBonus::Develop(_) => other_bonus += DEVELOP_BONUS_VALUE,
+                    };
                 }
             }
+            // Selling while under negative income provides critical solvency relief,
+            // stopping the round-end cash bleed and preventing catastrophic asset liquidation.
+            let debt_cleared = if current_income < 0.0 {
+                (-current_income).min(total_income_gain)
+            } else {
+                0.0
+            };
+            let debt_relief_bonus = debt_cleared * DEBT_RECOVERY_PER_LEVEL;
+
             let score = score_vp * SellVpFactor::factor(state)
                 + score_income * SellIncomeFactor::factor(state)
-                + other_bonus;
+                + other_bonus
+                + debt_relief_bonus;
             Decision {
                 mv: ResolvedMove::Sell {
                     keys,

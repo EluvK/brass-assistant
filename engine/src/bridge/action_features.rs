@@ -324,8 +324,8 @@ pub fn encode_move_into(state: &GameState, mv: &ResolvedMove, out: &mut Vec<f32>
 mod tests {
     use super::*;
     use crate::rules::legal_resolved_moves;
-    use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     fn row_refs(row: &[f32]) -> Vec<(u8, u16, f32)> {
         let count = row[OFF_REF_COUNT] as usize;

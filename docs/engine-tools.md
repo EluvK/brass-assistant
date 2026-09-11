@@ -10,6 +10,8 @@
 
 `train_bench` 是该 feature 的专属二进制，运行时须带上 `--features python`。`replay_web` 默认可运行 heuristic/random 座位；只有座位配置含 `python:` 时才须带上 `--features python`。普通 `replay` 同样不依赖 Python。
 
+跑引擎相关调试时建议使用 `--profile fast-release` 可以加速编译过程中的链接速度，仅在生成环境（使用python训练）时才建议使用 `--release`。
+
 ## 保留入口
 
 ```

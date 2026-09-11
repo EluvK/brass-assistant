@@ -1493,13 +1493,11 @@ fn wild_holding_is_public_and_encoded_in_seat_token() {
     assert!(res.is_ok(), "scout failed: {res:?}");
     let t = _engine::encode::state_tokens(&state, pid);
     assert_eq!(
-        t.seats[base],
-        1.0,
+        t.seats[base], 1.0,
         "wild-location holding encoded separately"
     );
     assert_eq!(
-        t.seats[industry],
-        1.0,
+        t.seats[industry], 1.0,
         "wild-industry holding encoded separately"
     );
 
@@ -1511,8 +1509,7 @@ fn wild_holding_is_public_and_encoded_in_seat_token() {
     _engine::rules::discard_card(&mut state, pid, wl_idx);
     let t = _engine::encode::state_tokens(&state, pid);
     assert_eq!(
-        t.seats[base],
-        0.0,
+        t.seats[base], 0.0,
         "wild-location flag reflects the discard"
     );
     assert_eq!(t.seats[industry], 1.0, "wild-industry flag unaffected");

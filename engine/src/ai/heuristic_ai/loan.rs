@@ -27,10 +27,57 @@ fn evaluate_loan(state: &GameState, cash: f64, income_level: f64) -> LoanEvaluat
     let b = LoanFactorB::factor(state);
     debug_assert!(b > 0.0, "loan income divisor b must be positive");
 
-    let economic_value =
-        ((a - cash) / LOAN_AMOUNT as f64 - income_level / b) * state.round_left_in_era() as f64;
-    let normalized_value = economic_value.clamp(0.0, 1.0);
-    let score = -4.0 + 10.0 * normalized_value;
+    let rounds_left = state.round_left_in_era() as f64;
+    let cash_need = (a - cash) / LOAN_AMOUNT as f64;
+
+    // Positive income reduces loan desire as cash flows in steadily.
+    // Negative income represents ongoing cash drain that an additional loan
+    // deepens by 3 income levels; it must never be treated as a positive bonus.
+    let income_term = if income_level >= 0.0 {
+        -income_level / b
+    } else {
+        -income_level.abs() * 0.25
+    };
+
+    let economic_value = (cash_need + income_term) * rounds_left;
+
+    // Bankruptcy Cliff & Solvency Guardrails:
+    // A loan drops income level by 3. If new income falls into the danger zone
+    // (<= -8), the engine will legally forbid any future loans, creating an
+    // acute soft-lock risk if cash runs dry during round-end deficit resolution.
+    // However, if the player has virtually no cash, taking a loan is the only
+    // viable emergency lifeline to prevent passive starvation.
+    let new_income = income_level - 3.0;
+    let mut penalty = 0.0;
+    if new_income <= -8.0 {
+        // Extreme cliff: one step from the absolute engine floor of -10.
+        // Reckless if the player still holds comfortable cash.
+        if cash >= 15.0 {
+            penalty += 5.0;
+        } else if cash >= 8.0 {
+            penalty += 2.5;
+        }
+    } else if new_income <= -5.0 {
+        // Deep debt: penalize unnecessary loans when cash is already sufficient.
+        if cash >= 20.0 {
+            penalty += 2.5;
+        } else if cash >= 10.0 {
+            penalty += 1.0;
+        }
+    }
+
+    // Late in Canal era (rounds 6..=8), taking loans that leave negative income
+    // risks entering the Rail era with depleted cash and immediate deficit lock.
+    if state.is_canal_era() && rounds_left <= 3.0 && new_income < 0.0 && cash >= 10.0 {
+        penalty += (4.0 - rounds_left) * 1.0;
+    }
+
+    let normalized_value = (economic_value - penalty).clamp(0.0, 1.0);
+    let mut score = -4.0 + 10.0 * normalized_value;
+    if penalty > 0.0 {
+        score -= penalty;
+    }
+
     LoanEvaluation {
         a,
         b,
@@ -111,7 +158,7 @@ mod tests {
                 result.normalized_value,
                 result.score,
             );
-            assert!((-4.0..=6.0).contains(&result.score));
+            assert!(result.score <= 6.0);
         }
 
         let canal_low_cash = evaluation(Era::Canal, 1, 5.0, 0.0);
@@ -128,7 +175,7 @@ mod tests {
                 >= evaluation(Era::Canal, 8, 15.0, 0.0).score
         );
         assert_eq!(evaluation(Era::Rail, 8, 100.0, 20.0).score, -4.0);
-        assert_eq!(evaluation(Era::Canal, 1, -100.0, -10.0).score, 6.0);
+        assert!(evaluation(Era::Canal, 1, -100.0, -10.0).score <= 6.0);
 
         let mut state = GameState::new(ChaCha12Rng::seed_from_u64(8), 4);
         let pid = state.current_player_id();

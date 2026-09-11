@@ -351,8 +351,46 @@ fn score_target_plan(
             Some(_) => 0.1,
             None => -0.5,
         };
+
+        // Charge realistic cash cost for purchasing market iron.
+        let money_cost = actual_cost as f64 * 0.12;
+
+        // Progressive repetition penalty: Canal era has only 15 actions total.
+        // Developing 1-2 times is standard preparation; developing 3+ times wastes
+        // precious action tempo and drains vital cash needed for board presence.
+        let repetition_penalty = if state.is_canal_era() {
+            match already_develop_cnt {
+                0 => 0.0,
+                1 => 0.4,
+                2 => 1.5,
+                _ => 3.5 + (already_develop_cnt - 2) as f64 * 2.0,
+            }
+        } else {
+            already_develop_cnt as f64 * 0.4
+        };
+
+        // Solvency guardrail: spending scarce cash on develop while in negative income
+        // without reserving cash for round-end debt deductions causes tile liquidations.
+        let pid = state.current_player_id();
+        let income_level = state.players[pid].income_level();
+        let solvency_penalty = if income_level < 0 {
+            let debt_per_round = (-income_level) as i32;
+            let remaining = state.players[pid].money - actual_cost;
+            if remaining < debt_per_round {
+                3.5
+            } else if remaining < debt_per_round * 2 {
+                1.5
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
         let score = iron_baseline(&iron) + target_value + second_industry_bonus
-            - already_develop_cnt as f64 * 0.2;
+            - money_cost
+            - repetition_penalty
+            - solvency_penalty;
         decisions.push(Decision {
             mv: ResolvedMove::Develop {
                 ind1: first.ind,
@@ -360,7 +398,7 @@ fn score_target_plan(
                 iron,
                 card_index: card_choices[0].0,
             },
-            score: quantize_score(score.clamp(0.0, 6.0)),
+            score: quantize_score(score.clamp(-2.0, 6.0)),
             card_score: card_choices[0].1,
         });
     }

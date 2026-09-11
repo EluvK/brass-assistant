@@ -626,7 +626,11 @@ fn select_child(arena: &[Node], node_idx: usize, pid: usize, cfg: &NnMctsConfig)
     // rather than by the prior alone. Otherwise fall back to first-play
     // urgency: terminal utility is zero-mean across seats, so 0 is already a
     // neutral guess, and FPU starts the child at the parent's value instead.
-    let fpu = if cfg.fpu { node.q(pid) - cfg.fpu_reduction } else { 0.0 };
+    let fpu = if cfg.fpu {
+        node.q(pid) - cfg.fpu_reduction
+    } else {
+        0.0
+    };
     let mut best: Option<(usize, f64)> = None;
     for (i, child) in node.children.iter().enumerate() {
         let cn = &arena[child.node];
@@ -713,7 +717,11 @@ fn terminal_value(state: &GameState, n_players: usize) -> Vec<f64> {
 /// VP_SCALE = 50), so clamping only ever catches blow-ups. NaN maps to neutral.
 fn search_value(raw: f32) -> f64 {
     let v = raw as f64;
-    if v.is_nan() { 0.0 } else { v.clamp(-VALUE_LIMIT, VALUE_LIMIT) }
+    if v.is_nan() {
+        0.0
+    } else {
+        v.clamp(-VALUE_LIMIT, VALUE_LIMIT)
+    }
 }
 
 const VALUE_LIMIT: f64 = 4.0;
@@ -808,8 +816,7 @@ fn flush_net(
     let links_arr = PyArray1::from_vec(py, links).reshape((n_rows, link_len))?;
     let merchants_arr = PyArray1::from_vec(py, merchants).reshape((n_rows, merchant_len))?;
     let seats_arr = PyArray1::from_vec(py, seats).reshape((n_rows, seat_len))?;
-    let global_arr =
-        PyArray1::from_vec(py, globals).reshape((n_rows, crate::encode::F_GLOBAL))?;
+    let global_arr = PyArray1::from_vec(py, globals).reshape((n_rows, crate::encode::F_GLOBAL))?;
     let candidates_arr =
         PyArray1::from_vec(py, candidate_rows).reshape((n_rows, max_candidates * dim))?;
     let candidate_mask_arr =
@@ -854,7 +861,9 @@ fn flush_net(
         // The value head is an unconstrained linear layer, so `search_value`
         // clamps blow-ups before they reach PUCT's value/exploration
         // comparison.
-        let value: Vec<f64> = (0..MAX_PLAYERS).map(|p| search_value(values[r0 + p])).collect();
+        let value: Vec<f64> = (0..MAX_PLAYERS)
+            .map(|p| search_value(values[r0 + p]))
+            .collect();
         let priors = match &req.kind {
             RequestKind::Expand {
                 candidate_features, ..
@@ -910,12 +919,12 @@ fn softmax(logits: &[f32]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{declared_cards, rebind_cards, search_value, terminal_value};
-    use crate::r#move::ResolvedMove;
-    use crate::state::GameState;
-    use crate::state::Card;
     use crate::map::Loc;
-    use rand_chacha::rand_core::SeedableRng;
+    use crate::r#move::ResolvedMove;
+    use crate::state::Card;
+    use crate::state::GameState;
     use rand_chacha::ChaCha12Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     #[test]
     fn terminal_value_is_a_zero_mean_vp_margin() {
@@ -953,13 +962,20 @@ mod tests {
             card_index: index,
         };
         let mut mv = move_with(0);
-        assert_eq!(declared_cards(&enumerated, &mv)[0], Card::Location(Loc::Derby));
+        assert_eq!(
+            declared_cards(&enumerated, &mv)[0],
+            Card::Location(Loc::Derby)
+        );
 
         // A later determinization reorders the hand: the same card now sits at
         // index 1. The stored index must not silently pay Oxford instead.
         let reused = vec![Card::Location(Loc::Oxford), Card::Location(Loc::Derby)];
         assert_ne!(declared_cards(&reused, &mv)[0], Card::Location(Loc::Derby));
-        assert!(rebind_cards(&mut mv, &[Card::Location(Loc::Derby)], &reused));
+        assert!(rebind_cards(
+            &mut mv,
+            &[Card::Location(Loc::Derby)],
+            &reused
+        ));
         match mv {
             ResolvedMove::Network { card_index, .. } => assert_eq!(card_index, 1),
             other => panic!("unexpected move {other:?}"),
@@ -980,7 +996,9 @@ mod tests {
             Card::Location(Loc::Derby),
             Card::Location(Loc::Oxford),
         ];
-        let mut mv = ResolvedMove::Scout { card_indices: [0, 1, 2] };
+        let mut mv = ResolvedMove::Scout {
+            card_indices: [0, 1, 2],
+        };
         let cards = vec![
             Card::Location(Loc::Oxford),
             Card::Location(Loc::Derby),
@@ -989,10 +1007,7 @@ mod tests {
         assert!(rebind_cards(&mut mv, &cards, &hand));
         match mv {
             ResolvedMove::Scout { card_indices } => {
-                let mut got: Vec<_> = card_indices
-                    .iter()
-                    .map(|i| hand[*i].clone())
-                    .collect();
+                let mut got: Vec<_> = card_indices.iter().map(|i| hand[*i].clone()).collect();
                 got.sort_by_key(|c| format!("{c:?}"));
                 let mut want = cards;
                 want.sort_by_key(|c| format!("{c:?}"));

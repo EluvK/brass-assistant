@@ -282,8 +282,7 @@ fn cells_vec(state: &GameState, pid: usize, net_masks: &[u32; SEAT_COUNT]) -> Ve
             c[base + CELL_INDUSTRY + t.ind as usize] = 1.0;
             c[base + CELL_FLIPPED] = t.flipped as u8 as f32;
             c[base + CELL_CUBES] = t.resource_cubes as f32 / CUBES_SCALE;
-            c[base + CELL_LEVEL] =
-                (t.def.level as f32 / LEVEL_SCALE).clamp(0.0, 1.0); // max level 8
+            c[base + CELL_LEVEL] = (t.def.level as f32 / LEVEL_SCALE).clamp(0.0, 1.0); // max level 8
             c[base + CELL_VP] = t.def.vp as f32 / TILE_VP_SCALE;
             c[base + CELL_INCOME] = t.def.income as f32 / INCOME_SCALE;
         }
@@ -387,8 +386,9 @@ fn seats_vec(state: &GameState, pid: usize) -> Vec<f32> {
         s[base + SEAT_WILD_LOCATION] = player.has_wild_location as u8 as f32;
         s[base + SEAT_WILD_INDUSTRY] = player.has_wild_industry as u8 as f32;
         for ind in 0..INDUSTRY_COUNT {
-            let total =
-                crate::state::player_industry_stack(IndustryType::ALL[ind]).len().max(1);
+            let total = crate::state::player_industry_stack(IndustryType::ALL[ind])
+                .len()
+                .max(1);
             s[base + SEAT_REMAINING + ind] =
                 (player.remaining_count(IndustryType::ALL[ind]) as f32 / total as f32).min(1.0);
         }
@@ -496,11 +496,20 @@ mod tests {
         let state = GameState::new(ChaCha12Rng::seed_from_u64(99), 4);
         let t = state_tokens(&state, 0);
         let coal_plane = CELL_ALLOWED + IndustryType::CoalMine as usize;
-        assert!(t.cells.iter().skip(coal_plane).step_by(F_CELL).any(|&v| v == 1.0));
+        assert!(
+            t.cells
+                .iter()
+                .skip(coal_plane)
+                .step_by(F_CELL)
+                .any(|&v| v == 1.0)
+        );
         for farm in 0..2 {
             let base = (CITY_CELLS + farm) * F_CELL;
             assert_eq!(t.cells[base + CELL_IS_FARM], 1.0);
-            assert_eq!(t.cells[base + CELL_ALLOWED + IndustryType::Brewery as usize], 1.0);
+            assert_eq!(
+                t.cells[base + CELL_ALLOWED + IndustryType::Brewery as usize],
+                1.0
+            );
         }
     }
 

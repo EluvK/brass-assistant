@@ -90,15 +90,14 @@ pub(super) fn score_scout_plan(state: &GameState, card_choices: &CardChoices) ->
     })
 }
 
-/// Pass does nothing: no cash, income, VP, or flexibility change, so its
-/// score is naturally zero — below any positive-value action, above any
-/// money-losing one. In the unified currency there is no need for a magic
-/// negative constant.
+/// Pass is an undesirable fallback that wastes a scarce action and discards a card
+/// without creating board presence or economic momentum. Its score is pegged to
+/// PASS_FALLBACK_SCORE so productive alternatives are consistently preferred.
 pub(super) fn score_pass_result(card_choices: &CardChoices) -> Option<Decision> {
     let card_index = card_choices.first().map(|(index, _)| *index).unwrap_or(0);
     Some(Decision {
         mv: ResolvedMove::Pass { card_index },
-        score: 0.0,
+        score: PASS_FALLBACK_SCORE,
         card_score: card_choices
             .first()
             .map(|(_, s)| *s)

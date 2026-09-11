@@ -854,14 +854,8 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crate::bridge::action_features::OFF_REF_COUNT,
     )?;
     m.add("ACTION_OFF_REFS", crate::bridge::action_features::OFF_REFS)?;
-    m.add(
-        "ACTION_REF_CELL",
-        crate::bridge::action_features::REF_CELL,
-    )?;
-    m.add(
-        "ACTION_REF_LINK",
-        crate::bridge::action_features::REF_LINK,
-    )?;
+    m.add("ACTION_REF_CELL", crate::bridge::action_features::REF_CELL)?;
+    m.add("ACTION_REF_LINK", crate::bridge::action_features::REF_LINK)?;
     m.add(
         "ACTION_REF_MERCHANT",
         crate::bridge::action_features::REF_MERCHANT,

@@ -97,7 +97,6 @@ pub fn link_current_and_potential_vps(
 pub struct MarketSale {
     pub cash: f64,
     pub sold: u8,
-    pub total: u8,
     pub flips: bool,
 }
 
@@ -119,7 +118,6 @@ pub fn simulate_market_sale(state: &GameState, is_coal: bool, cubes: u8) -> Mark
     MarketSale {
         cash,
         sold,
-        total: cubes,
         flips: sold == cubes && cubes > 0,
     }
 }

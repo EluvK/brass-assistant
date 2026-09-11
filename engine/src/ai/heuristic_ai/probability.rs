@@ -81,7 +81,19 @@ fn resource_flip(
         (false, true) => cfg.iron_demand_rail,
         (false, false) => cfg.iron_demand_canal,
     };
-    (era_demand + cfg.scarcity_bonus * scarcity).min(cfg.cap)
+    let mut prob = era_demand + cfg.scarcity_bonus * scarcity;
+    // Iron cubes left on the board are globally reachable to all players without
+    // network connection. If only 1-2 cubes remain after initial market sale,
+    // table consumption from opponent builds/develops makes flipping near-certain.
+    if !is_coal && can_sell && sale.sold > 0 {
+        let remaining = cubes.saturating_sub(sale.sold);
+        if remaining <= 1 {
+            prob += 0.25;
+        } else if remaining <= 2 {
+            prob += 0.15;
+        }
+    }
+    prob.min(cfg.cap)
 }
 
 /// Brewery flip model: beer demand from our unflipped sellables (plus a

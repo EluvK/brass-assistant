@@ -246,6 +246,7 @@ pub(crate) fn score_top_network_doubles(
         if connection_touches_farm(candidate.conn1) || connection_touches_farm(candidate.conn2) {
             total += DOUBLE_FARM_LOCK_BONUS;
         }
+
         scored.push((candidate, total));
     }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
