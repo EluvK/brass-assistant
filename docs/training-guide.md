@@ -54,11 +54,26 @@ python -m pytest python/tests -q
 
 ### 步骤 1：训练高质量专家模仿底座 (Bootstrap Imitation)
 
-我们推荐**解耦生成与训练**：先用纯 Rust 高性能生成器产出样本，再直接挂载训练。
+我们推荐**解耦生成与训练**：先用纯 Rust 高性能生成器产出样本，再直接挂载训练。**整个过程完全不依赖 MCTS，纯启发式专家生成 + 纯监督深度学习**。
 
-#### 方案 A（推荐首选）：直接加载纯 Rust 生成的 `.bin` 样本库训练
-直接加载由 `gen_imitation` 生成在 `data/imitation_shards`（或自定义目录）中的紧凑二进制分片进行训练：
+#### 方案 A（推荐首选）：纯 Rust 极速生成样本分片 + 挂载训练
 
+**子步骤 1.1：纯 Rust 引擎高速生成二进制样本分片（~70 局/秒，零 MCTS 开销）**
+```bash
+# 生成 10,000 局高质量专家对局（开启 min-vp 30 质量硬门禁，产出约 124 万步样本）
+cargo run --release --bin gen_imitation -- \
+  --games 10000 \
+  --out-dir data/imitation_shards \
+  --min-vp 30
+```
+- `gen_imitation` 核心参数说明：
+  - `--games / -n`：目标录取的合格对局数（默认 1000）。
+  - `--out-dir / -o`：二进制分片输出目录（默认 `data/imitation_shards`）。
+  - `--min-vp`：单人最低分硬门禁（推荐 30），任何玩家终局分低于此门槛整局作废。
+  - `--min-avg-vp`：全桌平均分门禁（可选，例如 100）。
+  - `--shard-size`：每个 `.bin` 分片容纳的动作步数（默认 32768 步，约 70MB/片）。
+
+**子步骤 1.2：Python 启动神经网络预训练（流式加载 .bin 分片）**
 ```bash
 python python/bootstrap_imitation.py \
   --sample-dir data/imitation_shards \
@@ -68,7 +83,7 @@ python python/bootstrap_imitation.py \
   --materialize-workers 8
 ```
 
-#### 方案 B：在线生成并训练
+#### 方案 B：在线生成并训练（无需提前生成分片）
 若需在线小批量快速实验，可通过 Python 直接驱动生成与训练（开启 `--min-vp 30` 质量门禁，杜绝破产局）：
 
 ```bash
@@ -89,6 +104,7 @@ python python/bootstrap_imitation.py \
   - `--epochs 3`：跑 3 个全量 epoch（124 万步数据跑 3 遍），充分拟合 Policy、相对 Value 以及新增的绝对分 `abs_vp`。
   - `--batch 256`：GPU 批大小（可根据显存调整为 128~512）。
   - `--materialize-workers 8`：并行快照物化工作进程数。
+  - `--resume`：支持中断后接着上一 epoch 续训。
 
 | 指标 | 到底在预测什么？ | 数学计算方式 | 盲猜 baseline | 目标优秀值 |
 | --- | --- | --- | --- | --- |
@@ -121,6 +137,8 @@ python python/bench_value_ranking.py \
 以干净的底座为起点，模型通过自我博弈并持续升级。系统支持基于 MCTS 树搜索的稳健自对弈，以及纯 Policy 向量化极速自对弈：
 
 #### 方式一：MCTS 树搜索自对弈（生产基线）
+以深度启发式树搜索指导策略与价值学习，产生更深刻的大局观和长线规划能力：
+
 ```bash
 python python/selfplay_train.py \
   --ckpt-dir checkpoints/v1/runs/sp01 \
@@ -138,6 +156,44 @@ python python/selfplay_train.py \
   --heuristic-eval-games 12 \
   --promote-winrate 0.35
 ```
+
+#### 方式二：纯 Policy 向量化极速自对弈（零 MCTS，极速吞吐）
+完全剥离 MCTS 树搜索开销，基于多环境（Batched Envs）锁步并发推演，直接通过神经网络 Policy Logits 带温度采样快速生成对局轨迹，并由 Rust 老师门禁考官进行质量把关：
+
+```bash
+python python/fast_selfplay_train.py \
+  --ckpt-dir checkpoints/v1/runs/fast_sp01 \
+  --init-from checkpoints/v1/bootstrap/b2000.pt \
+  --iterations 30 \
+  --games-per-iter 64 \
+  --env-count 16 \
+  --temperature 0.8 \
+  --heuristic-prob 0.25 \
+  --kl-lambda 0.05 \
+  --min-vp-filter 30.0 \
+  --batch 256 \
+  --lr 1e-4 \
+  --eval-every 5 \
+  --eval-games 20
+```
+
+- **方式二核心参数**：
+  - `--env-count 16`：并发运行的 Rust 游戏环境数，在 GPU 上单步集中打包前向推理，吞吐可达 10~30 局/秒。
+  - `--temperature 0.8`：走步采样温度（越接近 1.0 探索越广，越小越贪婪，推荐 0.6 ~ 0.8）。
+  - `--heuristic-prob 0.25`：**启发式混战比例**：为对手席位以 25% 概率混入 120 分 Rust 老师执子，打破自博弈共谋盲区。
+  - `--kl-lambda 0.05`：**KL 散度正则约束权重**：约束策略相对 Champion 锚点分布的偏离度 $D_{\text{KL}}(\pi_{\text{anchor}} \parallel \pi_{\theta})$，考官晋升新模型时自动滚动锚点，防范自对弈策略崩溃。
+  - `--min-vp-filter 30.0`：**劣质局过滤硬门槛**：全盘任一玩家最终分低于 30 分的崩溃局直接弃用，确保梯度健康。
+  - 内部自动启用 **Advantage 优势加权**：依据终局相对胜负净分动态赋予动作置信度，胜者额外强化 1.5x，避免无脑模仿臭棋。
+  - `--eval-every 5`：每隔 5 轮调用 `evaluate_vs_heuristic_teachers`，自动与 3 位 Rust 启发式老师切磋，考官均分提升时自动沉淀 `best.pt`。
+
+#### 两种自对弈路径对比与选型建议：
+| 对比维度 | 方式一：MCTS 树搜索自对弈 (`selfplay_train.py`) | 方式二：纯 Policy 向量化极速自对弈 (`fast_selfplay_train.py`) |
+| :--- | :--- | :--- |
+| **MCTS 依赖** | **依赖**（默认 128 次推演/步） | **完全不依赖（Zero MCTS）** |
+| **生成速度** | 较慢（约 0.5 ~ 2 局/秒） | **极快（约 10 ~ 30 局/秒）** |
+| **显存/CPU要求** | CPU 密集（多进程并行 MCTS 树） | GPU 集中打包推理（显存利用率高） |
+| **策略特点** | 局部战术计算深，防守与借贷时机更准 | 适合海量探索，快速验证网络结构与超参数 |
+| **适用阶段** | 冲刺高分上限、参加正式竞技锦标赛 | 快速原型验证、轻量机器日常训练、大规模策略迭代 |
 
 #### 关键参数配置指南：
 | 参数 | 推荐值 | 物理含义与调优理由 |

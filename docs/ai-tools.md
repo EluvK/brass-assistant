@@ -57,7 +57,8 @@ Python adapter 与 checkpoint 会拒绝未知 schema（`ACTION_SCHEMA_VERSION`�
 python/
 |- bootstrap_imitation.py     heuristic imitation warm-start 入口
 |- gatekeeper_eval.py         考官门禁实战体检脚本 (Candidate vs 3 Rust 老师)
-|- selfplay_train.py          长期 self-play 训练入口（阶段 3）
+|- fast_selfplay_train.py     纯 Policy 向量化极速自对弈训练入口（零 MCTS 极速训练）
+|- selfplay_train.py          长期 MCTS 树搜索自对弈训练入口（生产基线）
 |- bench_value_ranking.py     Q(s,a) 与 V(s) 动作/价值排序体检探针
 |- inspect_ckpt.py            模型权重、Schema 兼容性与元数据检查工具
 |- brass_ai/
@@ -201,6 +202,26 @@ cargo test --features python
 | `--promote-winrate` | arena 胜率阈值（默认 0.35），同时要求 Wilson 下限 ≥ 0.25、教师评测无零分且均分不低于 best |
 | `--prior-top-k` / `--c-puct` / `--no-fpu` / `--no-q-init` | 搜索分支控制，见下 |
 | `--max-depth` / `--mcts-batch` / `--candidate-k` | Rust ISMCTS 参数；`--candidate-k 0` 为 full-legal |
+
+### 纯 Policy 向量化自对弈训练入口（零 MCTS）
+
+`fast_selfplay_train.py` 是完全不依赖 MCTS 树搜索的纯策略极速自对弈训练入口。它通过 `VectorizedSelfPlay` 并发维护多个环境，在 GPU 上单步批处理 Policy Logits 采样走步（~0.05 秒/局），极大提高采样吞吐，并结合 `evaluate_vs_heuristic_teachers` 考官门禁自动评测晋升：
+
+```powershell
+& .\.venv\Scripts\python.exe python/fast_selfplay_train.py `
+  --ckpt-dir checkpoints/v1/runs/fast_sp01 `
+  --init-from checkpoints/v1/bootstrap/b2000.pt `
+  --iterations 30 --games-per-iter 64 --env-count 16 --temperature 0.8 `
+  --batch 256 --lr 1e-4 --eval-every 5 --eval-games 20
+```
+
+| 参数 | 用途 |
+| --- | --- |
+| `--init-from` / `--resume` | 从 imitation checkpoint 热启动 / 从 `<ckpt-dir>/latest.pt` 续训 |
+| `--iterations` / `--games-per-iter` | 训练迭代轮数 / 每轮并发自对弈局数 |
+| `--env-count` | 并发推进的 Rust 游戏环境数（GPU 集中批前向推理） |
+| `--temperature` | 策略采样温度（推荐 0.6 ~ 0.8 兼顾探索与质量） |
+| `--eval-every` / `--eval-games` | 门禁考官评测间隔轮数 / 面对 3 位 Rust 启发式老师的对抗局数 |
 
 ### 价值头兄弟排序基准
 

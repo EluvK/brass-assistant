@@ -30,16 +30,22 @@ class RolloutStep:
     log_prob: float
     action_probs: np.ndarray  # policy distribution over legal candidates
     snapshot: bytes
+    anchor_probs: np.ndarray | None = None
 
 
 @dataclass
 class GameTrajectory:
     seed: int
     steps: list[RolloutStep]
-    vps: np.ndarray
+    vps: np.ndarray  # float64 array of shape (4,)
     final_ranking: list[int]
     canal_econ: list[tuple[int, int]]
     final_econ: list[tuple[int, int]]
+    learner_seats: set[int] | None = None
+
+    def __post_init__(self):
+        if self.learner_seats is None:
+            self.learner_seats = {0, 1, 2, 3}
 
 
 def choose_policy_action(
@@ -68,6 +74,26 @@ def choose_policy_action(
     prob_arr = probs.detach().cpu().numpy()
     log_prob = float(torch.log(probs[action_idx].clamp_min(1e-10)).item())
     return action_idx, log_prob, prob_arr
+
+
+class HeuristicRoundPlayer:
+    """Heuristic player that plans the whole round with 2-ply lookahead
+    via `choose_heuristic_round` and caches the second action.
+    """
+
+    def __init__(self):
+        self.pending: list[str] = []
+
+    def step(self, state: be.GameState) -> str:
+        if self.pending:
+            return self.pending.pop(0)
+        first, second, _ = state.choose_heuristic_round()
+        if second is not None:
+            self.pending.append(second)
+        return first
+
+    def reset(self):
+        self.pending.clear()
 
 
 class FastPolicyPlayer:
@@ -163,15 +189,45 @@ def play_game_fast(
     )
 
 
-def trajectory_to_samples(traj: GameTrajectory) -> list[Sample]:
-    """Convert a completed GameTrajectory into training Samples."""
+def trajectory_to_samples(
+    traj: GameTrajectory,
+    min_vp_filter: float = 0.0,
+    use_advantage: bool = True,
+    winner_boost: float = 1.5,
+) -> list[Sample]:
+    """Convert a completed GameTrajectory into training Samples with optional
+    quality filtering and advantage-weighted importance.
+    """
+    if min_vp_filter > 0.0 and float(np.min(traj.vps)) < min_vp_filter:
+        return []
+
     value, winner = _value_targets(traj.vps, traj.final_ranking, 4)
     abs_vp = ((traj.vps - 100.0) / 50.0).astype(np.float32)
 
+    # Advantage per player: Adv_p = (VP_p - mean(VP)) / 50.0
+    mean_vp = float(np.mean(traj.vps))
+    player_weights = {}
+    for pid in range(4):
+        if use_advantage:
+            adv = float((traj.vps[pid] - mean_vp) / 50.0)
+            w = float(np.clip(np.exp(adv), 0.25, 3.0))
+            if traj.final_ranking and traj.final_ranking[0] == pid:
+                w *= winner_boost
+            player_weights[pid] = w
+        else:
+            player_weights[pid] = 1.0
+
     samples: list[Sample] = []
+    learners = getattr(traj, "learner_seats", None) or {0, 1, 2, 3}
     for step in traj.steps:
+        if step.pid not in learners:
+            continue
         econ_pair = traj.canal_econ[step.pid] if step.era == 0 else traj.final_econ[step.pid]
         econ = np.asarray(econ_pair, dtype=np.float32)
+        w = player_weights.get(step.pid, 1.0)
+        anchor_p = getattr(step, "anchor_probs", None)
+        if anchor_p is None:
+            anchor_p = getattr(step, "action_probs", None)
         samples.append(Sample(
             pid=step.pid,
             era=step.era,
@@ -181,6 +237,8 @@ def trajectory_to_samples(traj: GameTrajectory) -> list[Sample]:
             econ=econ,
             snapshot=step.snapshot,
             teacher_canonical=step.canonical,
+            weight=w,
+            anchor_probs=anchor_p,
         ))
     return samples
 
@@ -200,12 +258,24 @@ class VectorizedSelfPlay:
         env_count: int = 16,
         device: str = "cpu",
         temperature: float = 0.8,
+        heuristic_prob: float = 0.0,
+        anchor_net: PolicyValueNet | None = None,
     ):
         self.net = net
         self.env_count = max(1, env_count)
         self.device = device
         self.temperature = temperature
+        self.heuristic_prob = max(0.0, min(1.0, float(heuristic_prob)))
+        self.anchor_net = anchor_net
         self.net.eval()
+        if self.anchor_net is not None:
+            self.anchor_net.eval()
+
+    def set_anchor_net(self, anchor_net: PolicyValueNet | None) -> None:
+        """Dynamically update or clear the reference anchor network."""
+        self.anchor_net = anchor_net
+        if self.anchor_net is not None:
+            self.anchor_net.eval()
 
     def run_games(
         self,
@@ -216,13 +286,31 @@ class VectorizedSelfPlay:
         completed_trajectories: list[GameTrajectory] = []
         next_seed = start_seed
 
+        def create_env(seed: int, env_idx: int):
+            st = be.GameState(seed=seed, players=4)
+            teachers = {}
+            learners = {0, 1, 2, 3}
+            if self.heuristic_prob > 0.0:
+                learner_seat = env_idx % 4
+                rng = np.random.default_rng(seed)
+                for s in range(4):
+                    if s != learner_seat and rng.random() < self.heuristic_prob:
+                        teachers[s] = HeuristicRoundPlayer()
+                        learners.discard(s)
+            return st, teachers, learners
+
         # Initialize slots
         active_states: list[be.GameState | None] = []
+        active_teachers: list[dict[int, HeuristicRoundPlayer]] = []
+        active_learners: list[set[int]] = []
         active_steps: list[list[RolloutStep]] = []
         active_seeds: list[int] = []
 
-        for _ in range(min(self.env_count, n_games)):
-            active_states.append(be.GameState(seed=next_seed, players=4))
+        for env_idx in range(min(self.env_count, n_games)):
+            st, tch, lrn = create_env(next_seed, env_idx)
+            active_states.append(st)
+            active_teachers.append(tch)
+            active_learners.append(lrn)
             active_steps.append([])
             active_seeds.append(next_seed)
             next_seed += 1
@@ -232,7 +320,43 @@ class VectorizedSelfPlay:
             if not active_indices:
                 break
 
-            # Pack state tokens and candidates for all active environments
+            # 1. Advance heuristic teacher turns (fast CPU operations)
+            # Drain consecutive teacher moves in all active environments until either it's an NN turn or game is over
+            for env_idx in active_indices:
+                st = active_states[env_idx]
+                while st is not None and not st.game_over:
+                    pid = st.current_player_id
+                    if pid not in active_teachers[env_idx]:
+                        break
+                    teacher_move = active_teachers[env_idx][pid].step(st)
+                    st.apply_move(teacher_move)
+
+                    if st.game_over or len(active_steps[env_idx]) >= max_moves_per_game:
+                        traj = GameTrajectory(
+                            seed=active_seeds[env_idx],
+                            steps=active_steps[env_idx],
+                            vps=np.asarray(st.player_vps(), dtype=np.float64),
+                            final_ranking=list(st.final_ranking()),
+                            canal_econ=st.canal_econ(),
+                            final_econ=st.final_econ(),
+                            learner_seats=active_learners[env_idx],
+                        )
+                        completed_trajectories.append(traj)
+
+                        if next_seed - start_seed < n_games:
+                            st_new, tch_new, lrn_new = create_env(next_seed, env_idx)
+                            active_states[env_idx] = st_new
+                            active_teachers[env_idx] = tch_new
+                            active_learners[env_idx] = lrn_new
+                            active_steps[env_idx] = []
+                            active_seeds[env_idx] = next_seed
+                            next_seed += 1
+                            st = st_new
+                        else:
+                            active_states[env_idx] = None
+                            st = None
+
+            # 2. Pack state tokens and candidates for all remaining active environments (NN turns)
             cells_list, links_list, merch_list, seats_list, g_list = [], [], [], [], []
             candidate_features_list = []
             canonical_lists = []
@@ -240,6 +364,8 @@ class VectorizedSelfPlay:
 
             for idx in active_indices:
                 st = active_states[idx]
+                if st is None or st.game_over:
+                    continue
                 pid = st.current_player_id
                 era = st.era
                 snap = bytes(st.snapshot())
@@ -258,6 +384,9 @@ class VectorizedSelfPlay:
                 )
                 metadata.append((idx, pid, era, snap))
 
+            if not metadata:
+                continue
+
             # Batch forward pass on device
             batch = state_batch((
                 torch.stack(cells_list).to(self.device),
@@ -272,6 +401,11 @@ class VectorizedSelfPlay:
                 out = self.net(batch, padded_actions, mask)
                 logits = out["candidate_logits"]
                 masks = out["candidate_mask"]
+                if self.anchor_net is not None:
+                    anchor_out = self.anchor_net(batch, padded_actions, mask)
+                    anchor_logits = anchor_out["candidate_logits"]
+                else:
+                    anchor_logits = None
 
             # Step each active environment
             for b_idx, (env_idx, pid, era, snap) in enumerate(metadata):
@@ -281,14 +415,23 @@ class VectorizedSelfPlay:
                     logits[b_idx], masks[b_idx], temperature=self.temperature
                 )
                 canon_move = canons[act_idx]
+                n_canons = len(canons)
+
+                if anchor_logits is not None:
+                    anchor_sub = anchor_logits[b_idx][:n_canons]
+                    anchor_p = F.softmax(anchor_sub, dim=-1).detach().cpu().numpy()
+                else:
+                    anchor_p = probs[:n_canons]
+
                 active_steps[env_idx].append(RolloutStep(
                     pid=pid,
                     era=era,
                     action_index=act_idx,
                     canonical=canon_move,
                     log_prob=log_prob,
-                    action_probs=probs[:len(canons)],
+                    action_probs=probs[:n_canons],
                     snapshot=snap,
+                    anchor_probs=anchor_p,
                 ))
 
                 st.apply_move(canon_move)
@@ -302,12 +445,16 @@ class VectorizedSelfPlay:
                         final_ranking=list(st.final_ranking()),
                         canal_econ=st.canal_econ(),
                         final_econ=st.final_econ(),
+                        learner_seats=active_learners[env_idx],
                     )
                     completed_trajectories.append(traj)
 
                     # Reset environment if more games needed
                     if next_seed - start_seed < n_games:
-                        active_states[env_idx] = be.GameState(seed=next_seed, players=4)
+                        st_new, tch_new, lrn_new = create_env(next_seed, env_idx)
+                        active_states[env_idx] = st_new
+                        active_teachers[env_idx] = tch_new
+                        active_learners[env_idx] = lrn_new
                         active_steps[env_idx] = []
                         active_seeds[env_idx] = next_seed
                         next_seed += 1

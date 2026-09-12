@@ -70,6 +70,10 @@ class Sample:
     # took. Materialization turns this into `action_index`.
     played_canonical: str | None = None
     action_index: int = -1
+    # Sample advantage/importance weight (default: 1.0)
+    weight: float = 1.0
+    # Optional anchor policy distribution for KL divergence regularization
+    anchor_probs: np.ndarray | None = None
 
 
 def _value_targets(
@@ -121,6 +125,8 @@ def materialize_sample(sample: Sample) -> Sample:
         winner=sample.winner, econ=sample.econ, snapshot=sample.snapshot,
         teacher_canonical=sample.teacher_canonical, action_index=teacher_index,
         played_canonical=sample.teacher_canonical,
+        weight=getattr(sample, "weight", 1.0),
+        anchor_probs=getattr(sample, "anchor_probs", None),
     )
 
 
@@ -161,6 +167,8 @@ def _materialize_selfplay_sample(sample: Sample) -> Sample:
         policy=policy, value=sample.value, abs_vp=sample.abs_vp, winner=sample.winner, econ=sample.econ,
         snapshot=sample.snapshot, policy_by_canonical=sample.policy_by_canonical,
         played_canonical=sample.played_canonical, action_index=action_index,
+        weight=getattr(sample, "weight", 1.0),
+        anchor_probs=getattr(sample, "anchor_probs", None),
     )
 
 

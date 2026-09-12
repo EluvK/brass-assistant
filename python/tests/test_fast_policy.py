@@ -70,3 +70,44 @@ def test_vectorized_selfplay_multiple_games():
         assert len(t.vps) == 4
         samples = trajectory_to_samples(t)
         assert len(samples) == 15
+
+
+def test_vectorized_selfplay_with_heuristic_teachers():
+    net = PolicyValueNet()
+    anchor_net = PolicyValueNet()
+    runner = VectorizedSelfPlay(
+        net, env_count=2, device="cpu", temperature=0.8,
+        heuristic_prob=1.0, anchor_net=anchor_net
+    )
+    trajectories = runner.run_games(start_seed=600, n_games=2, max_moves_per_game=20)
+    assert len(trajectories) == 2
+    for t in trajectories:
+        assert len(t.vps) == 4
+        assert hasattr(t, "learner_seats")
+        # With heuristic_prob=1.0, exactly 1 seat is learner and 3 seats are heuristic teachers
+        assert len(t.learner_seats) == 1
+        samples = trajectory_to_samples(t, use_advantage=True)
+        assert len(samples) > 0
+        for s in samples:
+            assert s.pid in t.learner_seats
+            assert hasattr(s, "weight")
+            assert s.weight > 0.0
+            assert s.anchor_probs is not None
+            assert len(s.anchor_probs) > 0
+
+
+def test_trajectory_to_samples_advantage_weighting():
+    net = PolicyValueNet()
+    traj = play_game_fast(net, seed=700, device="cpu", temperature=0.8, max_moves=20)
+    # Assign distinct artificial VPs
+    traj.vps = np.array([140.0, 110.0, 90.0, 60.0])
+    traj.final_ranking = [0, 1, 2, 3]
+
+    samples = trajectory_to_samples(traj, min_vp_filter=50.0, use_advantage=True)
+    assert len(samples) == 20
+    # Winner (seat 0, 140 VP) should have significantly higher weight than lowest (seat 3, 60 VP)
+    w_winner = [s.weight for s in samples if s.pid == 0][0]
+    w_loser = [s.weight for s in samples if s.pid == 3][0]
+    assert w_winner > w_loser
+    assert w_winner > 1.0
+

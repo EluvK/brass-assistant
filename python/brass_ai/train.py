@@ -62,6 +62,7 @@ class TrainConfig:
     econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
     econ_neg_weight: float = 1.0  # extra weight on samples with negative income (1.0 = off, kept for ablation)
     abs_vp_lambda: float = 0.5  # weight of the absolute VP regression loss (SmoothL1)
+    kl_lambda: float = 0.0      # weight of the KL divergence loss against anchor probabilities
     # Weight of the action-conditioned value loss (Q(s, played) -> the mover's
     # own terminal utility). V(s) alone cannot rank sibling moves; Q receives
     # the action's referenced entities directly.
@@ -269,13 +270,32 @@ class Trainer:
 def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
                  econ_lambda: float = 0.2, econ_neg_weight: float = 1.0,
                  winner_weight: float = 0.5, q_lambda: float = 0.3,
-                 abs_vp_lambda: float = 0.5):
+                 abs_vp_lambda: float = 0.5, kl_lambda: float = 0.0):
     tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
     out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
     target = tensors["policy"]
-    policy_loss = -(target * out["candidate_log_probs"].masked_fill(
+    sample_weights = tensors.get("weight")
+
+    policy_per_sample = -(target * out["candidate_log_probs"].masked_fill(
         ~out["candidate_mask"], 0.0
-    )).sum(dim=1).mean()
+    )).sum(dim=1)
+    if sample_weights is not None and sample_weights.ndim == 1:
+        sw = sample_weights.float()
+        policy_loss = (policy_per_sample * sw).sum() / sw.sum().clamp_min(1e-6)
+    else:
+        policy_loss = policy_per_sample.mean()
+
+    # KL Divergence loss against anchor distribution:
+    kl_loss = torch.zeros((), device=device)
+    if kl_lambda > 0.0 and "anchor_probs" in tensors:
+        anchor_mask = tensors.get("anchor_mask")
+        if anchor_mask is not None and bool(anchor_mask.any()):
+            from .rl_league import compute_kl_loss
+            kl_loss = compute_kl_loss(
+                out["candidate_log_probs"][anchor_mask],
+                tensors["anchor_probs"][anchor_mask],
+                out["candidate_mask"][anchor_mask],
+            )
 
     # Value head: per-seat terminal utility `(vp - table_mean_vp) / VP_SCALE`,
     # the same scale the search backs up. Zero-mean across seats, so "an
@@ -299,7 +319,12 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
         q_pred = out["candidate_value"].gather(
             1, played.clamp_min(0).unsqueeze(1)
         ).squeeze(1)
-        q_loss = F.mse_loss(q_pred[has_label], q_target[has_label]) * q_lambda
+        q_diff = (q_pred[has_label] - q_target[has_label]).pow(2)
+        if sample_weights is not None and sample_weights.ndim == 1:
+            sw_q = sample_weights[has_label].float()
+            q_loss = (q_diff * sw_q).sum() / sw_q.sum().clamp_min(1e-6) * q_lambda
+        else:
+            q_loss = q_diff.mean() * q_lambda
 
     # Economic-supervision auxiliary loss, SPLIT BY ERA (each sample trains the
     # head of its own era: canal samples -> canal-end economy, rail samples ->
@@ -337,8 +362,8 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
             abs_vp_loss = F.smooth_l1_loss(out["abs_vp"], tensors["abs_vp"], beta=0.2)
 
     l2_loss = sum(p.pow(2).sum() for p in net.parameters()) * l2
-    total = policy_loss + value_loss + abs_vp_lambda * abs_vp_loss + winner_weight * winner_loss + econ_loss + q_loss + l2_loss
-    return total, policy_loss, value_loss, winner_loss, econ_loss, l2_loss, q_loss, abs_vp_loss
+    total = policy_loss + value_loss + abs_vp_lambda * abs_vp_loss + winner_weight * winner_loss + econ_loss + q_loss + l2_loss + kl_lambda * kl_loss
+    return total, policy_loss, value_loss, winner_loss, econ_loss, l2_loss, q_loss, abs_vp_loss, kl_loss
 
 
 def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
@@ -361,7 +386,8 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
         with torch.autocast(device_type=cfg.device):
             losses = compute_loss(
                 batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight,
-                q_lambda=cfg.q_lambda, abs_vp_lambda=cfg.abs_vp_lambda)
+                q_lambda=cfg.q_lambda, abs_vp_lambda=cfg.abs_vp_lambda,
+                kl_lambda=cfg.kl_lambda)
         total = losses[0]
         if not torch.isfinite(total):
             raise FloatingPointError("non-finite loss before AMP backward")
@@ -381,7 +407,8 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
     else:
         losses = compute_loss(
             batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight,
-            q_lambda=cfg.q_lambda, abs_vp_lambda=cfg.abs_vp_lambda)
+            q_lambda=cfg.q_lambda, abs_vp_lambda=cfg.abs_vp_lambda,
+            kl_lambda=cfg.kl_lambda)
         if not torch.isfinite(losses[0]):
             raise FloatingPointError("non-finite loss before backward")
         losses[0].backward()
@@ -395,7 +422,7 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
         optimizer.step()
     if deep and gradients_finite and not all(torch.isfinite(p).all().item() for p in net.parameters()):
         raise FloatingPointError("optimizer produced non-finite parameters")
-    _, pl, rl, wl, el, ll, ql, al = losses
+    _, pl, rl, wl, el, ll, ql, al, kl = losses
     return {
         "policy": pl.detach().item(),
         "value": rl.detach().item(),
@@ -404,6 +431,7 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
         "econ": el.detach().item(),
         "q": ql.detach().item(),
         "l2": ll.detach().item(),
+        "kl": kl.detach().item(),
         "skipped": float(not gradients_finite),
     }
 
@@ -479,14 +507,38 @@ def _to_batch(samples: list[Sample]) -> dict:
     win = rotate_to_perspective(
         torch.as_tensor(np.stack([s.winner for s in samples]), dtype=torch.float32), torch.as_tensor(pid)
     ).numpy()
-    return {
+
+    # Sample weights (advantage / importance)
+    sample_weights = np.asarray([float(getattr(s, "weight", 1.0)) for s in samples], dtype=np.float32)
+
+    # Optional anchor policy probabilities for KL divergence
+    has_anchor = any(getattr(s, "anchor_probs", None) is not None for s in samples)
+    if has_anchor:
+        anchor_probs = np.zeros(candidate_mask.shape, dtype=np.float32)
+        anchor_mask = np.zeros(len(samples), dtype=bool)
+        for i, s in enumerate(samples):
+            ap = getattr(s, "anchor_probs", None)
+            if ap is not None and len(ap) > 0:
+                n_cands = min(len(ap), candidate_mask.shape[1])
+                anchor_probs[i, :n_cands] = ap[:n_cands]
+                anchor_mask[i] = True
+    else:
+        anchor_probs = None
+        anchor_mask = None
+
+    batch_dict = {
         "cells": cells, "links": links, "merchants": merchants, "seats": seats,
         "global": g, "policy": pol, "value": val, "abs_vp": abs_vp_rot,
         "abs_vp_mask": abs_mask_arr,
         "winner": win,
         "candidates": candidates, "candidate_mask": candidate_mask,
         "econ": econ, "era": era, "pid": pid, "played": played,
+        "weight": sample_weights,
     }
+    if anchor_probs is not None:
+        batch_dict["anchor_probs"] = anchor_probs
+        batch_dict["anchor_mask"] = anchor_mask
+    return batch_dict
 
 
 def _mean_losses(losses):

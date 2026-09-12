@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 import brass_ai._engine as be
-from .fast_policy import FastPolicyPlayer
+from .fast_policy import FastPolicyPlayer, HeuristicRoundPlayer
 from .net import PolicyValueNet
 
 
@@ -29,26 +29,6 @@ class GatekeeperResult:
     teacher_avg_vp: float
     passed: bool
     details: list[dict]
-
-
-class HeuristicRoundPlayer:
-    """Heuristic player that plans the whole round with 2-ply lookahead
-    via `choose_heuristic_round` and caches the second action.
-    """
-
-    def __init__(self):
-        self.pending: list[str] = []
-
-    def step(self, state: be.GameState) -> str:
-        if self.pending:
-            return self.pending.pop(0)
-        first, second, _ = state.choose_heuristic_round()
-        if second is not None:
-            self.pending.append(second)
-        return first
-
-    def reset(self):
-        self.pending.clear()
 
 
 def evaluate_vs_heuristic_teachers(

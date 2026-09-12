@@ -196,3 +196,66 @@ def test_load_bin_shard(tmp_path):
     assert s0.teacher_canonical == first
     recovered_state = be.GameState.from_snapshot(s0.snapshot)
     assert recovered_state.player_count == 4
+
+
+def test_train_with_kl_and_sample_weights():
+    torch.manual_seed(42)
+    net = PolicyValueNet()
+    state1 = be.GameState(seed=11, players=4)
+    first1, _, _ = state1.choose_heuristic_round()
+    s1 = Sample(
+        pid=state1.current_player_id,
+        era=state1.era,
+        value=np.zeros(4, dtype=np.float32),
+        abs_vp=np.zeros(4, dtype=np.float32),
+        winner=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        econ=np.zeros(2, dtype=np.float32),
+        snapshot=bytes(state1.snapshot()),
+        teacher_canonical=first1,
+        weight=2.0,
+        anchor_probs=np.ones(10, dtype=np.float32) / 10.0,
+    )
+    state2 = be.GameState(seed=12, players=4)
+    first2, _, _ = state2.choose_heuristic_round()
+    s2 = Sample(
+        pid=state2.current_player_id,
+        era=state2.era,
+        value=np.zeros(4, dtype=np.float32),
+        abs_vp=np.zeros(4, dtype=np.float32),
+        winner=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        econ=np.zeros(2, dtype=np.float32),
+        snapshot=bytes(state2.snapshot()),
+        teacher_canonical=first2,
+        weight=0.5,
+        anchor_probs=None,
+    )
+    mat_s1 = selfplay.materialize_sample(s1)
+    mat_s2 = selfplay.materialize_sample(s2)
+    assert mat_s1.weight == 2.0
+    assert mat_s2.weight == 0.5
+
+    # Test heterogeneous batch with partial anchor
+    b = _to_batch([mat_s1, mat_s2])
+    assert "weight" in b
+    assert "anchor_probs" in b
+    assert b["anchor_mask"].tolist() == [True, False]
+    assert np.allclose(b["weight"], [2.0, 0.5])
+
+    # Test loss computation with KL
+    losses = compute_loss(b, net, l2=0.0, device="cpu", kl_lambda=0.1)
+    kl_val = losses[8]
+    assert kl_val.item() >= 0.0
+
+    # Verify that weighting actually shifts policy loss
+    b_heavy_s1 = dict(b, weight=torch.tensor([100.0, 0.01]))
+    b_heavy_s2 = dict(b, weight=torch.tensor([0.01, 100.0]))
+    loss_s1 = compute_loss(b_heavy_s1, net, l2=0.0, device="cpu")[1]
+    loss_s2 = compute_loss(b_heavy_s2, net, l2=0.0, device="cpu")[1]
+    assert not torch.isclose(loss_s1, loss_s2)
+
+    # Test trainer one epoch
+    trainer = Trainer(net, TrainConfig(device="cpu", batch_size=2, kl_lambda=0.1))
+    epoch_losses = trainer.train_one_epoch([mat_s1, mat_s2])
+    assert len(epoch_losses) > 0
+    assert "kl" in epoch_losses[0]
+
