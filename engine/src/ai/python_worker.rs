@@ -191,7 +191,7 @@ fn trace_from_evidence(
     let root_value = evidence.get("root_value").and_then(Value::as_f64);
     let selected_key = move_codec::encode(selected);
 
-    let mut grouped: HashMap<String, Vec<&ResolvedMove>> = HashMap::new();
+    let mut grouped: HashMap<crate::heuristic_ai::OperationKey<'_>, Vec<&ResolvedMove>> = HashMap::new();
     for mv in legal {
         grouped
             .entry(crate::heuristic_ai::operation_key(mv))

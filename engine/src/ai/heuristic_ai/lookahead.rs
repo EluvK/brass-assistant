@@ -46,10 +46,23 @@ pub fn choose_action(state: &mut GameState) -> RoundDecision {
 fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDecision {
     let pid = state.current_player_id();
 
-    let first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
+    let mut first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
+    first_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+    // A conservative upper bound for second action + four-link continuation.
+    // Even if second action scores 60 VP (0.6x = 36) and four-link continuation adds 50 VP,
+    // total gain is comfortably within 90.0.
+    const MAX_FOUR_LINK_GAIN: f64 = 90.0;
+
     let mut best: Option<(ResolvedMove, Option<Decision>, f64, f64)> = None;
 
     for c1 in first_candidates {
+        if let Some((_, _, best_value, _)) = best {
+            if c1.score + MAX_FOUR_LINK_GAIN <= best_value {
+                break;
+            }
+        }
+
         let mut after_first = state.clone();
         if apply_move(&mut after_first, &c1.mv).is_err() {
             continue;
@@ -118,10 +131,22 @@ fn choose_four_action(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDeci
 /// Evaluate the ordinary two-action turn.
 fn choose_lookahead(state: &mut GameState, cfg: &HeuristicConfig) -> RoundDecision {
     let pid = state.current_player_id();
-    let first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
+    let mut first_candidates = candidate_actions_k(state, cfg.lookahead.first_action_k);
+    first_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+    // Bound Pruning: In Brass heuristic scoring, single action scores rarely exceed 60 VP
+    // (even double rail or large multi-sell), yielding a 0.6x second-action gain of <= 36 VP.
+    // 50.0 is an extremely safe upper bound.
+    const MAX_SECOND_ACTION_GAIN: f64 = 50.0;
 
     let mut best: Option<(ResolvedMove, Option<Decision>, f64, f64)> = None;
     for c1 in first_candidates {
+        if let Some((_, _, best_value, _)) = best {
+            if c1.score + MAX_SECOND_ACTION_GAIN <= best_value {
+                break;
+            }
+        }
+
         let mut s1 = state.clone();
         if apply_move(&mut s1, &c1.mv).is_err() {
             continue;

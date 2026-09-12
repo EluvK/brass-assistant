@@ -58,7 +58,7 @@ def test_teacher_candidates_are_engine_aligned_and_schema_versioned():
 
 def test_snapshot_replay_materializes_current_full_legal_candidates():
     state = be.GameState(seed=51, players=4)
-    teacher, _, _ = state.choose_heuristic()
+    teacher, _, _ = state.choose_heuristic_round()
     sample = Sample(
         pid=state.current_player_id, era=state.era,
         value=np.zeros(4, dtype=np.float32), winner=np.zeros(4, dtype=np.float32),
@@ -115,7 +115,7 @@ def test_full_state_snapshot_is_independent_and_not_history_growth():
     sizes = []
     for _ in range(6):
         sizes.append(len(state.snapshot()))
-        state.apply_move(state.choose_heuristic()[0])
+        state.apply_move(state.choose_heuristic_round()[0])
     assert max(sizes) - min(sizes) < 512
     with pytest.raises(ValueError, match="unsupported GameState snapshot version"):
         be.GameState.from_snapshot(b"BASS\x01" + b"legacy")

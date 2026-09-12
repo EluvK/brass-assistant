@@ -133,18 +133,18 @@ fn trace_for(
     scored: Vec<heuristic_ai::Decision>,
 ) -> DecisionTrace {
     let selected_key = move_codec::encode(&selected);
-    let scores: HashMap<String, (f64, f64)> = scored
+    let scores: HashMap<heuristic_ai::OwnedOperationKey, (f64, f64)> = scored
         .into_iter()
-        .map(|d| (heuristic_ai::operation_key(&d.mv), (d.score, d.card_score)))
+        .map(|d| (heuristic_ai::operation_key(&d.mv).to_owned(), (d.score, d.card_score)))
         .collect();
-    let mut grouped: HashMap<String, &ResolvedMove> = HashMap::new();
+    let mut grouped: HashMap<heuristic_ai::OwnedOperationKey, &ResolvedMove> = HashMap::new();
     for mv in legal {
-        let key = heuristic_ai::operation_key(mv);
+        let key = heuristic_ai::operation_key(mv).to_owned();
         grouped.entry(key).or_insert(mv);
     }
     // Prefer the actually selected card as the representative row while
     // retaining one row per structural operation.
-    grouped.insert(heuristic_ai::operation_key(&selected), &selected);
+    grouped.insert(heuristic_ai::operation_key(&selected).to_owned(), &selected);
     let candidates = grouped
         .into_iter()
         .map(|(op_key, mv)| {
@@ -768,14 +768,13 @@ mod tests {
                 let expected = heuristic_ai::candidate_actions_k(&mut before, 30);
                 assert!(expected.len() > 1);
                 for decision in expected {
-                    let key = heuristic_ai::operation_key(&decision.mv);
+                    let key = heuristic_ai::operation_key(&decision.mv).to_owned();
                     let row = step
                         .legal_actions
                         .iter()
                         .find(|row| {
-                            heuristic_ai::operation_key(
-                                &move_codec::decode(&row.canonical).unwrap(),
-                            ) == key
+                            let mv = move_codec::decode(&row.canonical).unwrap();
+                            heuristic_ai::operation_key(&mv) == key
                         })
                         .unwrap();
                     assert!(row.evaluated);

@@ -61,6 +61,7 @@ class TrainConfig:
     grad_clip_norm: float = 5.0
     econ_lambda: float = 0.2   # weight of the economic-supervision auxiliary loss
     econ_neg_weight: float = 1.0  # extra weight on samples with negative income (1.0 = off, kept for ablation)
+    abs_vp_lambda: float = 0.5  # weight of the absolute VP regression loss (SmoothL1)
     # Weight of the action-conditioned value loss (Q(s, played) -> the mover's
     # own terminal utility). V(s) alone cannot rank sibling moves; Q receives
     # the action's referenced entities directly.
@@ -267,7 +268,8 @@ class Trainer:
 
 def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
                  econ_lambda: float = 0.2, econ_neg_weight: float = 1.0,
-                 winner_weight: float = 0.5, q_lambda: float = 0.3):
+                 winner_weight: float = 0.5, q_lambda: float = 0.3,
+                 abs_vp_lambda: float = 0.5):
     tensors = {k: torch.as_tensor(v, device=device) for k, v in batch.items()}
     out = net(tensors, tensors["candidates"], tensors["candidate_mask"])
     target = tensors["policy"]
@@ -322,9 +324,21 @@ def compute_loss(batch: dict, net: PolicyValueNet, l2: float, device: str,
         era_loss = era_loss + (inc_loss + money_loss) * mask.mean()
     econ_loss = econ_lambda * era_loss
 
+    # Absolute VP head: SmoothL1Loss predicting (VP - 100) / 50.0
+    abs_vp_loss = torch.zeros((), device=device)
+    if "abs_vp" in tensors and "abs_vp" in out:
+        mask = tensors.get("abs_vp_mask")
+        if mask is not None:
+            if mask.any():
+                mask_float = mask.float().unsqueeze(1)
+                loss_unreduced = F.smooth_l1_loss(out["abs_vp"], tensors["abs_vp"], beta=0.2, reduction="none")
+                abs_vp_loss = (loss_unreduced * mask_float).sum() / (mask_float.sum() * 4.0).clamp_min(1.0)
+        else:
+            abs_vp_loss = F.smooth_l1_loss(out["abs_vp"], tensors["abs_vp"], beta=0.2)
+
     l2_loss = sum(p.pow(2).sum() for p in net.parameters()) * l2
-    total = policy_loss + value_loss + winner_weight * winner_loss + econ_loss + q_loss + l2_loss
-    return total, policy_loss, value_loss, winner_loss, econ_loss, l2_loss, q_loss
+    total = policy_loss + value_loss + abs_vp_lambda * abs_vp_loss + winner_weight * winner_loss + econ_loss + q_loss + l2_loss
+    return total, policy_loss, value_loss, winner_loss, econ_loss, l2_loss, q_loss, abs_vp_loss
 
 
 def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
@@ -347,7 +361,7 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
         with torch.autocast(device_type=cfg.device):
             losses = compute_loss(
                 batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight,
-                q_lambda=cfg.q_lambda)
+                q_lambda=cfg.q_lambda, abs_vp_lambda=cfg.abs_vp_lambda)
         total = losses[0]
         if not torch.isfinite(total):
             raise FloatingPointError("non-finite loss before AMP backward")
@@ -367,7 +381,7 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
     else:
         losses = compute_loss(
             batch, net, cfg.l2, cfg.device, cfg.econ_lambda, cfg.econ_neg_weight,
-            q_lambda=cfg.q_lambda)
+            q_lambda=cfg.q_lambda, abs_vp_lambda=cfg.abs_vp_lambda)
         if not torch.isfinite(losses[0]):
             raise FloatingPointError("non-finite loss before backward")
         losses[0].backward()
@@ -381,10 +395,11 @@ def train_on_batch(net, batch, cfg: TrainConfig, optimizer, scaler=None,
         optimizer.step()
     if deep and gradients_finite and not all(torch.isfinite(p).all().item() for p in net.parameters()):
         raise FloatingPointError("optimizer produced non-finite parameters")
-    _, pl, rl, wl, el, ll, ql = losses
+    _, pl, rl, wl, el, ll, ql, al = losses
     return {
         "policy": pl.detach().item(),
         "value": rl.detach().item(),
+        "abs_vp": al.detach().item(),
         "winner": wl.detach().item(),
         "econ": el.detach().item(),
         "q": ql.detach().item(),
@@ -439,12 +454,35 @@ def _to_batch(samples: list[Sample]) -> dict:
     val = rotate_to_perspective(
         torch.as_tensor(np.stack([s.value for s in samples]), dtype=torch.float32), torch.as_tensor(pid)
     ).numpy()
+    abs_vps = []
+    abs_vp_valid = []
+    for s in samples:
+        av = getattr(s, "abs_vp", None)
+        if av is None or (isinstance(av, (int, float)) and av == 0.0) or (isinstance(av, np.ndarray) and av.ndim == 0 and av == 0.0):
+            abs_vps.append(np.zeros(4, dtype=np.float32))
+            abs_vp_valid.append(False)
+        else:
+            arr = np.asarray(av, dtype=np.float32)
+            if arr.ndim == 0:
+                abs_vps.append(np.zeros(4, dtype=np.float32))
+                abs_vp_valid.append(False)
+            else:
+                abs_vps.append(arr)
+                abs_vp_valid.append(True)
+    abs_vp_arr = np.stack(abs_vps)
+    if abs_vp_arr.ndim == 1:
+        abs_vp_arr = np.tile(abs_vp_arr[:, None], (1, 4))
+    abs_vp_rot = rotate_to_perspective(
+        torch.as_tensor(abs_vp_arr, dtype=torch.float32), torch.as_tensor(pid)
+    ).numpy()
+    abs_mask_arr = np.asarray(abs_vp_valid, dtype=bool)
     win = rotate_to_perspective(
         torch.as_tensor(np.stack([s.winner for s in samples]), dtype=torch.float32), torch.as_tensor(pid)
     ).numpy()
     return {
         "cells": cells, "links": links, "merchants": merchants, "seats": seats,
-        "global": g, "policy": pol, "value": val,
+        "global": g, "policy": pol, "value": val, "abs_vp": abs_vp_rot,
+        "abs_vp_mask": abs_mask_arr,
         "winner": win,
         "candidates": candidates, "candidate_mask": candidate_mask,
         "econ": econ, "era": era, "pid": pid, "played": played,

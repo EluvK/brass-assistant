@@ -23,7 +23,7 @@ pub mod move_codec;
 pub mod replay_fmt;
 
 pub use ai::replay;
-pub use ai::{determinize, heuristic_ai, random_ai};
+pub use ai::{determinize, heuristic_ai, imitation, random_ai};
 #[cfg(feature = "python")]
 pub use ai::{nn_mcts, python_worker};
 #[cfg(feature = "python")]
@@ -31,3 +31,8 @@ pub use bridge::pymod;
 pub use game_state::{graph, income, state};
 pub use gameplay::{engine, game_loop, rules, scoring};
 pub use model::{data, map, r#move};
+
+/// Scale of the terminal value target: `(vp - table_mean_vp) / VP_SCALE`.
+/// The Rust backup and the Python loss must use the same number
+/// (docs/ai-action-encoding.md §4.1).
+pub const VP_SCALE: f32 = 50.0;

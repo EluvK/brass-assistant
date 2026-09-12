@@ -111,10 +111,17 @@ def test_tensor_bounds_with_built_tiles():
     # Play a chunk of a game so the board is non-empty (includes level-5+
     # manufacturers whose level/8 normalization previously overflowed 1.0).
     g = be.GameState(seed=17, players=4)
+    pending = []
     for _ in range(120):
         if g.game_over:
             break
-        canonical, _, _ = g.choose_heuristic()
+        if pending:
+            canonical = pending.pop(0)
+        else:
+            first, second, _ = g.choose_heuristic_round()
+            canonical = first
+            if second is not None:
+                pending.append(second)
         g.apply_move(canonical)
     cells, links, merchants, seats, global_vec = g.state_tokens()
     for arr in (cells, links, merchants, seats, global_vec):
@@ -135,8 +142,15 @@ def test_legal_candidates_are_complete_and_executable():
 
 def test_snapshot_restores_state_and_full_legal_candidates():
     g = be.GameState(seed=29, players=4)
+    pending = []
     for _ in range(8):
-        canonical, _, _ = g.choose_heuristic()
+        if pending:
+            canonical = pending.pop(0)
+        else:
+            first, second, _ = g.choose_heuristic_round()
+            canonical = first
+            if second is not None:
+                pending.append(second)
         g.apply_move(canonical)
     restored = be.GameState.from_snapshot(g.snapshot())
     assert restored.current_player_id == g.current_player_id
@@ -151,21 +165,28 @@ def test_snapshot_restores_state_and_full_legal_candidates():
 
 def test_ai_choices_return_legal_moves():
     g = be.GameState(seed=5, players=4)
-    canon, describe, score = g.choose_heuristic()
-    assert describe and canon
+    first, second, score = g.choose_heuristic_round()
+    assert first
     assert g.player_count == 4
 
 
 def test_play_short_game_heuristic():
     g = be.GameState(seed=1, players=4)
     guard = 0
+    pending = []
     while not g.game_over:
         guard += 1
         assert guard < 50_000, "game did not terminate"
         moves = g.legal_moves()
         assert moves, f"no legal moves at round {g.round} era {g.era}"
         if guard % 2 == 0:
-            canonical, _, _ = g.choose_heuristic()
+            if pending:
+                canonical = pending.pop(0)
+            else:
+                first, second, _ = g.choose_heuristic_round()
+                canonical = first
+                if second is not None:
+                    pending.append(second)
         else:
             canonical = moves[0][1]
         g.apply_move(canonical)
@@ -175,9 +196,16 @@ def test_play_short_game_heuristic():
 def _reach_rail(seed):
     g = be.GameState(seed=seed, players=4)
     guard = 0
+    pending = []
     while g.era == 0 and not g.game_over and guard < 2000:
         guard += 1
-        canonical, _, _ = g.choose_heuristic()
+        if pending:
+            canonical = pending.pop(0)
+        else:
+            first, second, _ = g.choose_heuristic_round()
+            canonical = first
+            if second is not None:
+                pending.append(second)
         g.apply_move(canonical)
     return g
 

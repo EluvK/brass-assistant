@@ -31,6 +31,7 @@ import torch
 
 from brass_ai import _engine as be
 from brass_ai.net import PolicyValueNet, state_batch
+from brass_ai.rl_league import HeuristicRoundPlayer
 
 
 def _spearman(x: np.ndarray, y: np.ndarray) -> float | None:
@@ -104,8 +105,11 @@ def main() -> int:
     for seed in range(args.seeds):
         for slot in range(per_seed):
             state = be.GameState(seed=7 + seed * 14, players=4)
+            prefix_player = HeuristicRoundPlayer()
             for _ in range(8 + slot * step):
-                move, _, _ = state.choose_heuristic()
+                if state.game_over:
+                    break
+                move = prefix_player.step(state)
                 state.apply_move(move)
             if state.game_over:
                 continue
@@ -131,8 +135,10 @@ def main() -> int:
                     continue
                 predicted = _forward(net, child)
                 guard = 0
+                rollout_teachers = {p: HeuristicRoundPlayer() for p in range(4)}
                 while not child.game_over and guard < 600:
-                    move, _, _ = child.choose_heuristic()
+                    actor = child.current_player_id
+                    move = rollout_teachers[actor].step(child)
                     child.apply_move(move)
                     guard += 1
                 if not child.game_over:

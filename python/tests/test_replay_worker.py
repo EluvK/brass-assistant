@@ -26,8 +26,15 @@ needs_ckpt = pytest.mark.skipif(
 
 def _snapshot_and_legal(seed: int = 7, players: int = 2, steps: int = 3):
     state = be.GameState(seed=seed, players=players)
+    pending = []
     for _ in range(steps):
-        canonical, _, _ = state.choose_heuristic()
+        if pending:
+            canonical = pending.pop(0)
+        else:
+            first, second, _ = state.choose_heuristic_round()
+            canonical = first
+            if second is not None:
+                pending.append(second)
         state.apply_move(canonical)
     return bytes(state.snapshot()), [row[1] for row in state.legal_moves()]
 

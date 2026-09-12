@@ -42,7 +42,7 @@ from .evaluate import benchmark_net_vs_heuristic
 from .mp_selfplay import SelfPlayPool
 from .net import PolicyValueNet
 from .progress import Progress
-from .rust_mcts import RustISMCTS, RustMCTSConfig, heuristic_search
+from .rust_mcts import RustISMCTS, RustMCTSConfig, heuristic_search, HeuristicSearchAdapter
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .train import TrainConfig, Trainer
 
@@ -547,7 +547,7 @@ def _play_batch_local(
                     continue
                 r = rng.random()
                 if cfg.heuristic_prob > 0.0 and r < cfg.heuristic_prob:
-                    roles[seat] = heuristic_search
+                    roles[seat] = HeuristicSearchAdapter()
                     collect.discard(seat)
                 elif cfg.mm_prob > 0.0 and pool_mcts and r < (cfg.heuristic_prob + cfg.mm_prob):
                     opp = pool_mcts[rng.integers(len(pool_mcts))]

@@ -373,25 +373,25 @@ pub(crate) fn score_top_builds(
         return Vec::new();
     }
     let pid = state.current_player_id();
-    let mut scored: Vec<(BuildTarget, f64)> = targets
-        .iter()
-        .cloned()
-        .map(|target| {
-            let score = score_build_candidate(state, pid, &target);
-            (target, score)
-        })
-        .collect();
+    let mut scored: Vec<(BuildTarget, f64, usize, f64)> = Vec::with_capacity(targets.len().min(k * 2));
+
+    for target in targets {
+        // Fast pre-filter: Only score targets that the player currently holds a card to build.
+        // This avoids scoring dozens of unreachable slots and guarantees candidate output depth.
+        let Some((card_index, card_score)) = pick_build_card(state, pid, target, keep_scores) else {
+            continue;
+        };
+        let score = score_build_candidate(state, pid, target);
+        if score == f64::NEG_INFINITY {
+            continue;
+        }
+        scored.push((target.clone(), score, card_index, card_score));
+    }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(k);
 
     let mut out = Vec::new();
-    for (cand, score) in scored {
-        if score == f64::NEG_INFINITY {
-            continue;
-        }
-        let Some((card_index, card_score)) = pick_build_card(state, pid, &cand, keep_scores) else {
-            continue;
-        };
+    for (cand, score, card_index, card_score) in scored {
         let coal_opts = super::distinct_source_options(
             crate::rules::coal_source_options(state, cand.loc, cand.cost_coal as usize),
             |source: &crate::graph::CoalSource| (source.kind, source.key),

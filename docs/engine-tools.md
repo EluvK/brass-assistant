@@ -18,7 +18,8 @@
 engine/src/bin/
 ├─ replay.rs        # 单局中文回放、摘要诊断或 heuristic 决策追踪
 ├─ replay_web.rs    # 内存回放与浏览器决策诊断
-└─ sweep_scores.rs  # 批量 heuristic seed 扫描，输出 CSV
+├─ sweep_scores.rs  # 批量 heuristic seed 扫描，输出 CSV
+└─ gen_imitation.rs # 纯 Rust 高并发百万级模仿学习分片生成器
 ```
 
 `engine/src/bin/` 不再包含独立的 MCTS 实验台；NN-MCTS 的胜率/性能基准在
@@ -95,3 +96,25 @@ cargo run --release -p brass-engine --features python --bin train_bench -- [posi
 以启发式对局收集 `positions` 个中局快照，逐项输出训练管线使用的引擎操作耗时：合法动作枚举（`legal_resolved_moves`）、动作引用编码（`encode_move` × 全部候选）、状态 token 编码（`state_tokens`）、快照序列化/恢复、determinize、整状态 clone、教师打分（`candidate_actions_k(4)`）与 2-ply/末位四联动 `choose_action`。用于评估引擎侧改动对训练数据生成（imitation 生成 / snapshot 物化 / NN-MCTS 展开）的影响。
 
 对应的 Python 侧跨界基准是 `python/bench_train_paths.py`（`legal_candidates` numpy 化、`materialize_snapshot` 单次调用端到端、`coalesce_equivalent_policy`），运行方式：`.venv/Scripts/python.exe python/bench_train_paths.py [n_positions]`。
+
+## `gen_imitation`：高并发百万级专家数据生成器
+
+纯 Rust 原生多线程生成工具，彻底替代过去基于 Python 多进程的缓慢导出。直接基于 Rayon 多核并行调度启发式 AI 批量对战，应用质量门禁，并以紧凑二进制形式（bincode 序列化）流式写入 `.bin` 分片。
+
+```sh
+cargo run --release -p brass-engine --bin gen_imitation -- [OPTIONS]
+```
+
+### 参数说明
+- `--games, -n <N>`：目标接收的有效对局数（默认 `1000`）。
+- `--out-dir, -o <DIR>`：分片产物输出目录（默认 `data/imitation_shards`）。
+- `--min-vp <VP>`：局内单人最低 VP 质量门禁（默认 `0.0`，推荐设为 `30.0` 过滤破产局）。
+- `--min-avg-vp <VP>`：全局平均 VP 质量门禁（默认 `0.0`）。
+- `--shard-size <STEPS>`：单分片步数容量（默认 `32768` 步/分片，约 74 MB）。
+- `--seed <SEED>`：起始随机种子（默认 `1000000`）。
+
+### 性能表现与产物
+- **生成吞吐**：单机实测达 **~70 局/秒**（生成 10,000 局仅耗时约 2 分 24 秒，产出 124 万步标准训练样本）。
+- **生成产物**：切分为 `imitation-000000.bin` ~ `imitation-*.bin`，Python 端可通过 `brass_ai.selfplay.load_bin_shard(path)` 在 0.04 秒内瞬间反序列化完成。
+- **目标标签**：自动打上相对终局价值 `value`（四人零和）、绝对标准化得分 `abs_vp`（$(VP - 100) / 50$）、终局冠军 `winner` 与时代经济指标 `econ`。
+

@@ -13,15 +13,22 @@ import numpy as np
 
 from . import _engine as be
 from .progress import Progress
+from .rl_league import HeuristicRoundPlayer
 
 if TYPE_CHECKING:
     from .net import PolicyValueNet
     from .rust_mcts import RustISMCTS, RustMCTSConfig
 
 
+def make_heuristic_policy():
+    """Returns a state->canonical policy that plans 2 actions per round via `choose_heuristic_round`."""
+    player = HeuristicRoundPlayer()
+    return lambda state: player.step(state)
+
+
 def heuristic_policy(state) -> str | None:
-    canon, _, _ = state.choose_heuristic()
-    return canon
+    first, _, _ = state.choose_heuristic_round()
+    return first
 
 
 def mcts_policy(mcts: RustISMCTS, sims: int):
@@ -75,7 +82,7 @@ def _eval_game_worker(args):
     net.eval()
     mcts = RustISMCTS(net, RustMCTSConfig(**cfg_dict, device="cpu"))
     mcts_pol = mcts_policy(mcts, sims)
-    policies = [mcts_pol if p == seat else heuristic_policy for p in range(players)]
+    policies = [mcts_pol if p == seat else make_heuristic_policy() for p in range(players)]
     vps, ranking = play_game_with_policies(policies, seed=seed, players=players, max_moves=max_moves)
     return seat, vps, bool(ranking[0] == seat)
 

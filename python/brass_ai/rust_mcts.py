@@ -28,6 +28,7 @@ import numpy as np
 import torch
 
 from . import _engine as be
+from .rl_league import HeuristicRoundPlayer
 from .net import PolicyValueNet, state_batch
 
 
@@ -138,7 +139,20 @@ class RustISMCTS:
         )
 
 
+class HeuristicSearchAdapter:
+    """Search adapter that plans 2 actions per round via `choose_heuristic_round`."""
+
+    def __init__(self):
+        self.player = HeuristicRoundPlayer()
+
+    def __call__(self, state, sims: int = 0, add_root_noise: bool = False) -> SearchResult:
+        return SearchResult(best=self.player.step(state))
+
+    def reset(self):
+        self.player.reset()
+
+
 def heuristic_search(state, sims: int = 0, add_root_noise: bool = False) -> SearchResult:
-    """Zero-overhead search adapter that uses the Rust heuristic teacher directly."""
-    move, _, _ = state.choose_heuristic()
+    """Stateless search adapter that uses the first move of `choose_heuristic_round`."""
+    move, _, _ = state.choose_heuristic_round()
     return SearchResult(best=move)

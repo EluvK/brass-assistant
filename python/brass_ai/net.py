@@ -122,6 +122,7 @@ class PolicyValueNet(nn.Module):
         self.score_out = nn.Linear(2 * d, 1)
         self.q_out = nn.Linear(2 * d, 1)
         self.value_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_PLAYERS))
+        self.abs_vp_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_PLAYERS))
         self.winner_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_PLAYERS))
         self.econ_canal_head = nn.Linear(d, 2)
         self.econ_rail_head = nn.Linear(d, 2)
@@ -261,6 +262,7 @@ class PolicyValueNet(nn.Module):
             "candidate_log_probs": log_probs,
             "candidate_mask": candidate_mask,
             "value": self.value_head(summary),          # (B,4), me first
+            "abs_vp": self.abs_vp_head(summary),        # (B,4), me first (absolute VP score)
             "candidate_value": candidate_value,          # (B,N) action-conditioned value
             "winner_logits": self.winner_head(summary),  # (B,4), me first (softmax CE)
             "econ": econ,                                # (B,4): canal head | rail head

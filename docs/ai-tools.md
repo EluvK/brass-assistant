@@ -23,10 +23,12 @@ Rust GameState
   -> Rust GameState.search_net() through Python callback
 
 Rust heuristic self-play
-  -> imitation Sample
-  -> Trainer
+  -> imitation Sample (.bin / .pkl)
+  -> Trainer (Multi-Task: policy + value + abs_vp + winner + econ + Q)
   -> checkpoint
-  -> Rust MCTS vs heuristic benchmark
+  -> Gatekeeper Arena vs 3 Rust Teachers (门禁体检)
+  -> Pure-Policy Vectorized Self-play (0.05s/局极速对弈)
+  -> Adaptive KL-regularized RL Policy Gradient (防退化冲刺 130+)
 ```
 
 候选集中的动作数 `N` 随局面变化。Python 只给 Rust 提供的候选动作打分，不能自行判断合法性。
@@ -54,14 +56,17 @@ Python adapter 与 checkpoint 会拒绝未知 schema（`ACTION_SCHEMA_VERSION`�
 ```text
 python/
 |- bootstrap_imitation.py     heuristic imitation warm-start 入口
+|- gatekeeper_eval.py         考官门禁实战体检脚本 (Candidate vs 3 Rust 老师)
 |- selfplay_train.py          长期 self-play 训练入口（阶段 3）
 |- bench_value_ranking.py     Q(s,a) 与 V(s) 动作/价值排序体检探针
 |- inspect_ckpt.py            模型权重、Schema 兼容性与元数据检查工具
 |- brass_ai/
 |  |- hierarchical_policy.py  Rust 候选动作和 teacher adapter
-|  |- net.py                  PolicyValueNet
+|  |- net.py                  PolicyValueNet (含 abs_vp 绝对得分头)
+|  |- fast_policy.py          无搜索纯策略极速走子与向量化批推理引擎
+|  |- rl_league.py            强化学习自适应 KL 散度锚定与考官门禁评测
 |  |- rust_mcts.py            Rust 搜索的 Python 网络回调
-|  |- selfplay.py             Sample、imitation 与 MCTS self-play
+|  |- selfplay.py             Sample、imitation 与 load_bin_shard 分片加载
 |  |- selfplay_loop.py        自对弈循环：replay window、对手池、arena、指标
 |  |- train.py                Trainer、loss、训练指标
 |  |- evaluate.py             MCTS 对 heuristic 的评测

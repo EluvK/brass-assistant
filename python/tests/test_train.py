@@ -77,7 +77,7 @@ def test_value_target_is_a_vp_margin_and_winner_uses_the_official_tiebreak():
 
 def test_policy_evaluation_materializes_snapshot_batches():
     state = be.GameState(seed=73, players=4)
-    teacher, _, _ = state.choose_heuristic()
+    teacher, _, _ = state.choose_heuristic_round()
     sample = Sample(
         pid=state.current_player_id, era=state.era,
         value=np.zeros(4, dtype=np.float32), winner=np.zeros(4, dtype=np.float32),
@@ -119,3 +119,80 @@ def test_imitation_quality_filter_reports_exhausted_attempts(monkeypatch):
         generate_imitation_samples(
             1, workers=1, min_avg_vp=80, min_vp=60, max_attempts=2,
         )
+
+
+def test_abs_vp_loss_computation_and_masking():
+    torch.manual_seed(42)
+    net = PolicyValueNet()
+    state = be.GameState(seed=10, players=4)
+    teacher, _, _ = state.choose_heuristic_round()
+
+    s_valid = Sample(
+        pid=state.current_player_id,
+        era=state.era,
+        value=np.zeros(4, dtype=np.float32),
+        abs_vp=np.array([0.2, -0.1, 0.4, 0.0], dtype=np.float32),
+        winner=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        econ=np.zeros(2, dtype=np.float32),
+        snapshot=bytes(state.snapshot()),
+        teacher_canonical=teacher,
+    )
+
+    s_missing = Sample(
+        pid=state.current_player_id,
+        era=state.era,
+        value=np.zeros(4, dtype=np.float32),
+        abs_vp=0.0,
+        winner=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        econ=np.zeros(2, dtype=np.float32),
+        snapshot=bytes(state.snapshot()),
+        teacher_canonical=teacher,
+    )
+
+    s_valid = selfplay.materialize_sample(s_valid)
+    s_missing = selfplay.materialize_sample(s_missing)
+
+    b_valid = _to_batch([s_valid])
+    assert b_valid["abs_vp_mask"].tolist() == [True]
+    losses_valid = compute_loss(b_valid, net, l2=0.0, device="cpu", abs_vp_lambda=1.0)
+    abs_vp_loss_valid = losses_valid[7]
+    assert abs_vp_loss_valid.item() > 0.0
+
+    b_missing = _to_batch([s_missing])
+    assert b_missing["abs_vp_mask"].tolist() == [False]
+    losses_missing = compute_loss(b_missing, net, l2=0.0, device="cpu", abs_vp_lambda=1.0)
+    abs_vp_loss_missing = losses_missing[7]
+    assert abs_vp_loss_missing.item() == 0.0
+
+
+def test_load_bin_shard(tmp_path):
+    from brass_ai.selfplay import load_bin_shard
+    # Create an in-memory GameState and dump a minimal valid imitation record shard
+    state = be.GameState(seed=42, players=4)
+    first, _, _ = state.choose_heuristic_round()
+    shard_file = tmp_path / "test_shard.bin"
+    records = [(
+        0,
+        0,
+        [0.1, -0.2, 0.05, 0.05],
+        [0.2, -0.1, 0.4, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [10.0, 30.0],
+        bytes(state.snapshot()),
+        first,
+    )]
+    be.dump_imitation_shard(str(shard_file), records)
+
+    samples = load_bin_shard(shard_file)
+    assert len(samples) == 1
+    s0 = samples[0]
+    assert s0.pid == 0
+    assert s0.era == 0
+    assert s0.abs_vp is not None
+    assert np.allclose(s0.abs_vp, [0.2, -0.1, 0.4, 0.0])
+    assert np.allclose(s0.value, [0.1, -0.2, 0.05, 0.05])
+    assert np.allclose(s0.winner, [1.0, 0.0, 0.0, 0.0])
+    assert np.allclose(s0.econ, [10.0, 30.0])
+    assert s0.teacher_canonical == first
+    recovered_state = be.GameState.from_snapshot(s0.snapshot)
+    assert recovered_state.player_count == 4

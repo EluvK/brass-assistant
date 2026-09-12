@@ -31,7 +31,7 @@ import torch
 
 from . import _engine as be
 from .progress import Progress
-from .rust_mcts import RustISMCTS, RustMCTSConfig, heuristic_search
+from .rust_mcts import RustISMCTS, RustMCTSConfig, heuristic_search, HeuristicSearchAdapter
 from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .hierarchical_policy import ACTION_FEATURE_DIM, pad_candidate_features
 
@@ -82,7 +82,7 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
                         continue
                     r = rng.random()
                     if heuristic_prob > 0.0 and r < heuristic_prob:
-                        roles[seat] = heuristic_search
+                        roles[seat] = HeuristicSearchAdapter()
                         collect.discard(seat)
                     elif mm_prob > 0.0 and pool and r < (heuristic_prob + mm_prob):
                         opp = pool[rng.integers(len(pool))]

@@ -28,7 +28,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from brass_ai.selfplay import generate_imitation_sample_shards
+from brass_ai.selfplay import generate_imitation_sample_shards, load_bin_shard
+
+
+def _load_shard(path: Path):
+    if path.suffix == ".bin":
+        return load_bin_shard(path)
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
 
 def main():
@@ -93,7 +100,9 @@ def main():
     )
     succeeded = False
     try:
-        existing_shards = sorted(sample_dir.glob("imitation-*.pkl")) if sample_dir.is_dir() else []
+        existing_shards = (
+            sorted(sample_dir.glob("imitation-*.bin")) or sorted(sample_dir.glob("imitation-*.pkl"))
+        ) if sample_dir.is_dir() else []
         if existing_shards:
             shards = existing_shards
             print(f"reusing {len(shards)} imitation shards from: {sample_dir}")
@@ -110,9 +119,9 @@ def main():
         else:
             if not sample_dir.is_dir():
                 raise ValueError(f"--sample-dir does not exist or is not a directory: {sample_dir}")
-            shards = sorted(sample_dir.glob("imitation-*.pkl"))
+            shards = sorted(sample_dir.glob("imitation-*.bin")) or sorted(sample_dir.glob("imitation-*.pkl"))
             if not shards:
-                raise ValueError(f"--sample-dir contains no imitation-*.pkl shards: {sample_dir}")
+                raise ValueError(f"--sample-dir contains no imitation-*.bin or *.pkl shards: {sample_dir}")
             print(f"reusing {len(shards)} imitation shards from: {sample_dir}")
         net = PolicyValueNet()
         trainer = Trainer(net, TrainConfig(
@@ -170,8 +179,7 @@ def main():
             epoch = trainer.epoch_count + 1
             print(f"\nepoch {epoch} (this run {run_epoch+1}/{args.epochs}) ...")
             for shard_index, shard in enumerate(shards, start=1):
-                with open(shard, "rb") as f:
-                    shard_samples = pickle.load(f)
+                shard_samples = _load_shard(shard)
                 total_samples += len(shard_samples) if run_epoch == 0 else 0
                 progress_label = f"train e{epoch} s{shard_index}/{len(shards)}"
                 # print(f"[{progress_label}] {len(shard_samples)} samples: {shard.name}")
@@ -184,13 +192,13 @@ def main():
         mean_losses = {k: sum(x[k] for x in losses) / len(losses) for k in losses[0]}
         print(f"trained {total_samples} samples ({time.time()-t1:.0f}s): "
               f"policy={mean_losses['policy']:.3f} value={mean_losses['value']:.3f} "
+              f"abs_vp={mean_losses.get('abs_vp', 0.0):.3f} "
               f"winner={mean_losses['winner']:.3f}")
         if args.enable_policy_eval:
             metrics = {}
             metric_weight = 0
             for shard_index, shard in enumerate(shards, start=1):
-                with open(shard, "rb") as f:
-                    shard_samples = pickle.load(f)
+                shard_samples = _load_shard(shard)
                 shard_metrics = evaluate_policy(
                     net, shard_samples, device,
                     max_candidate_batch=args.max_candidate_batch,

@@ -2,6 +2,7 @@
 
 pub mod determinize;
 pub mod heuristic_ai;
+pub mod imitation;
 #[cfg(feature = "python")]
 pub mod nn_mcts;
 #[cfg(feature = "python")]

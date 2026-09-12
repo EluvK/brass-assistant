@@ -17,25 +17,25 @@
 
 ## 一、训练全流程流水线 (The Golden Pipeline)
 
-整个 AI 训练分为四个标准环节：**环境编译与验证 $\to$ 高质量模仿学习底座 $\to$ 价值/动作排序体检 $\to$ 长期自对弈强化学习**。
+整个 AI 训练分为四个标准环节：**纯 Rust 高速专家数据生成 $\to$ 绝对/相对分多任务模仿预训练 $\to$ 考官门禁体检 (Gatekeeper Arena) $\to$ 纯 Policy 向量化极速自对弈与自适应 KL 强化迭代**。
 
 ```text
-[Rust 引擎优化]
+[纯 Rust 引擎高速生成]
+       │ cargo run --release --bin gen_imitation (~70 局/秒)
+       ▼ 产出紧凑分片数据 data/imitation_shards/*.bin
+[百万级专家数据集] ── 124 万步样本仅 2.8 GB，瞬间流式反序列化
        │
-       ▼ maturin develop --release --features python
-[环境基线验证] ── pytest（以当前测试结果为准）
+       ▼ bootstrap_imitation / train_one_epoch (多任务预训练)
+[多任务底座模型] ── 拟合 Policy + 相对 Value + 绝对 abs_vp + 经济
        │
-       ▼ bootstrap_imitation.py (--min-vp 30 门禁)
-[干净的 v1 底座模型] checkpoints/v1/bootstrap/b2000.pt
-       │
-       ▼ bench_value_ranking.py (体检放行门禁)
-[Q(s,a) 与 V(s) 探针] ── 检查排序误差及其不确定性
-       │
-       ▼ selfplay_train.py (--c-puct 0.25 --temperature 0.0)
-[长期自对弈强化] checkpoints/v1/runs/sp01/
-       ├── latest.pt (续训断点)
-       ├── best.pt (当前主力)
-       └── zoo/ (名人堂归档)
+       ▼ evaluate_vs_heuristic_teachers (考官门禁体检)
+[防退化门禁考官] ── 0 号位对抗 3 个 120 分 Rust 老师 (通过线: 胜率≥35% & 均分≥120)
+       │ 通过后晋升并锁定为 Anchor Base
+       ▼ VectorizedSelfPlay (纯 Policy 向量化自对弈)
+[长期自对弈强化] ── 0.05s/局，单机百万局吞吐
+       ├── 自适应 KL 散度约束 (D_KL(Anchor || Current)，防策略崩溃)
+       ├── 绝对高分奖励驱动 (突破 130~140+，杜绝低分内卷纳什陷阱)
+       └── 阶梯式考官门禁晋升与 Anchor 滚动升级
 ```
 
 ### 步骤 0：环境准备与编译
@@ -52,8 +52,24 @@ python -m maturin develop --release --features python
 python -m pytest python/tests -q
 ```
 
-### 步骤 1：生成高质量模仿底座 (Bootstrap Imitation)
-利用启发式 AI 进行高速对弈，录制专家棋谱并进行行为克隆。**必须开启 `--min-vp 30` 质量门禁**，杜绝任何破产残局污染样本库：
+### 步骤 1：训练高质量专家模仿底座 (Bootstrap Imitation)
+
+我们推荐**解耦生成与训练**：先用纯 Rust 高性能生成器产出样本，再直接挂载训练。
+
+#### 方案 A（推荐首选）：直接加载纯 Rust 生成的 `.bin` 样本库训练
+直接加载由 `gen_imitation` 生成在 `data/imitation_shards`（或自定义目录）中的紧凑二进制分片进行训练：
+
+```bash
+python python/bootstrap_imitation.py \
+  --sample-dir data/imitation_shards \
+  --ckpt checkpoints/v1/bootstrap/b10k.pt \
+  --epochs 3 \
+  --batch 256 \
+  --materialize-workers 8
+```
+
+#### 方案 B：在线生成并训练
+若需在线小批量快速实验，可通过 Python 直接驱动生成与训练（开启 `--min-vp 30` 质量门禁，杜绝破产局）：
 
 ```bash
 python python/bootstrap_imitation.py \
@@ -68,28 +84,43 @@ python python/bootstrap_imitation.py \
   --eval-sims 64
 ```
 - **核心参数**：
-  - `--min-vp 30`：**硬性门禁**，任何有选手最终得分 $\le 30$ 的对局直接丢弃不录入样本库。
-  - `--epochs 6`：训练约 5000 步，让底座模型快速获得基本的大局观与走法直觉。
+  - `--sample-dir`：指定已存在的二进制分片目录（自动识别 `.bin` 或 `.pkl`）。
+  - `--ckpt`：输出的模型保存路径。
+  - `--epochs 3`：跑 3 个全量 epoch（124 万步数据跑 3 遍），充分拟合 Policy、相对 Value 以及新增的绝对分 `abs_vp`。
+  - `--batch 256`：GPU 批大小（可根据显存调整为 128~512）。
+  - `--materialize-workers 8`：并行快照物化工作进程数。
 
 | 指标 | 到底在预测什么？ | 数学计算方式 | 盲猜 baseline | 目标优秀值 |
 | --- | --- | --- | --- | --- |
 | policy | 眼前这一步选哪个动作（走法模仿） | 动作分布的交叉熵 (CE) | ~3.5 ~ 4.0 | 2.2 ~ 2.6 |
 | value | 4 个座位的终局相对净胜分 | 归一化得分的均方误差 (MSE) | > 0.20 | < 0.08 |
+| abs_vp | 4 个座位的终局绝对得分 $(VP-100)/50$ | 线性输出 + Smooth L1 损失 (beta=0.2) | > 0.15 | < 0.03 |
 | winner | 4 个人谁最终夺冠（第一名） | 4 分类的交叉熵 (CE) | 1.386 | 0.5 ~ 0.8 |
 
-### 步骤 2：价值与动作排序体检 (Go/No-Go Gate)
-在开启消耗算力的自对弈前，使用独立探针检测模型对微观动作与局面的敏感度：
+### 步骤 2：考官门禁体检与 Anchor 锁定 (Gatekeeper Arena)
+
+训练得到底座后，在开启长程强化自对弈之前，使用现成的独立评测脚本验证模型是否已经拥有扎实的基本功（零 MCTS 搜索下能否抗衡 120 分 Rust 老师）：
+
+```bash
+# 运行 40 局实测对抗（轮换 4 个座位对抗 3 个 120 分 Rust 启发式老师）
+python python/gatekeeper_eval.py --ckpt checkpoints/v1/bootstrap/b10k.pt --games 40 --verbose
+```
+- **放行门槛**：胜率 $\ge 35\%$ 且学生均分 $\ge 120$ 分。通过后正式将该 Checkpoint 复制锁定为初代 **`Anchor Base`**。
+
+#### 补充体检：微观价值与动作排序探针 (Q/V Ranking Probe)
+在开启消耗算力的自对弈前，还可使用独立探针检测模型对微观动作与局面的敏感度：
 
 ```bash
 python python/bench_value_ranking.py \
-  --ckpt checkpoints/v1/bootstrap/b2000.pt \
+  --ckpt checkpoints/v1/bootstrap/b10k.pt \
   --positions 36
 ```
 - **解释方式**：该探针以启发式续局作为参考，需要结合局面数、误差范围及具体候选分析，不能用一次相关系数大于 +0.08 作为放行证明。Q/V 排序弱时，自博弈不一定能自行纠正；开始长训练前还需独立对局比较策略直出与搜索，并记录经济崩溃轨迹。当前已知失败及修复证据见 [selfplay-validation.md](selfplay-validation.md)。
 
-### 步骤 3：启动自对弈强化学习 (Self-Play Loop)
-以干净的底座为起点，模型通过 MCTS 树搜索自我博弈并持续升级：
+### 步骤 3：自对弈强化学习迭代 (Self-Play RL)
+以干净的底座为起点，模型通过自我博弈并持续升级。系统支持基于 MCTS 树搜索的稳健自对弈，以及纯 Policy 向量化极速自对弈：
 
+#### 方式一：MCTS 树搜索自对弈（生产基线）
 ```bash
 python python/selfplay_train.py \
   --ckpt-dir checkpoints/v1/runs/sp01 \
@@ -219,6 +250,7 @@ Compatibility: [OK] Matches current engine schemas (Action v1, State v1)
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`policy`** | 当前局面选哪个合法动作 | 动作多分类**交叉熵 (CE)** | ~3.5 ~ 4.0 | **2.2 ~ 2.6** | 衡量走子模仿精度。越低说明越聚焦于专家/搜索推荐的高价值动作。 |
 | **`value`** | 4 个座位的终局相对净胜分 | 归一化净分的**均方误差 (MSE)** | > 0.20 | **< 0.08** | 预测局面的胜负差距。若 MSE=0.063，换算成真实 VP 误差仅约 $\sqrt{0.063}\times 50 \approx 12.5$ 分。 |
+| **`abs_vp`** | 4 个座位的终局绝对得分 $(VP-100)/50$ | 线性输出 + **Smooth L1 损失** (beta=0.2) | > 0.15 | **< 0.03** | **打破低分内卷的核心驱动**。预测绝对得分能力，无 Sigmoid 截断，天然兼容 150~200+ 顺风高分局。 |
 | **`winner`** | 谁是最终第一名夺冠者 | 4 选 1 **交叉熵 (CE)** | **1.386** ($-\ln 0.25$) | **0.5 ~ 0.8** | 宏观大局观。德式桌游前期变数极大，初期此值往往贴近 1.386，随自对弈深入逐渐降至 0.8 以下。 |
 | **`q`** | 动作边预测价值 $Q(s, a)$ | 被走动作的回归误差 | - | **< 0.03** | 配合树搜索的初始化（`q_init`），引导 MCTS 优先展开高价值分支。 |
 

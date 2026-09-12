@@ -406,31 +406,57 @@ struct StateSnapshot {
     wild_industry_pile: u8,
 }
 
+#[derive(Serialize)]
+struct StateSnapshotBorrow<'a> {
+    rng: &'a ChaCha12Rng,
+    round_per_era: usize,
+    era: Era,
+    round: usize,
+    turn_order: &'a [usize],
+    current_index: usize,
+    actions_this_turn: usize,
+    actions_per_turn: usize,
+    is_first_round: bool,
+    game_over: bool,
+    players: &'a [Player],
+    money_spent_this_round: &'a [i32],
+    city_tiles: &'a [Option<BoardTile>],
+    farm_tiles: &'a [Option<BoardTile>; 2],
+    links: &'a [Option<Link>],
+    coal_market: usize,
+    iron_market: usize,
+    merchants: &'a [MerchantTile],
+    deck: &'a [Card],
+    discard_pile: &'a [Card],
+    wild_location_pile: u8,
+    wild_industry_pile: u8,
+}
+
 impl GameState {
     /// Serialize the complete current state. Derived resource/connectivity
     /// caches are intentionally omitted and rebuilt on restore.
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>, String> {
-        bincode::serialize(&StateSnapshot {
-            rng: self.rng.clone(),
+        bincode::serialize(&StateSnapshotBorrow {
+            rng: &self.rng,
             round_per_era: self.round_per_era,
             era: self.era,
             round: self.round,
-            turn_order: self.turn_order.clone(),
+            turn_order: &self.turn_order,
             current_index: self.current_index,
             actions_this_turn: self.actions_this_turn,
             actions_per_turn: self.actions_per_turn,
             is_first_round: self.is_first_round,
             game_over: self.game_over,
-            players: self.players.clone(),
-            money_spent_this_round: self.money_spent_this_round.clone(),
-            city_tiles: self.city_tiles.clone(),
-            farm_tiles: self.farm_tiles.clone(),
-            links: self.links.clone(),
+            players: &self.players,
+            money_spent_this_round: &self.money_spent_this_round,
+            city_tiles: &self.city_tiles,
+            farm_tiles: &self.farm_tiles,
+            links: &self.links,
             coal_market: self.coal_market,
             iron_market: self.iron_market,
-            merchants: self.merchants.clone(),
-            deck: self.deck.clone(),
-            discard_pile: self.discard_pile.clone(),
+            merchants: &self.merchants,
+            deck: &self.deck,
+            discard_pile: &self.discard_pile,
             wild_location_pile: self.wild_location_pile,
             wild_industry_pile: self.wild_industry_pile,
         })

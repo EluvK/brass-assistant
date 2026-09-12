@@ -32,3 +32,7 @@ path = "src/bin/replay_web.rs"
 name = "train_bench"
 path = "src/bin/train_bench.rs"
 required-features = ["python"]
+
+[[bin]]
+name = "gen_imitation"
+path = "src/bin/gen_imitation.rs"

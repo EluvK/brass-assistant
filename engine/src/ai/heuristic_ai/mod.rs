@@ -19,6 +19,9 @@
 //! Public entry points are consumed by replay, the binaries, the PyO3 bridge
 //! and network-guided search; their signatures are a stability contract.
 
+use crate::data::IndustryType;
+use crate::graph::{BeerSource, CoalSource, IronSource};
+use crate::map::Loc;
 use crate::rules::ResolvedMove;
 use crate::state::GameState;
 
@@ -126,7 +129,226 @@ where
 
 /// Stable identity for the operation layer. Card references are intentionally
 /// excluded; card selection is a separate policy dimension.
-pub(crate) fn operation_key(mv: &ResolvedMove) -> String {
+#[derive(Debug, Clone, Copy, Hash)]
+pub enum OperationKey<'a> {
+    Build {
+        loc: Loc,
+        slot_index: usize,
+        ind: IndustryType,
+        coal: &'a [CoalSource],
+        iron: &'a [IronSource],
+    },
+    Network {
+        conn_id: usize,
+        coal: Option<CoalSource>,
+    },
+    NetworkDouble {
+        conn1: usize,
+        conn2: usize,
+        coal1: CoalSource,
+        coal2: CoalSource,
+        beer: BeerSource,
+    },
+    Develop {
+        ind1: IndustryType,
+        ind2: Option<IndustryType>,
+        iron: &'a [IronSource],
+    },
+    Sell {
+        keys: &'a [usize],
+        beer_sources: &'a [BeerSource],
+        free_develop: Option<IndustryType>,
+    },
+    Loan,
+    Scout,
+    Pass,
+}
+
+impl<'a, 'b> PartialEq<OperationKey<'b>> for OperationKey<'a> {
+    fn eq(&self, other: &OperationKey<'b>) -> bool {
+        match (self, other) {
+            (
+                OperationKey::Build { loc: l1, slot_index: s1, ind: i1, coal: c1, iron: ir1 },
+                OperationKey::Build { loc: l2, slot_index: s2, ind: i2, coal: c2, iron: ir2 },
+            ) => l1 == l2 && s1 == s2 && i1 == i2 && c1 == c2 && ir1 == ir2,
+            (
+                OperationKey::Network { conn_id: c1, coal: co1 },
+                OperationKey::Network { conn_id: c2, coal: co2 },
+            ) => c1 == c2 && co1 == co2,
+            (
+                OperationKey::NetworkDouble { conn1: a1, conn2: b1, coal1: c1, coal2: d1, beer: e1 },
+                OperationKey::NetworkDouble { conn1: a2, conn2: b2, coal1: c2, coal2: d2, beer: e2 },
+            ) => a1 == a2 && b1 == b2 && c1 == c2 && d1 == d2 && e1 == e2,
+            (
+                OperationKey::Develop { ind1: a1, ind2: b1, iron: c1 },
+                OperationKey::Develop { ind1: a2, ind2: b2, iron: c2 },
+            ) => a1 == a2 && b1 == b2 && c1 == c2,
+            (
+                OperationKey::Sell { keys: k1, beer_sources: b1, free_develop: f1 },
+                OperationKey::Sell { keys: k2, beer_sources: b2, free_develop: f2 },
+            ) => k1 == k2 && b1 == b2 && f1 == f2,
+            (OperationKey::Loan, OperationKey::Loan) => true,
+            (OperationKey::Scout, OperationKey::Scout) => true,
+            (OperationKey::Pass, OperationKey::Pass) => true,
+            _ => false,
+        }
+    }
+}
+impl<'a> Eq for OperationKey<'a> {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum OwnedOperationKey {
+    Build {
+        loc: Loc,
+        slot_index: usize,
+        ind: IndustryType,
+        coal: Vec<CoalSource>,
+        iron: Vec<IronSource>,
+    },
+    Network {
+        conn_id: usize,
+        coal: Option<CoalSource>,
+    },
+    NetworkDouble {
+        conn1: usize,
+        conn2: usize,
+        coal1: CoalSource,
+        coal2: CoalSource,
+        beer: BeerSource,
+    },
+    Develop {
+        ind1: IndustryType,
+        ind2: Option<IndustryType>,
+        iron: Vec<IronSource>,
+    },
+    Sell {
+        keys: Vec<usize>,
+        beer_sources: Vec<BeerSource>,
+        free_develop: Option<IndustryType>,
+    },
+    Loan,
+    Scout,
+    Pass,
+}
+
+impl OwnedOperationKey {
+    pub fn as_borrowed(&self) -> OperationKey<'_> {
+        match self {
+            OwnedOperationKey::Build {
+                loc,
+                slot_index,
+                ind,
+                coal,
+                iron,
+            } => OperationKey::Build {
+                loc: *loc,
+                slot_index: *slot_index,
+                ind: *ind,
+                coal: coal.as_slice(),
+                iron: iron.as_slice(),
+            },
+            OwnedOperationKey::Network { conn_id, coal } => OperationKey::Network {
+                conn_id: *conn_id,
+                coal: *coal,
+            },
+            OwnedOperationKey::NetworkDouble {
+                conn1,
+                conn2,
+                coal1,
+                coal2,
+                beer,
+            } => OperationKey::NetworkDouble {
+                conn1: *conn1,
+                conn2: *conn2,
+                coal1: *coal1,
+                coal2: *coal2,
+                beer: *beer,
+            },
+            OwnedOperationKey::Develop { ind1, ind2, iron } => OperationKey::Develop {
+                ind1: *ind1,
+                ind2: *ind2,
+                iron: iron.as_slice(),
+            },
+            OwnedOperationKey::Sell {
+                keys,
+                beer_sources,
+                free_develop,
+            } => OperationKey::Sell {
+                keys: keys.as_slice(),
+                beer_sources: beer_sources.as_slice(),
+                free_develop: *free_develop,
+            },
+            OwnedOperationKey::Loan => OperationKey::Loan,
+            OwnedOperationKey::Scout => OperationKey::Scout,
+            OwnedOperationKey::Pass => OperationKey::Pass,
+        }
+    }
+}
+
+impl<'a> PartialEq<OwnedOperationKey> for OperationKey<'a> {
+    fn eq(&self, other: &OwnedOperationKey) -> bool {
+        *self == other.as_borrowed()
+    }
+}
+
+impl<'a> PartialEq<OperationKey<'a>> for OwnedOperationKey {
+    fn eq(&self, other: &OperationKey<'a>) -> bool {
+        self.as_borrowed() == *other
+    }
+}
+
+impl<'a> OperationKey<'a> {
+    pub fn to_owned(&self) -> OwnedOperationKey {
+        match *self {
+            OperationKey::Build {
+                loc,
+                slot_index,
+                ind,
+                coal,
+                iron,
+            } => OwnedOperationKey::Build {
+                loc,
+                slot_index,
+                ind,
+                coal: coal.to_vec(),
+                iron: iron.to_vec(),
+            },
+            OperationKey::Network { conn_id, coal } => OwnedOperationKey::Network { conn_id, coal },
+            OperationKey::NetworkDouble {
+                conn1,
+                conn2,
+                coal1,
+                coal2,
+                beer,
+            } => OwnedOperationKey::NetworkDouble {
+                conn1,
+                conn2,
+                coal1,
+                coal2,
+                beer,
+            },
+            OperationKey::Develop { ind1, ind2, iron } => OwnedOperationKey::Develop {
+                ind1,
+                ind2,
+                iron: iron.to_vec(),
+            },
+            OperationKey::Sell {
+                keys,
+                beer_sources,
+                free_develop,
+            } => OwnedOperationKey::Sell {
+                keys: keys.to_vec(),
+                beer_sources: beer_sources.to_vec(),
+                free_develop,
+            },
+            OperationKey::Loan => OwnedOperationKey::Loan,
+            OperationKey::Scout => OwnedOperationKey::Scout,
+            OperationKey::Pass => OwnedOperationKey::Pass,
+        }
+    }
+}
+
+pub fn operation_key<'a>(mv: &'a ResolvedMove) -> OperationKey<'a> {
     match mv {
         ResolvedMove::Build {
             loc,
@@ -135,8 +357,17 @@ pub(crate) fn operation_key(mv: &ResolvedMove) -> String {
             coal,
             iron,
             ..
-        } => format!("build:{loc:?}:{slot_index}:{ind:?}:{coal:?}:{iron:?}"),
-        ResolvedMove::Network { conn_id, coal, .. } => format!("network:{conn_id}:{coal:?}"),
+        } => OperationKey::Build {
+            loc: *loc,
+            slot_index: *slot_index,
+            ind: *ind,
+            coal: coal.as_slice(),
+            iron: iron.as_slice(),
+        },
+        ResolvedMove::Network { conn_id, coal, .. } => OperationKey::Network {
+            conn_id: *conn_id,
+            coal: *coal,
+        },
         ResolvedMove::NetworkDouble {
             conn1,
             conn2,
@@ -144,22 +375,44 @@ pub(crate) fn operation_key(mv: &ResolvedMove) -> String {
             coal2,
             beer,
             ..
-        } => format!("network2:{conn1}:{conn2}:{coal1:?}:{coal2:?}:{beer:?}"),
+        } => OperationKey::NetworkDouble {
+            conn1: *conn1,
+            conn2: *conn2,
+            coal1: *coal1,
+            coal2: *coal2,
+            beer: *beer,
+        },
         ResolvedMove::Develop {
-            ind1, ind2, iron, ..
-        } => format!("develop:{ind1:?}:{ind2:?}:{iron:?}"),
+            ind1,
+            ind2,
+            iron,
+            ..
+        } => OperationKey::Develop {
+            ind1: *ind1,
+            ind2: *ind2,
+            iron: iron.as_slice(),
+        },
         ResolvedMove::Sell {
             keys,
             beer_sources,
             free_develop,
             ..
-        } => format!("sell:{keys:?}:{beer_sources:?}:{free_develop:?}"),
-        ResolvedMove::Loan { .. } => "loan".into(),
-        // Scout is one operation; the three discarded cards belong to the
-        // separate card-selection head and must not multiply operation nodes.
-        ResolvedMove::Scout { .. } => "scout".into(),
-        ResolvedMove::Pass { .. } => "pass".into(),
+        } => OperationKey::Sell {
+            keys: keys.as_slice(),
+            beer_sources: beer_sources.as_slice(),
+            free_develop: *free_develop,
+        },
+        ResolvedMove::Loan { .. } => OperationKey::Loan,
+        ResolvedMove::Scout { .. } => OperationKey::Scout,
+        ResolvedMove::Pass { .. } => OperationKey::Pass,
     }
+}
+
+pub fn hash_operation_key(mv: &ResolvedMove) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    operation_key(mv).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Top-K candidates per action type, for consumers that want a wider prior.
@@ -198,7 +451,7 @@ pub fn candidate_actions_k(state: &mut GameState, k: usize) -> Vec<Decision> {
     // first candidate wins ties; its ResolvedMove retains one executable card index,
     // while `card_choices_for_move` exposes the independent card dimension.
     let mut unique = std::collections::HashSet::new();
-    out.retain(|d| unique.insert(operation_key(&d.mv)));
+    out.retain(|d| unique.insert(hash_operation_key(&d.mv)));
 
     out.extend(score_sell_plans(state, &card_choices).into_iter().take(k));
     out.extend(score_loan_result(state, &card_choices).into_iter().take(k));
