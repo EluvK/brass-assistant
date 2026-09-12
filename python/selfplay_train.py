@@ -85,26 +85,29 @@ def main() -> int:
     parser.add_argument("--buffer-iterations", type=int, default=20)
     parser.add_argument("--recent-fraction", type=float, default=0.75)
     parser.add_argument("--recent-iterations", type=int, default=4)
-    parser.add_argument("--train-samples", type=int, default=40_000)
-    parser.add_argument("--train-epochs", type=int, default=1,
-                        help="passes over the drawn replay sample per iteration (default: 1)")
+    parser.add_argument("--train-samples", type=int, default=12_000,
+                        help="samples drawn from the replay buffer per iteration (default: 12000)")
+    parser.add_argument("--train-epochs", type=int, default=2,
+                        help="passes over the drawn replay sample per iteration (default: 2)")
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--max-candidate-batch", type=int, default=65_536)
     parser.add_argument("--materialize-workers", type=int, default=min(8, os.cpu_count() or 1))
-    # Search.
+    # Search & Exploration.
     parser.add_argument("--c-puct", type=float, default=0.25,
                         help="PUCT exploration constant (scaled to VP_SCALE=50, default: 0.25)")
     parser.add_argument("--prior-top-k", type=int, default=32,
                         help="search only the K highest-prior moves with stratified category preservation (0 = search every legal move, default: 32)")
-    parser.add_argument("--temperature", type=float, default=0.0,
-                        help="initial move sampling temperature (default: 0.0 for greedy best-visit)")
-    parser.add_argument("--temperature-warmup-moves", type=int, default=0,
-                        help="moves to hold initial temperature before decay")
-    parser.add_argument("--temperature-decay-moves", type=int, default=0,
-                        help="moves over which temperature decays to temperature-final")
+    parser.add_argument("--temperature", type=float, default=0.8,
+                        help="initial move sampling temperature (default: 0.8)")
+    parser.add_argument("--temperature-warmup-moves", type=int, default=12,
+                        help="moves to hold initial temperature before decay (default: 12)")
+    parser.add_argument("--temperature-decay-moves", type=int, default=12,
+                        help="moves over which temperature decays to temperature-final (default: 12)")
     parser.add_argument("--temperature-final", type=float, default=0.0,
-                        help="final sampling temperature")
+                        help="final sampling temperature (default: 0.0)")
+    parser.add_argument("--min-vp-filter", type=float, default=20.0,
+                        help="discard self-play samples from games with min VP below this threshold (default: 20.0)")
     parser.add_argument("--no-fpu", action="store_true",
                         help="treat unvisited children as worth 0 instead of the parent's value")
     parser.add_argument("--no-q-init", action="store_true",
@@ -115,11 +118,11 @@ def main() -> int:
                         help="0 expands every legal move (default); positive values use the heuristic shortlist")
     # Evaluation.
     parser.add_argument("--eval-every", type=int, default=5)
-    parser.add_argument("--eval-games", type=int, default=12,
-                        help="arena games against current best (default: 12)")
+    parser.add_argument("--eval-games", type=int, default=16,
+                        help="arena games against current best (default: 16, 4 full seat rotations)")
     parser.add_argument("--eval-sims", type=int, default=128)
-    parser.add_argument("--heuristic-eval-games", type=int, default=12,
-                        help="benchmark games against engine heuristic (default: 12)")
+    parser.add_argument("--heuristic-eval-games", type=int, default=16,
+                        help="benchmark games against engine heuristic (default: 16, 4 full seat rotations)")
     parser.add_argument("--heuristic-eval-sims", type=int, default=128)
     parser.add_argument("--promote-winrate", type=float, default=0.35,
                         help="promotion winrate threshold in 4-player arena (default: 0.35 against 0.25 baseline)")
@@ -157,11 +160,14 @@ def main() -> int:
 
     start_iteration = 0
     best_state = None
+    resumed_opponent_pool = None
     try:
         if args.resume:
             if not latest.is_file():
                 raise SystemExit(f"--resume requires {latest}")
-            trainer.load_state_dict(torch.load(latest, map_location=args.device))
+            latest_payload = torch.load(latest, map_location=args.device)
+            trainer.load_state_dict(latest_payload)
+            resumed_opponent_pool = latest_payload.get("opponent_pool")
             if meta_path.is_file():
                 start_iteration = int(json.loads(meta_path.read_text())["iteration"]) + 1
             if best.is_file():
@@ -195,6 +201,7 @@ def main() -> int:
                 temperature_warmup_moves=args.temperature_warmup_moves,
                 temperature_decay_moves=args.temperature_decay_moves,
                 temperature_final=args.temperature_final,
+                min_vp_filter=args.min_vp_filter,
             ),
             mm_prob=args.mm_prob,
             pool_size=args.pool_size,
@@ -231,6 +238,8 @@ def main() -> int:
                 "promoted": stats.promoted,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
+            if hasattr(stats, "_opponent_pool") and stats._opponent_pool:
+                payload["opponent_pool"] = stats._opponent_pool
             _atomic_save(payload, latest)
             meta_path.write_text(json.dumps({
                 "iteration": stats.iteration,
@@ -271,6 +280,7 @@ def main() -> int:
                 on_iteration=on_iteration,
                 start_iteration=start_iteration,
                 best_state=best_state,
+                opponent_pool=resumed_opponent_pool,
             )
         except KeyboardInterrupt:
             print("\ninterrupted: latest.pt already holds the last completed iteration")

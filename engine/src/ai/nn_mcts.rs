@@ -935,9 +935,16 @@ fn flush_net(
         // The value head is an unconstrained linear layer, so `search_value`
         // clamps blow-ups before they reach PUCT's value/exploration
         // comparison.
-        let value: Vec<f64> = (0..MAX_PLAYERS)
-            .map(|p| search_value(values[r0 + p]))
-            .collect();
+        //
+        // Map the network's relative perspective (seat 0 = acting player `pid`)
+        // back to absolute seat indices `abs_p = (pid + rel) % n`.
+        let pid = req.state.current_player_id();
+        let n = req.state.player_count().min(MAX_PLAYERS).max(1);
+        let mut value = vec![0.0f64; MAX_PLAYERS];
+        for rel in 0..n {
+            let abs_p = (pid + rel) % n;
+            value[abs_p] = search_value(values[r0 + rel]);
+        }
         let priors = match &req.kind {
             RequestKind::Expand {
                 candidate_features, ..
@@ -1159,5 +1166,27 @@ mod tests {
             "Sell was starved by Builds!"
         );
         assert_eq!(arena[0].children.len(), 16);
+    }
+
+    #[test]
+    fn relative_value_maps_to_absolute_seats() {
+        let n = 4;
+        // Suppose current acting player is pid = 2.
+        // The network outputs relative perspective:
+        // rel 0: me (pid 2) -> 1.5
+        // rel 1: next (pid 3) -> 0.5
+        // rel 2: across (pid 0) -> -1.0
+        // rel 3: previous (pid 1) -> -1.0
+        let pid = 2;
+        let relative_vals = [1.5f64, 0.5, -1.0, -1.0];
+        let mut absolute_vals = vec![0.0f64; n];
+        for rel in 0..n {
+            let abs_p = (pid + rel) % n;
+            absolute_vals[abs_p] = relative_vals[rel];
+        }
+        assert_eq!(absolute_vals[2], 1.5);
+        assert_eq!(absolute_vals[3], 0.5);
+        assert_eq!(absolute_vals[0], -1.0);
+        assert_eq!(absolute_vals[1], -1.0);
     }
 }

@@ -27,8 +27,11 @@ from __future__ import annotations
 import copy
 import json
 import math
+import multiprocessing as mp
+import os
 import time
 from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -45,11 +48,11 @@ from .selfplay import Sample, SelfPlayConfig, play_game_with_roles
 from .train import TrainConfig, Trainer
 
 
-def wilson_lower_bound(wins: int, games: int, z: float = 1.96) -> float:
+def wilson_lower_bound(wins: int, games: int, z: float = 1.28) -> float:
     """Lower bound of the Wilson score interval for a win rate.
 
-    A 40-game arena has a ~±15% standard error, so promotion decisions read this
-    bound instead of the raw win rate.
+    z=1.28 provides a one-sided 90% confidence lower bound, suitable for
+    evaluations with 12-24 games in 4-player games (baseline winrate = 0.25).
     """
     if games <= 0:
         return 0.0
@@ -190,11 +193,47 @@ class IterationStats:
     promoted: bool = False
 
     def to_json(self) -> str:
-        return json.dumps(self.__dict__, sort_keys=True)
+        data = {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+        return json.dumps(data, sort_keys=True)
 
 
 def _cpu_state_dict(net: PolicyValueNet) -> dict:
     return {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+
+
+def _arena_worker_fn(args):
+    candidate_weights, opponent_weights, mcts_cfg_dict, selfplay_dict, sims, seed, seat, players = args
+    import torch
+    from .net import PolicyValueNet
+    from .rust_mcts import RustISMCTS, RustMCTSConfig
+    from .selfplay import SelfPlayConfig, play_game_with_roles
+
+    torch.set_num_threads(1)
+    c_net = PolicyValueNet()
+    c_net.load_state_dict(candidate_weights)
+    c_net.eval()
+    c_mcts = RustISMCTS(c_net, RustMCTSConfig(**mcts_cfg_dict, device="cpu"))
+
+    o_net = PolicyValueNet()
+    o_net.load_state_dict(opponent_weights)
+    o_net.eval()
+    o_mcts = RustISMCTS(o_net, RustMCTSConfig(**mcts_cfg_dict, device="cpu"))
+
+    roles = [o_mcts.search] * players
+    roles[seat] = c_mcts.search
+    game_cfg = SelfPlayConfig(
+        players=players,
+        sims=sims,
+        seed=seed,
+        temperature=0.0,
+        temperature_final=0.0,
+        **selfplay_dict,
+    )
+    samples, vps = play_game_with_roles(
+        roles, game_cfg, collect={seat}, add_root_noise=False
+    )
+    is_win = (samples and int(np.argmax(samples[0].winner)) == seat) or (vps and int(np.argmax(vps)) == seat)
+    return is_win
 
 
 def arena_winrate(
@@ -205,12 +244,57 @@ def arena_winrate(
     sims: int,
     seed_base: int,
     players: int = 4,
+    workers: int = 1,
+    candidate_net: PolicyValueNet | None = None,
+    opponent_net: PolicyValueNet | None = None,
+    mcts_cfg: RustMCTSConfig | None = None,
 ) -> tuple[int, int]:
     """Play `games` candidate-vs-opponent games with rotating candidate seats.
 
     Temperature is forced to 0 so the arena measures the networks, not sampling
     noise; seeds are fixed per index so every checkpoint faces the same deals.
+    If workers > 1 and weights are provided, games run concurrently across a process pool.
     """
+    if games <= 0:
+        return 0, 0
+
+    if workers > 1 and candidate_net is not None and opponent_net is not None:
+        c_weights = {k: v.detach().cpu() for k, v in candidate_net.state_dict().items()}
+        o_weights = {k: v.detach().cpu() for k, v in opponent_net.state_dict().items()}
+        m_cfg = mcts_cfg or RustMCTSConfig()
+        cfg_dict = {
+            "c_puct": m_cfg.c_puct,
+            "max_depth": m_cfg.max_depth,
+            "dirichlet_alpha": m_cfg.dirichlet_alpha,
+            "dirichlet_weight": m_cfg.dirichlet_weight,
+            "batch_size": m_cfg.batch_size,
+            "candidate_k": m_cfg.candidate_k,
+            "prior_top_k": m_cfg.prior_top_k,
+            "fpu": m_cfg.fpu,
+            "fpu_reduction": m_cfg.fpu_reduction,
+            "q_init": m_cfg.q_init,
+        }
+        selfplay_dict = {
+            "store_snapshots": selfplay_cfg.store_snapshots,
+            "determinize_observation": selfplay_cfg.determinize_observation,
+            "max_moves": selfplay_cfg.max_moves,
+            "min_vp_filter": getattr(selfplay_cfg, "min_vp_filter", 0.0),
+        }
+        n_workers = min(workers, games, os.cpu_count() or 1)
+        jobs = [
+            (c_weights, o_weights, cfg_dict, selfplay_dict, sims, seed_base + g, g % players, players)
+            for g in range(games)
+        ]
+        wins = 0
+        prog = Progress(games, f"arena sims={sims} (w={n_workers})")
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp.get_context("spawn")) as pool:
+            for done_count, is_win in enumerate(pool.map(_arena_worker_fn, jobs), 1):
+                if is_win:
+                    wins += 1
+                prog.update(done_count)
+        prog.done()
+        return wins, games
+
     wins = 0
     prog = Progress(games, f"arena sims={sims}")
     for game in range(games):
@@ -224,10 +308,10 @@ def arena_winrate(
             temperature_final=0.0,
             sims=sims,
         )
-        samples, _ = play_game_with_roles(
+        samples, vps = play_game_with_roles(
             roles, game_cfg, collect={seat}, add_root_noise=False
         )
-        if samples and int(np.argmax(samples[0].winner)) == seat:
+        if (samples and int(np.argmax(samples[0].winner)) == seat) or (vps and int(np.argmax(vps)) == seat):
             wins += 1
         prog.update(game + 1)
     prog.done()
@@ -243,6 +327,7 @@ def _selfplay_opts(cfg: LoopConfig) -> dict:
         "temperature_decay_moves": cfg.selfplay.temperature_decay_moves,
         "temperature_final": cfg.selfplay.temperature_final,
         "max_moves": cfg.selfplay.max_moves,
+        "min_vp_filter": cfg.selfplay.min_vp_filter,
     }
 
 
@@ -254,12 +339,14 @@ def run_selfplay(
     should_stop: Callable[[], bool] | None = None,
     start_iteration: int = 0,
     best_state: dict | None = None,
+    opponent_pool: list[dict] | None = None,
 ) -> list[IterationStats]:
     """Run the self-play loop; returns per-iteration statistics.
 
     `on_iteration` receives the freshly updated stats plus the live net/trainer
     (for checkpointing and logging). `should_stop` is polled between iterations.
     `best_state` restores the arena reference on `--resume`.
+    `opponent_pool` restores the historical matchmaking pool on `--resume`.
     """
     rng = np.random.default_rng(cfg.seed)
     buffer = ReplayBuffer(cfg.max_buffer_samples, cfg.max_buffer_iterations)
@@ -268,7 +355,7 @@ def run_selfplay(
     best_net = copy.deepcopy(net).eval()
     if best_state is not None:
         best_net.load_state_dict(best_state)
-    opponent_pool: list[dict] = []
+    opponent_pool = list(opponent_pool) if opponent_pool is not None else []
     pool: SelfPlayPool | None = None
     local_mcts: RustISMCTS | None = None
     if cfg.workers > 1:
@@ -357,10 +444,14 @@ def run_selfplay(
                 wins, games = arena_winrate(
                     arena_mcts, best_mcts, cfg.selfplay,
                     cfg.eval_games, cfg.eval_sims, seed_base=cfg.seed + 7_000_000,
+                    workers=min(cfg.workers, 4),
+                    candidate_net=net,
+                    opponent_net=best_net,
+                    mcts_cfg=cfg.mcts,
                 )
                 stats.arena_wins, stats.arena_games = wins, games
                 stats.arena_winrate = wins / games if games else 0.0
-                stats.arena_lower = wilson_lower_bound(wins, games)
+                stats.arena_lower = wilson_lower_bound(wins, games, z=1.28)
                 stats.heuristic_winrate = benchmark_net_vs_heuristic(
                     net, cfg.heuristic_eval_sims, cfg.heuristic_eval_games,
                     device=cfg.device,
@@ -368,14 +459,15 @@ def run_selfplay(
                     workers=min(cfg.workers, 4),
                 )["win_rate"]
                 # 4-player game (1 candidate vs 3 opponents): baseline winrate is 25%.
-                # Promotion requires beating the winrate threshold AND Wilson lower bound > 0.25.
-                if stats.arena_winrate >= cfg.promote_winrate and stats.arena_lower > 0.25:
+                # Promotion requires beating the winrate threshold AND Wilson lower bound >= 0.25.
+                if stats.arena_winrate >= cfg.promote_winrate and stats.arena_lower >= 0.25:
                     best_net.load_state_dict(_cpu_state_dict(net))
                     stats.promoted = True
             stats.eval_sec = time.time() - t2
 
             opponent_pool.append(_cpu_state_dict(net))
             del opponent_pool[: max(0, len(opponent_pool) - cfg.pool_size)]
+            stats._opponent_pool = list(opponent_pool)
 
             history.append(stats)
             if on_iteration is not None:

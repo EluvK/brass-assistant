@@ -228,6 +228,9 @@ class SelfPlayConfig:
     # multi-iteration replay buffer affordable. Materialization happens in the
     # trainer (`materialize_sample`, parallelized by `Trainer._materialize_pool`).
     store_snapshots: bool = True
+    # If positive, discard samples from collapsed/deadlock games where any player's
+    # final score is below this threshold (e.g. 20.0), matching the imitation gate.
+    min_vp_filter: float = 0.0
 
     def temperature_for_move(self, move_index: int) -> float:
         """Return the self-play sampling temperature for a zero-based move.
@@ -433,6 +436,13 @@ def play_game_with_roles(
         )
 
     vps = state.player_vps()
+    if cfg.min_vp_filter > 0.0 and float(np.min(vps)) < cfg.min_vp_filter:
+        if stats is not None:
+            stats["failed_applies"] = failed_applies
+            stats["rewritten_applies"] = rewritten_applies
+            stats["moves"] = moves
+        return [], vps
+
     value, winner = _value_targets(vps, state.final_ranking(), state.player_count)
     # Rail-era samples (and any canal samples that never got a canal-econ stamp,
     # e.g. a game that ended in the canal era) take the FINAL economy.
