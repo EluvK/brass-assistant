@@ -57,6 +57,8 @@ def play_game_with_policies(policies, seed: int, players: int = 4, max_moves: in
                 state.apply_move(legal[0][1])
             except ValueError:
                 break
+    if not state.game_over:
+        raise RuntimeError(f"evaluation did not reach a legal terminal state after {moves} moves")
     return state.player_vps(), state.final_ranking()
 
 

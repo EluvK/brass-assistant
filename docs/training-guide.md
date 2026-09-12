@@ -2,6 +2,8 @@
 
 本文档是《工业革命：伯明翰》AI 策略模型的标准操作手册，涵盖全套训练命令、核心指标物理含义速查、语义化版本 (SemVer) 资产管理规范、多模型对战（League）设计以及常见故障排查。
 
+2026-09-12：搜索与破产规则修复后，训练始终由通过验证的 best 生成对局，latest 作为候选继续学习。晋升要求 arena 达标、教师评测无零分且均分不低于 best。短程实验与更大样本的独立评测仍是必要步骤，不能以训练 loss 或单轮均分保证棋力增长。
+
 ---
 
 ## 目录
@@ -21,13 +23,13 @@
 [Rust 引擎优化]
        │
        ▼ maturin develop --release --features python
-[环境基线验证] ── pytest (44/44 通过)
+[环境基线验证] ── pytest（以当前测试结果为准）
        │
        ▼ bootstrap_imitation.py (--min-vp 30 门禁)
 [干净的 v1 底座模型] checkpoints/v1/bootstrap/b2000.pt
        │
        ▼ bench_value_ranking.py (体检放行门禁)
-[Q(s,a) 与 V(s) 探针] ── 确认大局观 V(s) 为正
+[Q(s,a) 与 V(s) 探针] ── 检查排序误差及其不确定性
        │
        ▼ selfplay_train.py (--c-puct 0.25 --temperature 0.0)
 [长期自对弈强化] checkpoints/v1/runs/sp01/
@@ -46,7 +48,7 @@ source .venv/Scripts/activate
 # 2. 编译并安装 Rust 核心扩展
 python -m maturin develop --release --features python
 
-# 3. 运行 Python 侧回归测试 (必须 44 项全 PASSED)
+# 3. 运行 Python 侧回归测试，检查失败与跳过原因
 python -m pytest python/tests -q
 ```
 
@@ -83,9 +85,7 @@ python python/bench_value_ranking.py \
   --ckpt checkpoints/v1/bootstrap/b2000.pt \
   --positions 36
 ```
-- **放行判据**：
-  - `V(s)` 秩相关系数应为**正数**（$> +0.08$），证明模型对走完后的新局面能分出优劣。
-  - `Q(s,a)` 在初期允许在 0 附近浮动（$\pm 0.1$），此为模仿学习的正常现象，后续由自对弈 MCTS 强化。
+- **解释方式**：该探针以启发式续局作为参考，需要结合局面数、误差范围及具体候选分析，不能用一次相关系数大于 +0.08 作为放行证明。Q/V 排序弱时，自博弈不一定能自行纠正；开始长训练前还需独立对局比较策略直出与搜索，并记录经济崩溃轨迹。当前已知失败及修复证据见 [selfplay-validation.md](selfplay-validation.md)。
 
 ### 步骤 3：启动自对弈强化学习 (Self-Play Loop)
 以干净的底座为起点，模型通过 MCTS 树搜索自我博弈并持续升级：
@@ -115,7 +115,7 @@ python python/selfplay_train.py \
 | `--sims` | `128` | 每步 MCTS 模拟推演次数（兼顾搜索质量与生成吞吐量） |
 | `--c-puct` | `0.25` | 探索常数，与 $VP\_SCALE=50$ 深度对齐 |
 | `--prior-top-k` | `32` | **分层保底 Top-K**：确保 6 大基础动作类型（Build/Network/Develop/Sell/Loan/Pass）各保底保留前 3~4 个最优候选，彻底避免建厂动作挤占卖货/借贷名额 |
-| `--heuristic-opponent-prob` | `0.25` | **启发式高水平陪练**：每局有 25% 概率混入 1~2 个启发式 AI 同台对弈，打破全网络镜像内卷，注入 130 分繁荣经济环境（且启发式计算零延迟） |
+| `--heuristic-opponent-prob` | `0.25` | 每个非保留座位有 25% 概率使用启发式教师。用于增加对手多样性；混合局的经济健康和棋力仍需评测，教师计算也有开销。 |
 | `--temperature` | `0.0` | 确定性走步，依赖根节点 Dirichlet 噪声探索，避免开局自毁走法 |
 | `--eval-every` | `2` | 每 2 轮进行一次正规对决评估，保持高频监控 |
 | `--eval-games` | `12` | 挑战历史最佳 `best.pt` 的竞技局数（3 组严格轮换座位） |
@@ -123,7 +123,7 @@ python python/selfplay_train.py \
 | `--promote-winrate` | `0.35` | **4人局晋升胜率门槛**：在 1 vs 3 模式下基准期望仅为 25%，0.35 要求胜率明显超越基准，并结合 Wilson 下限置信度判定刷新 `best.pt` |
 
 ### 步骤 4：断点续训 (Resume)
-如需中断（按 `Ctrl+C`，当前轮次跑完后安全退出），之后从断点无缝继续训练：
+按 `Ctrl+C` 会中断当前工作，已完成轮次的 `latest.pt` 保留；未完成轮次和内存 replay buffer 不会恢复。之后可从已保存轮次续训：
 
 ```bash
 python python/selfplay_train.py \
@@ -226,18 +226,19 @@ Compatibility: [OK] Matches current engine schemas (Action v1, State v1)
 
 在自对弈日志 `metrics.jsonl` 中，必须密切监控以下字段：
 
-- **`min_vp`（核心红线指标）**：
-  - **健康标准**：**必须 $> 50$**。
-  - **报警状态**：若持续出现 `min_vp: 0.0`，说明遭遇了破产死锁（过度借贷至 -10 跌停且挥霍至 0 英镑弃牌）。必须立即停机排查数据源。
+- **`min_vp` 与 `zero_vp_players`**：
+  - 结合完整局数、零分座位数、现金/收入回放诊断，不能规定所有正常对局都必须大于 50 分。
+  - 已取消“停滞两次即永久破产并清零”。零分仍可能来自真实欠款扣分或差策略，需要追踪具体行动。
+  - `--min-vp-filter` 默认 0；过滤不是修复，失败轨迹可提供价值监督。被过滤局的 VP 仍如实计入日志。
 - **`avg_vp` 与 `winner_avg_vp`**：
-  - **健康标准**：全桌均分 `avg_vp` 应处于 **$110 \sim 130$** 分；赢家均分 `winner_avg_vp` 应达到 **$135 \sim 150+$**。
-  - 若均分长期低于 80 分，说明双方打法过度消极互卡，未展开高效经济引擎。
+  - 都是所有角色混合后的统计，不是固定对手下当前模型的棋力。应同时看 `collected_avg_vp` 和固定对手评测。
+  - 不同 seed、座位、对手组成可引起波动；不要根据一两轮下降断言退化。
 - **`heuristic_winrate`**：
   - 对抗 Rust 硬编码启发式裁判的胜率。
-  - 演进路径通常为：起手底座 ($10\% \sim 20\%$) $\to$ 自对弈 10 轮 ($30\% \sim 40\%$) $\to$ 自对弈 30 轮 ($50\%+$)。
+  - 同时记录 `heuristic_avg_vp`、`heuristic_zero_games` 与 `champion_heuristic_avg_vp`；没有保证随轮数增长的胜率曲线。
 - **`arena_winrate` 与 `PROMOTED`**：
   - 新模型挑战当前历史最佳 `best.pt` 的胜率。
-  - 当胜率显著超过 55%（考虑 Wilson 置信下限 `arena_lower`）时触发 `PROMOTED`，自动刷新 `best.pt`。
+  - 默认要求胜率 ≥ 0.35 且 Wilson 单侧下限 ≥ 0.25，并通过教师健康检查，才触发 `PROMOTED`。未评估轮次显示 `--`。
 
 ### 3. 探针排序指标（bench_value_ranking）
 
@@ -252,8 +253,8 @@ Compatibility: [OK] Matches current engine schemas (Action v1, State v1)
 
 ### 1. 对手池机制（Self-Play Matchmaking）
 在 `selfplay_train.py` 中，已原生集成动态对手池：
-- `--pool-size 6`：在内存中滑动保留最近 6 代模型。
-- `--mm-prob 0.25`：在生成自对弈棋谱时，每局有 25% 的概率随机抽调历史版本同台竞技，强迫新模型适应历史不同风格的打法，防止策略倒退与单一打法过拟合。
+- `--pool-size 6`：保留最近 6 个已晋升模型（启动时包含底座）。
+- `--mm-prob 0.25`：每个非指定座位有 25% 概率使用历史模型；`--heuristic-opponent-prob` 同样按座位抽签。混合局保留所有当前 champion 座位的样本。
 
 ### 2. 跨版本 4 人锦标赛（Tournament 准则）
 组织不同代际选手（如 `v1_sp01_best` vs `v1_bootstrap_b2000` vs `heuristic`）进行正规对抗时，必须遵循：
@@ -265,18 +266,17 @@ Compatibility: [OK] Matches current engine schemas (Action v1, State v1)
 ## 五、常见故障诊断与排障 (Troubleshooting)
 
 ### Q1: 训练过程中频繁出现 `min_vp: 0.0`，均分不足 80 分？
-- **根因**：遭遇了“运河期借贷破产死锁”（收入跌至 -10 且现金归零后只剩 Pass）。
-- **解法**：
-  1. 检查 Rust 引擎是否为最新优化版本，执行 `maturin develop --release --features python`。
-  2. 严禁直接续训！必须重新跑步骤 1，生成带有 `--min-vp 30` 过滤器的干净底座。
+- 先确认扩展已重建，再查看零分比例及回放中的借贷、现金、收入、卖货、欠款扣分路径。不能只凭 min=0 判断底座或训练样本污染。
+- 检查 `completed_games`、`filtered_games` 与采样角色；过滤局也会出现在均分中。
+- 比较底座直接 policy 与 MCTS 的固定对局，再判断是搜索还是模型问题。历史诊断见 [2026-09-12 诊断](training-diagnosis-2026-09-12.md)。
 
 ### Q2: 自对弈中 Policy loss 或 Value loss 震荡不降？
 - **排查**：
-  - 检查探索常数 `--c-puct`：必须为 `0.25`（与 $VP\_SCALE=50$ 深度对齐）。若误设为 `1.0` 会导致搜索过度盲目随机。
+  - 探索常数 `--c-puct` 默认 `0.25`，需要与候选宽度及价值质量共同做对照；不存在所有模型都必须使用同一个常数的保证。
   - 检查采样温度 `--temperature`：推荐设为 `0.0`。如果前期设置了长时间的高温随机采样，会导致高质量局面被噪声破坏。
 
 ### Q3: 运行自对弈时报内存不足 (OOM) 或速度极慢？
 - **排查**：
   - `--workers`：建议设为 `CPU核心数 - 2`（通常 6~8 个 worker）。
   - `--max-candidate-batch`：若 GPU 显存紧张，可从默认的 `65536` 下调至 `32768`。
-  - `--prior-top-k`：保持默认的 `16`。若设为 0 会对全场 350+ 合法动作做无差别展开，导致单步推演耗时增加数倍。
+  - `--prior-top-k`：CLI 默认 `32`。设为 0 会保留所有合法动作，通常增加搜索开销。

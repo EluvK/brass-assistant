@@ -19,10 +19,6 @@ pub fn legal_resolved_moves(state: &mut GameState) -> Vec<ResolvedMove> {
     state.ensure_network_masks();
     let pid = state.current_player_id();
 
-    if state.players[pid].is_bankrupt {
-        return vec![ResolvedMove::Pass { card_index: 0 }];
-    }
-
     let player_hand_len = state.players[pid].hand.len();
     if player_hand_len == 0 {
         return vec![];

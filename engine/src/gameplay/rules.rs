@@ -80,26 +80,6 @@ pub fn apply_move(state: &mut GameState, mv: &ResolvedMove) -> Result<String, St
             #[cfg(debug_assertions)]
             state.assert_caches_consistent();
 
-            // Track deadlock / bankruptcy
-            if mv.is_productive() {
-                state.players[pid].consecutive_stalled_actions = 0;
-            } else {
-                let mut snap = snapshot;
-                let had_productive = legal_resolved_moves(&mut snap)
-                    .iter()
-                    .any(|m| m.is_productive());
-                if !had_productive {
-                    state.players[pid].consecutive_stalled_actions = state.players[pid]
-                        .consecutive_stalled_actions
-                        .saturating_add(1);
-                    if state.players[pid].consecutive_stalled_actions >= 2 {
-                        state.players[pid].is_bankrupt = true;
-                    }
-                } else {
-                    state.players[pid].consecutive_stalled_actions = 0;
-                }
-            }
-
             Ok(summary)
         }
         Err(err) => {

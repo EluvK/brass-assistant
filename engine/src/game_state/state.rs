@@ -176,10 +176,6 @@ pub struct Player {
     /// `has_wild_industry`. Reserved for future NN features / belief modelling;
     /// cleared at the Canal-to-Rail transition in `engine::handle_turn_result`.
     pub played: Vec<Card>,
-    /// Consecutive actions with no productive options (only Pass or Scout available).
-    /// If this reaches 2 (a full turn of total deadlock), the player is bankrupt.
-    pub consecutive_stalled_actions: u8,
-    pub is_bankrupt: bool,
 }
 
 /// Expanded per-player industry stacks (identical for all players), built once.
@@ -220,8 +216,6 @@ impl Player {
             has_wild_location: false,
             has_wild_industry: false,
             played: Vec::new(),
-            consecutive_stalled_actions: 0,
-            is_bankrupt: false,
         }
     }
 

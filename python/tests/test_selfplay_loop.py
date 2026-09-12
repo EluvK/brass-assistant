@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from brass_ai import _engine as be
@@ -12,6 +13,57 @@ from brass_ai.selfplay_loop import (
     wilson_lower_bound,
 )
 from brass_ai.train import TrainConfig, Trainer
+
+
+@pytest.mark.parametrize("arena_wins,candidate_scores,promotes", [
+    (0, [110] * 16, False),
+    (8, [110] * 16, True),
+    (16, [0] + [200] * 15, False),
+    (16, [90] * 16, False),
+])
+def test_only_healthy_promotions_change_selfplay_actor(monkeypatch, arena_wins, candidate_scores, promotes):
+    from brass_ai import selfplay_loop as loop
+
+    net = torch.nn.Linear(1, 1, bias=False)
+    with torch.no_grad():
+        net.weight.zero_()
+    actor_weights = []
+
+    class Search:
+        def __init__(self, net, cfg):
+            self.net = net
+
+    class Training:
+        def train_one_epoch(self, draw, label):
+            with torch.no_grad():
+                net.weight.add_(1)
+            return [{"policy": 1.0}]
+
+        def step_lr(self):
+            pass
+
+    def play(mcts, cfg, seed, opponent_pool):
+        actor_weights.append(float(mcts.net.weight.item()))
+        return [Sample(pid=0)], {"game_vps": [[100] * 4]}
+
+    def bench(model, *args, **kwargs):
+        scores = [100] * 16 if model.weight.item() == 0 else candidate_scores
+        return {"games": 16, "win_rate": 0.5, "mcts_mean": np.mean(scores), "mcts_vps": scores}
+
+    monkeypatch.setattr(loop, "RustISMCTS", Search)
+    monkeypatch.setattr(loop, "_play_batch_local", play)
+    monkeypatch.setattr(loop, "arena_winrate", lambda *a, **kw: (arena_wins, 16))
+    monkeypatch.setattr(loop, "benchmark_net_vs_heuristic", bench)
+    history = run_selfplay(net, Training(), LoopConfig(
+        iterations=2, games_per_iter=1, workers=1, eval_every=1,
+        mcts=RustMCTSConfig(device="cpu"), train_samples=1,
+    ))
+    assert history[0].promoted == promotes
+    assert actor_weights == [0.0, 1.0 if promotes else 0.0]
+    if not promotes:
+        assert all(state["weight"].item() == 0 for state in history[-1]._opponent_pool)
+        assert history[-1]._champion_state["weight"].item() == 0
+    assert net.weight.item() == 2  # Candidate learning continues after rejection.
 
 
 def _make_mcts():

@@ -17,6 +17,44 @@ fn setup(players: usize) -> GameState {
 }
 
 #[test]
+fn temporary_stall_does_not_eliminate_player_or_erase_scores() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    state.players[pid].money = 0;
+    state.players[pid].income_space = 0;
+    state.players[pid].vp = 24;
+    for _ in 0..2 {
+        assert!(
+            legal_resolved_moves(&mut state)
+                .iter()
+                .all(|m| !m.is_productive())
+        );
+        apply_move(&mut state, &ResolvedMove::Pass { card_index: 0 }).unwrap();
+    }
+    // Public changes / later income can restore options after a stalled turn.
+    state.players[pid].money = 30;
+    assert!(
+        legal_resolved_moves(&mut state)
+            .iter()
+            .any(|m| m.is_productive())
+    );
+    scoring::score_era(&mut state);
+    assert_eq!(state.players[pid].vp, 24);
+}
+
+#[test]
+fn shortfall_only_deducts_outstanding_debt_without_eliminating_player() {
+    let mut state = setup(4);
+    let pid = state.current_player_id();
+    state.players[pid].money = 3;
+    state.players[pid].income_space = 0; // -10 income, no assets: deficit 7.
+    state.players[pid].vp = 24;
+    _engine::engine::end_round(&mut state);
+    assert_eq!(state.players[pid].money, 0);
+    assert_eq!(state.players[pid].vp, 17);
+}
+
+#[test]
 fn default_heuristic_entry_point_is_the_search_policy() {
     let mut heuristic_state = setup(4);
     let heuristic = _engine::heuristic_ai::choose_action(&mut heuristic_state);

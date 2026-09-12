@@ -50,7 +50,7 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
         if cmd is None:
             break  # shutdown
         (weights, pool_weights, games, sims, seed_offset, mcts_cfg, temperature,
-         mm_prob, heuristic_prob, selfplay_opts) = cmd
+         mm_prob, heuristic_prob, selfplay_opts, task_id) = cmd
         net = PolicyValueNet()
         net.load_state_dict(weights)
         net.eval()
@@ -69,26 +69,25 @@ def _worker_fn(worker_id, cmd_queue, result_queue, device, seed_base):
         for gi in range(games):
             stats: dict = {}
             try:
-                cfg.seed = seed_base + worker_id * 100_000 + seed_offset + gi
-                learner = gi % 4
+                game_id = task_id * games + gi
+                cfg.seed = seed_base + seed_offset + game_id
+                rng = np.random.default_rng(cfg.seed)
+                np.random.seed(cfg.seed)
+                learner = game_id % 4
                 roles = [mcts.search] * 4
                 collect = {0, 1, 2, 3}
-                has_mixed_opponents = False
 
                 for seat in range(4):
                     if seat == learner:
                         continue
-                    r = np.random.rand()
+                    r = rng.random()
                     if heuristic_prob > 0.0 and r < heuristic_prob:
                         roles[seat] = heuristic_search
-                        has_mixed_opponents = True
+                        collect.discard(seat)
                     elif mm_prob > 0.0 and pool and r < (heuristic_prob + mm_prob):
-                        opp = pool[np.random.randint(len(pool))]
+                        opp = pool[rng.integers(len(pool))]
                         roles[seat] = opp.search
-                        has_mixed_opponents = True
-
-                if has_mixed_opponents:
-                    collect = {learner}
+                        collect.discard(seat)
 
                 samples, vps = play_game_with_roles(
                     roles, cfg, collect=collect, stats=stats
@@ -115,6 +114,8 @@ def _pack_samples(samples: list[Sample], stats: dict | None = None) -> dict:
         "rewritten_applies": int((stats or {}).get("rewritten_applies", 0)),
         "moves": int((stats or {}).get("moves", 0)),
         "vps": [float(x) for x in (stats or {}).get("vps", [])],
+        "collected_vps": (stats or {}).get("collected_vps", []),
+        "filtered_games": int((stats or {}).get("filtered_games", 0)),
     }
     n = len(samples)
     if n and samples[0].policy_by_canonical is not None:
@@ -269,10 +270,10 @@ class SelfPlayPool:
         cfg = mcts_cfg or {}
         if mm_pool:
             pool_weights = [{k: v.detach().cpu() for k, v in pw.items()} for pw in mm_pool]
-        for _ in range(self.n_workers):
+        for task_id in range(self.n_workers):
             self.cmd_queue.put(
                 (weights, pool_weights, games_per_worker, sims, seed, cfg, temperature,
-                 mm_prob, heuristic_prob, selfplay_opts)
+                 mm_prob, heuristic_prob, selfplay_opts, task_id)
             )
 
         # Packets and DONE markers arrive interleaved (workers finish at
@@ -282,6 +283,8 @@ class SelfPlayPool:
         samples = []
         counts = []
         game_vps = []
+        collected_vps = []
+        filtered_games = 0
         failed_applies = 0
         rewritten_applies = 0
         move_total = 0
@@ -302,6 +305,8 @@ class SelfPlayPool:
                 move_total += int(payload.get("moves", 0))
                 if payload.get("vps"):
                     game_vps.append(payload["vps"])
+                collected_vps.extend(payload.get("collected_vps", []))
+                filtered_games += payload.get("filtered_games", 0)
                 games_received += 1
                 if verbose:
                     prog.update(games_received)
@@ -313,6 +318,8 @@ class SelfPlayPool:
             "moves": move_total,
             "games": games_received,
             "game_vps": game_vps,
+            "collected_vps": collected_vps,
+            "filtered_games": filtered_games,
         }
         return samples, counts
 

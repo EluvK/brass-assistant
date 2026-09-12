@@ -36,8 +36,16 @@ from brass_ai.net import PolicyValueNet, state_batch
 def _spearman(x: np.ndarray, y: np.ndarray) -> float | None:
     if len(x) < 3 or np.std(x) == 0 or np.std(y) == 0:
         return None
-    rx = np.argsort(np.argsort(x)).astype(float)
-    ry = np.argsort(np.argsort(y)).astype(float)
+    def ranks(values):
+        order = np.argsort(values, kind="stable")
+        sorted_values = values[order]
+        boundaries = np.r_[0, np.flatnonzero(sorted_values[1:] != sorted_values[:-1]) + 1, len(values)]
+        result = np.empty(len(values), dtype=float)
+        for lo, hi in zip(boundaries[:-1], boundaries[1:]):
+            result[order[lo:hi]] = (lo + hi - 1) / 2
+        return result
+
+    rx, ry = ranks(x), ranks(y)
     return float(np.corrcoef(rx, ry)[0, 1])
 
 
@@ -64,6 +72,7 @@ def _forward(net: PolicyValueNet, state) -> dict:
         "prior": out["candidate_log_probs"][0].exp().numpy(),
         "Q(s,a)": out["candidate_value"][0].numpy(),
         "canonical": canonical,
+        "features": np.asarray(features),
     }
 
 
@@ -79,7 +88,10 @@ def main() -> int:
                         help="siblings per position, taken from the prior's top K")
     parser.add_argument("--positions", type=int, default=36)
     parser.add_argument("--seeds", type=int, default=3)
+    parser.add_argument("--threads", type=int, default=1)
     args = parser.parse_args()
+
+    torch.set_num_threads(max(1, args.threads))
 
     net = PolicyValueNet()
     payload = torch.load(args.ckpt, map_location="cpu", weights_only=False)
@@ -100,12 +112,23 @@ def main() -> int:
             pid = state.current_player_id
             world = state.determinize()
             root = _forward(net, world)
-            for index in np.argsort(-root["prior"])[: args.candidates]:
+            seen = set()
+            indices = []
+            for index in np.argsort(-root["prior"], kind="stable"):
+                identity = root["features"][index].tobytes()
+                if identity not in seen:
+                    seen.add(identity)
+                    indices.append(index)
+                if len(indices) >= args.candidates:
+                    break
+            for index in indices:
                 child = world.clone()
-                _, ok = child.apply_move_raw(root["canonical"][int(index)])
-                if not ok:
+                try:
+                    child.apply_move(root["canonical"][int(index)])
+                except ValueError:
                     continue
-                child.advance_turn_raw()
+                if child.game_over:
+                    continue
                 predicted = _forward(net, child)
                 guard = 0
                 while not child.game_over and guard < 600:

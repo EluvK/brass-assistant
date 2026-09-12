@@ -2,7 +2,7 @@
 
 One iteration:
 
-1. **Act** - the current network plays full games (optionally against a pool of
+1. **Act** - the champion network plays full games (optionally against a pool of
    historical checkpoints) and emits snapshot-backed samples: the determinized
    observation plus the sparse root-visit distribution.
 2. **Remember** - samples enter a rolling replay window. Dense full-legal
@@ -13,9 +13,8 @@ One iteration:
 4. **Evaluate** - periodically: an arena against the current best checkpoint and
    a benchmark against the engine heuristic, both on rotated seats and fixed
    seeds so different checkpoints are compared on the same deals.
-5. **Promote** - the latest network is *always* the one that keeps training; the
-   best checkpoint only gates the opponent pool and the reported strength. A
-   hard gate on a noisy 40-game result would stall progress.
+5. **Promote** - only validated champions generate new self-play games and
+   enter the historical pool. The candidate continues training between gates.
 
 Targets are produced by the search, not by bootstrapping a value head: MCTS
 returns a root visit distribution (policy target) and the game's final ranking
@@ -190,6 +189,14 @@ class IterationStats:
     arena_winrate: float = 0.0
     arena_lower: float = 0.0
     heuristic_winrate: float | None = None
+    heuristic_avg_vp: float | None = None
+    heuristic_zero_games: int = 0
+    champion_heuristic_avg_vp: float | None = None
+    collected_avg_vp: float | None = None
+    zero_vp_players: int = 0
+    completed_games: int = 0
+    filtered_games: int = 0
+    game_vps: list = field(default_factory=list)
     promoted: bool = False
 
     def to_json(self) -> str:
@@ -229,11 +236,11 @@ def _arena_worker_fn(args):
         temperature_final=0.0,
         **selfplay_dict,
     )
-    samples, vps = play_game_with_roles(
-        roles, game_cfg, collect={seat}, add_root_noise=False
+    diagnostics = {}
+    play_game_with_roles(
+        roles, game_cfg, collect=set(), stats=diagnostics, add_root_noise=False
     )
-    is_win = (samples and int(np.argmax(samples[0].winner)) == seat) or (vps and int(np.argmax(vps)) == seat)
-    return is_win
+    return diagnostics["final_ranking"][0] == seat
 
 
 def arena_winrate(
@@ -308,10 +315,11 @@ def arena_winrate(
             temperature_final=0.0,
             sims=sims,
         )
-        samples, vps = play_game_with_roles(
-            roles, game_cfg, collect={seat}, add_root_noise=False
+        diagnostics = {}
+        play_game_with_roles(
+            roles, game_cfg, collect=set(), stats=diagnostics, add_root_noise=False
         )
-        if (samples and int(np.argmax(samples[0].winner)) == seat) or (vps and int(np.argmax(vps)) == seat):
+        if diagnostics["final_ranking"][0] == seat:
             wins += 1
         prog.update(game + 1)
     prog.done()
@@ -328,6 +336,7 @@ def _selfplay_opts(cfg: LoopConfig) -> dict:
         "temperature_final": cfg.selfplay.temperature_final,
         "max_moves": cfg.selfplay.max_moves,
         "min_vp_filter": cfg.selfplay.min_vp_filter,
+        "game_log_dir": cfg.selfplay.game_log_dir,
     }
 
 
@@ -355,13 +364,14 @@ def run_selfplay(
     best_net = copy.deepcopy(net).eval()
     if best_state is not None:
         best_net.load_state_dict(best_state)
-    opponent_pool = list(opponent_pool) if opponent_pool is not None else []
+    opponent_pool = list(opponent_pool) if opponent_pool is not None else [_cpu_state_dict(best_net)]
+    champion_benchmark = None
     pool: SelfPlayPool | None = None
     local_mcts: RustISMCTS | None = None
     if cfg.workers > 1:
         pool = SelfPlayPool(n_workers=cfg.workers, device="cpu")
     else:
-        local_mcts = RustISMCTS(net, cfg.mcts)
+        local_mcts = RustISMCTS(best_net, cfg.mcts)
     # `make_net_fn` closes over the module object, so a single adapter keeps
     # seeing the live weights as the trainer updates them in place.
     arena_mcts = RustISMCTS(net, cfg.mcts)
@@ -376,7 +386,7 @@ def run_selfplay(
             if pool is not None:
                 games_per_worker = max(1, -(-cfg.games_per_iter // cfg.workers))
                 samples, _ = pool.generate(
-                    net,
+                    best_net,
                     games_per_worker=games_per_worker,
                     sims=cfg.sims,
                     seed=base_seed,
@@ -410,12 +420,18 @@ def run_selfplay(
             stats.rewritten_applies = int(diagnostics.get("rewritten_applies", 0))
             stats.moves = int(diagnostics.get("moves", 0))
             game_vps = diagnostics.get("game_vps", [])
+            stats.game_vps = game_vps
+            stats.completed_games = len(game_vps)
+            stats.filtered_games = int(diagnostics.get("filtered_games", 0))
+            collected = diagnostics.get("collected_vps", [])
+            stats.collected_avg_vp = float(np.mean(collected)) if collected else None
             if game_vps:
                 all_vps = [float(vp) for g in game_vps for vp in g]
                 stats.avg_vp = float(np.mean(all_vps))
                 stats.min_vp = float(np.min(all_vps))
                 stats.max_vp = float(np.max(all_vps))
                 stats.winner_avg_vp = float(np.mean([max(g) for g in game_vps]))
+                stats.zero_vp_players = sum(vp == 0 for vp in all_vps)
 
             buffer.add(samples)
             buffer.trim()
@@ -452,22 +468,36 @@ def run_selfplay(
                 stats.arena_wins, stats.arena_games = wins, games
                 stats.arena_winrate = wins / games if games else 0.0
                 stats.arena_lower = wilson_lower_bound(wins, games, z=1.28)
-                stats.heuristic_winrate = benchmark_net_vs_heuristic(
+                if champion_benchmark is None:
+                    champion_benchmark = benchmark_net_vs_heuristic(
+                        best_net, cfg.heuristic_eval_sims, cfg.heuristic_eval_games,
+                        device=cfg.device, mcts_cfg=cfg.mcts, workers=min(cfg.workers, 4),
+                    )
+                candidate_benchmark = benchmark_net_vs_heuristic(
                     net, cfg.heuristic_eval_sims, cfg.heuristic_eval_games,
                     device=cfg.device,
                     mcts_cfg=cfg.mcts,
                     workers=min(cfg.workers, 4),
-                )["win_rate"]
+                )
+                stats.heuristic_winrate = candidate_benchmark["win_rate"]
+                stats.heuristic_avg_vp = candidate_benchmark["mcts_mean"]
+                stats.heuristic_zero_games = sum(vp <= 0 for vp in candidate_benchmark["mcts_vps"])
+                stats.champion_heuristic_avg_vp = champion_benchmark["mcts_mean"]
                 # 4-player game (1 candidate vs 3 opponents): baseline winrate is 25%.
                 # Promotion requires beating the winrate threshold AND Wilson lower bound >= 0.25.
-                if stats.arena_winrate >= cfg.promote_winrate and stats.arena_lower >= 0.25:
+                healthy = (candidate_benchmark["games"] > 0
+                           and stats.heuristic_zero_games == 0
+                           and stats.heuristic_avg_vp >= stats.champion_heuristic_avg_vp)
+                if healthy and stats.arena_winrate >= cfg.promote_winrate and stats.arena_lower >= 0.25:
                     best_net.load_state_dict(_cpu_state_dict(net))
                     stats.promoted = True
+                    champion_benchmark = candidate_benchmark
+                    opponent_pool.append(_cpu_state_dict(best_net))
             stats.eval_sec = time.time() - t2
 
-            opponent_pool.append(_cpu_state_dict(net))
             del opponent_pool[: max(0, len(opponent_pool) - cfg.pool_size)]
             stats._opponent_pool = list(opponent_pool)
+            stats._champion_state = _cpu_state_dict(best_net)
 
             history.append(stats)
             if on_iteration is not None:
@@ -489,7 +519,8 @@ def _play_batch_local(
     """Single-process actor path (workers == 1); also used by smoke tests."""
     samples: list[Sample] = []
     totals = {"failed_applies": 0, "rewritten_applies": 0, "moves": 0,
-              "games": 0, "truncated": 0, "game_vps": []}
+              "games": 0, "truncated": 0, "game_vps": [],
+              "collected_vps": [], "filtered_games": 0}
     pool_mcts: list[RustISMCTS] = []
     if opponent_pool:
         for pw in opponent_pool:
@@ -507,22 +538,21 @@ def _play_batch_local(
         stats: dict = {}
         try:
             learner = game % 4
+            rng = np.random.default_rng(game_cfg.seed)
+            np.random.seed(game_cfg.seed)
             roles = [mcts.search] * 4
             collect = {0, 1, 2, 3}
-            has_mixed = False
             for seat in range(4):
                 if seat == learner:
                     continue
-                r = np.random.rand()
+                r = rng.random()
                 if cfg.heuristic_prob > 0.0 and r < cfg.heuristic_prob:
                     roles[seat] = heuristic_search
-                    has_mixed = True
+                    collect.discard(seat)
                 elif cfg.mm_prob > 0.0 and pool_mcts and r < (cfg.heuristic_prob + cfg.mm_prob):
-                    opp = pool_mcts[np.random.randint(len(pool_mcts))]
+                    opp = pool_mcts[rng.integers(len(pool_mcts))]
                     roles[seat] = opp.search
-                    has_mixed = True
-            if has_mixed:
-                collect = {learner}
+                    collect.discard(seat)
             game_samples, vps = play_game_with_roles(
                 roles, game_cfg, collect=collect, stats=stats
             )
@@ -538,7 +568,10 @@ def _play_batch_local(
             totals["game_vps"].append([float(x) for x in vps])
         for key in totals:
             if key in stats:
-                totals[key] += int(stats[key])
+                if key == "collected_vps":
+                    totals[key].extend(stats[key])
+                else:
+                    totals[key] += int(stats[key])
         totals["games"] += 1
     return samples, totals
 

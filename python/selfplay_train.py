@@ -17,7 +17,7 @@ scheduler + scaler + schema, loadable by `--resume` and by
 `brass_ai.replay_worker --ckpt`), appends a line to `metrics.jsonl`, and on
 promotion refreshes `best.pt`. Checkpoints are written to a temp file and
 atomically renamed, so an interrupted run never leaves a half-written archive.
-Ctrl+C stops after the current iteration and still leaves `latest.pt` valid.
+Ctrl+C interrupts current work; `latest.pt` retains the last completed iteration.
 """
 
 from __future__ import annotations
@@ -74,6 +74,8 @@ def main() -> int:
                         help="self-play actor processes; 1 runs in-process")
     parser.add_argument("--max-moves", type=int, default=600)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--game-log-dir", type=Path,
+                        help="canonical game replays (default: <ckpt-dir>/games)")
     parser.add_argument("--device", default="cuda" if _cuda_available() else "cpu")
     # Matchmaking / opponent pool.
     parser.add_argument("--mm-prob", type=float, default=0.25)
@@ -87,10 +89,10 @@ def main() -> int:
     parser.add_argument("--recent-iterations", type=int, default=4)
     parser.add_argument("--train-samples", type=int, default=12_000,
                         help="samples drawn from the replay buffer per iteration (default: 12000)")
-    parser.add_argument("--train-epochs", type=int, default=2,
-                        help="passes over the drawn replay sample per iteration (default: 2)")
+    parser.add_argument("--train-epochs", type=int, default=1,
+                        help="passes over the drawn replay sample per iteration (default: 1)")
     parser.add_argument("--batch", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max-candidate-batch", type=int, default=65_536)
     parser.add_argument("--materialize-workers", type=int, default=min(8, os.cpu_count() or 1))
     # Search & Exploration.
@@ -98,16 +100,16 @@ def main() -> int:
                         help="PUCT exploration constant (scaled to VP_SCALE=50, default: 0.25)")
     parser.add_argument("--prior-top-k", type=int, default=32,
                         help="search only the K highest-prior moves with stratified category preservation (0 = search every legal move, default: 32)")
-    parser.add_argument("--temperature", type=float, default=0.8,
-                        help="initial move sampling temperature (default: 0.8)")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="initial move sampling temperature (default: 0.0; root noise still explores)")
     parser.add_argument("--temperature-warmup-moves", type=int, default=12,
                         help="moves to hold initial temperature before decay (default: 12)")
     parser.add_argument("--temperature-decay-moves", type=int, default=12,
                         help="moves over which temperature decays to temperature-final (default: 12)")
     parser.add_argument("--temperature-final", type=float, default=0.0,
                         help="final sampling temperature (default: 0.0)")
-    parser.add_argument("--min-vp-filter", type=float, default=20.0,
-                        help="discard self-play samples from games with min VP below this threshold (default: 20.0)")
+    parser.add_argument("--min-vp-filter", type=float, default=0.0,
+                        help="discard self-play samples from games with min VP below this threshold (default: 0.0)")
     parser.add_argument("--no-fpu", action="store_true",
                         help="treat unvisited children as worth 0 instead of the parent's value")
     parser.add_argument("--no-q-init", action="store_true",
@@ -142,7 +144,9 @@ def main() -> int:
     from brass_ai.train import TrainConfig, Trainer
 
     torch.manual_seed(args.seed)
-    torch.set_num_threads(max(1, (os.cpu_count() or 4) // max(args.workers, 1)))
+    # Small inference/batch-assembly tensors lose throughput with dozens of
+    # host threads, especially in the single-actor GPU path.
+    torch.set_num_threads(max(1, min(4, (os.cpu_count() or 4) // max(args.workers, 1))))
 
     ckpt_dir: Path = args.ckpt_dir
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -150,6 +154,8 @@ def main() -> int:
     best = ckpt_dir / "best.pt"
     meta_path = ckpt_dir / "latest.json"
     metrics_path = ckpt_dir / "metrics.jsonl"
+    if not args.resume and (latest.exists() or best.exists()):
+        parser.error("checkpoint directory already contains models; use --resume or a new directory")
 
     net = PolicyValueNet()
     trainer = Trainer(net, TrainConfig(
@@ -168,10 +174,18 @@ def main() -> int:
             latest_payload = torch.load(latest, map_location=args.device)
             trainer.load_state_dict(latest_payload)
             resumed_opponent_pool = latest_payload.get("opponent_pool")
+            best_state = latest_payload.get("champion")
             if meta_path.is_file():
                 start_iteration = int(json.loads(meta_path.read_text())["iteration"]) + 1
-            if best.is_file():
+            if best_state is None and best.is_file():
                 best_state = _load_model_state(best, args.device)
+            if best_state is None:
+                parent = latest_payload.get("meta", {}).get("parent")
+                if parent and Path(parent).is_file():
+                    best_state = _load_model_state(Path(parent), args.device)
+                    resumed_opponent_pool = None
+                else:
+                    raise SystemExit("resume has no champion reference; start a new run from a known baseline")
             print(f"resumed at iteration {start_iteration} from {latest}")
         elif args.init_from is not None:
             if not args.init_from.is_file():
@@ -180,6 +194,12 @@ def main() -> int:
             print(f"warm start from {args.init_from}")
         else:
             print("warning: no --init-from and no --resume; starting from random weights")
+
+        if not best.is_file():
+            baseline = trainer.state_dict()
+            if best_state is not None:
+                baseline["model"] = best_state
+            _atomic_save(baseline, best)
 
         cfg = LoopConfig(
             iterations=args.iterations,
@@ -202,6 +222,7 @@ def main() -> int:
                 temperature_decay_moves=args.temperature_decay_moves,
                 temperature_final=args.temperature_final,
                 min_vp_filter=args.min_vp_filter,
+                game_log_dir=str(args.game_log_dir or ckpt_dir / "games"),
             ),
             mm_prob=args.mm_prob,
             pool_size=args.pool_size,
@@ -224,6 +245,8 @@ def main() -> int:
         def on_iteration(stats, live_net, live_trainer) -> None:
             write_metrics(metrics_path, stats)
             payload = live_trainer.state_dict()
+            payload["champion"] = stats._champion_state
+            payload["run_config"] = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
             payload["meta"] = {
                 "type": "selfplay",
                 "run_id": ckpt_dir.name,
@@ -268,9 +291,12 @@ def main() -> int:
                 f"q {loss.get('q', float('nan')):.3f}  "
                 f"{vp_str}  "
                 f"sp {stats.selfplay_sec:4.0f}s tr {stats.train_sec:3.0f}s ev {stats.eval_sec:3.0f}s  "
-                f"arena {stats.arena_winrate:.0%} (lo {stats.arena_lower:.0%})  "
+                f"arena {format(stats.arena_winrate, '.0%') if stats.arena_games else '--'} "
+                f"(lo {format(stats.arena_lower, '.0%') if stats.arena_games else '--'})  "
                 f"heur {('%.0f%%' % (100 * stats.heuristic_winrate)) if stats.heuristic_winrate is not None else '--'}  "
                 f"reuse {stats.rewritten_applies}/{stats.failed_applies}"
+                f"  zero {stats.zero_vp_players}/{stats.completed_games * 4}"
+                f"  filtered {stats.filtered_games}"
                 + ("  PROMOTED" if stats.promoted else "")
             )
 

@@ -15,6 +15,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import multiprocessing as mp
 import os
 import pickle
+import json
 from pathlib import Path
 
 from .progress import Progress
@@ -231,6 +232,8 @@ class SelfPlayConfig:
     # If positive, discard samples from collapsed/deadlock games where any player's
     # final score is below this threshold (e.g. 20.0), matching the imitation gate.
     min_vp_filter: float = 0.0
+    # Compact canonical action replay, including failed and low-scoring games.
+    game_log_dir: str | None = None
 
     def temperature_for_move(self, move_index: int) -> float:
         """Return the self-play sampling temperature for a zero-based move.
@@ -346,6 +349,7 @@ def play_game_with_roles(
     failed_applies = 0
     rewritten_applies = 0
     moves = 0
+    action_log = []
     while not state.game_over and moves < cfg.max_moves:
         moves += 1
         pid = state.current_player_id
@@ -355,7 +359,7 @@ def play_game_with_roles(
         if result.best is None:
             break
         recorded: Sample | None = None
-        if pid in collect and not state.is_bankrupt(pid):
+        if pid in collect:
             observed = state.determinize() if cfg.determinize_observation else state
             if cfg.store_snapshots:
                 # Fast-path: directly aggregate canonical visit probabilities from the
@@ -389,6 +393,7 @@ def play_game_with_roles(
             if state.era == 0:
                 canal_samples.append(s)
         chosen = _sample_move(result, cfg.temperature_for_move(moves - 1))
+        executed = chosen
         if recorded is not None:
             # The sampled move is the only sibling with an outcome label, so it
             # is the supervision for the action-conditioned value head.
@@ -402,6 +407,8 @@ def play_game_with_roles(
             # to the first legal move if needed.
             try:
                 summary, ok = state.apply_move_raw(result.best)
+                if ok:
+                    executed = result.best
                 if ok and recorded is not None:
                     recorded.played_canonical = result.best
             except ValueError:
@@ -412,10 +419,16 @@ def play_game_with_roles(
                     break
                 try:
                     summary, ok = state.apply_move_raw(legal[0][1])
+                    if ok:
+                        executed = legal[0][1]
                     if ok and recorded is not None:
                         recorded.played_canonical = legal[0][1]
                 except ValueError:
                     break
+        if not ok:
+            raise RuntimeError("self-play could not execute any fallback action")
+        if cfg.game_log_dir is not None:
+            action_log.append([pid, executed])
         tr = state.advance_turn_raw()
         if tr == "end_canal_era":
             state.finish_canal_era()
@@ -427,6 +440,15 @@ def play_game_with_roles(
         elif tr == "end_game":
             state.finish_game()
 
+    if cfg.game_log_dir is not None:
+        log_dir = Path(cfg.game_log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"game-{seed}.json").write_text(json.dumps({
+            "seed": int(seed), "players": cfg.players,
+            "collected_seats": sorted(collect), "complete": bool(state.game_over),
+            "vps": list(state.player_vps()), "ranking": list(state.final_ranking()),
+            "actions": action_log,
+        }, ensure_ascii=False), encoding="utf-8")
     if not state.game_over:
         # A partial game has no valid final-VP target.  Treating the current
         # board as terminal previously emitted all-zero or otherwise corrupt
@@ -436,8 +458,14 @@ def play_game_with_roles(
         )
 
     vps = state.player_vps()
+    if stats is not None:
+        stats.update(final_ranking=list(state.final_ranking()),
+                     zero_vp_players=sum(vp == 0 for vp in vps),
+                     collected_vps=[float(vps[p]) for p in sorted(collect)],
+                     filtered_games=0)
     if cfg.min_vp_filter > 0.0 and float(np.min(vps)) < cfg.min_vp_filter:
         if stats is not None:
+            stats["filtered_games"] = 1
             stats["failed_applies"] = failed_applies
             stats["rewritten_applies"] = rewritten_applies
             stats["moves"] = moves

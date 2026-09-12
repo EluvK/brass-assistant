@@ -29,6 +29,31 @@ def test_rust_search_returns_executable_move_and_visits():
     assert set(result.canon_by_candidate.values()) <= legal
 
 
+def test_small_search_budget_uses_leaf_feedback_before_choosing():
+    outputs = []
+    for sign in (-1, 1):
+        calls = []
+
+        def callback(cells, links, merchants, seats, glob, actions, mask):
+            rows, width = np.asarray(mask).shape
+            calls.append(rows)
+            values = np.zeros((rows, 4), dtype=np.float32)
+            if len(calls) > 1:
+                values[:] = sign * np.arange(1, 5, dtype=np.float32)
+            logits = np.broadcast_to(-0.01 * np.arange(width, dtype=np.float32), (rows, width)).copy()
+            return logits, values, np.zeros((rows, width), dtype=np.float32)
+
+        state = be.GameState(seed=42, players=4)
+        before = bytes(state.snapshot())
+        result = state.search_net(callback, 64, 0.25, 10, 0.3, 0.15,
+                                  False, 64, 0, 0, False, 0.0, False)
+        assert bytes(state.snapshot()) == before
+        assert len(calls) > 2
+        assert sum(child[2] for child in result[1]) == 64
+        outputs.append({child[1]: child[2] for child in result[1]})
+    assert outputs[0] != outputs[1]
+
+
 def test_rust_selfplay_produces_complete_game_samples():
     samples, vps = play_game(
         _make(),
@@ -48,6 +73,23 @@ def test_rust_selfplay_produces_complete_game_samples():
 def test_truncated_selfplay_is_rejected():
     with pytest.raises(RuntimeError, match="samples discarded"):
         play_game(_make(), SelfPlayConfig(sims=1, max_moves=1, seed=5))
+
+
+def test_game_log_replays_the_recorded_final_scores(tmp_path):
+    import json
+    from brass_ai.rust_mcts import heuristic_search
+    from brass_ai.selfplay import play_game_with_roles
+
+    _, vps = play_game_with_roles([heuristic_search] * 4,
+        SelfPlayConfig(seed=23, temperature=0, game_log_dir=str(tmp_path)), collect=set())
+    log = json.loads((tmp_path / "game-23.json").read_text(encoding="utf-8"))
+    replay = be.GameState(seed=log["seed"], players=log["players"])
+    for pid, action in log["actions"]:
+        assert replay.current_player_id == pid
+        replay.apply_move(action)
+    assert replay.game_over and log["complete"]
+    assert replay.player_vps() == log["vps"] == vps
+    assert replay.final_ranking() == log["ranking"]
 
 
 def test_search_reports_tree_reuse_diagnostics():
@@ -125,7 +167,7 @@ def test_selfplay_stats_report_reuse_counters():
     mcts = _make()
     stats: dict = {}
     play_game(mcts, SelfPlayConfig(sims=2, seed=9, temperature=0.0), stats=stats)
-    assert set(stats) == {"failed_applies", "rewritten_applies", "moves"}
+    assert {"failed_applies", "rewritten_applies", "moves", "final_ranking", "zero_vp_players"} <= set(stats)
     assert stats["moves"] > 0
     assert stats["failed_applies"] >= 0
     assert stats["rewritten_applies"] >= 0

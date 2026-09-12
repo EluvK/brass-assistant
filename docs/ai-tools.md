@@ -174,7 +174,7 @@ cargo test --features python
 ```text
 <ckpt-dir>/latest.pt      完整 Trainer 状态（model/optimizer/scheduler/scaler/schema）
 <ckpt-dir>/latest.json    最近完成轮次的编号与摘要，--resume 用它定位轮次
-<ckpt-dir>/best.pt        arena 达标时刷新的参考模型
+<ckpt-dir>/best.pt        启动时保存底座，晋升时刷新；用于生成新对局
 <ckpt-dir>/metrics.jsonl  每轮一行的 IterationStats（loss、耗时、胜率、搜索自检计数）
 ```
 
@@ -193,7 +193,7 @@ cargo test --features python
 | `--train-samples` | 每轮从 replay window 抽多少样本训练（训练预算的主旋钮） |
 | `--eval-every` / `--eval-games` / `--eval-sims` | arena 与 heuristic benchmark 的间隔与规模；`0` 关闭评估 |
 | `--heuristic-eval-games` / `--heuristic-eval-sims` | ending benchmark 对 heuristic 的规模 |
-| `--promote-winrate` | 刷新 `best.pt` 所需的 arena 胜率阈值（默认 0.55） |
+| `--promote-winrate` | arena 胜率阈值（默认 0.35），同时要求 Wilson 下限 ≥ 0.25、教师评测无零分且均分不低于 best |
 | `--prior-top-k` / `--c-puct` / `--no-fpu` / `--no-q-init` | 搜索分支控制，见下 |
 | `--max-depth` / `--mcts-batch` / `--candidate-k` | Rust ISMCTS 参数；`--candidate-k 0` 为 full-legal |
 
@@ -209,18 +209,23 @@ cargo test --features python
 
 搜索配置的默认值与理由：
 
+- 2026-09-12 修复：一次搜索的实际批大小为 `min(mcts_batch, max(1, sims // 8))`，保证低模拟预算下也能多次获得价值反馈；待返回的模拟不计入已完成价值均值。不可用的隐藏手牌分支在当前 simulation 中跳过，继续选择其他可执行分支。
+- CLI 微调默认 `lr=1e-4`、每轮 1 epoch、温度 0（仍有根噪声）。这些是保守起点，不能替代实战对照。
+- 新对局使用 best；latest 是持续学习的候选。未通过评估的候选不会接管采样，也不会进入对手池。`latest.pt` 同时保存 champion 权重和完整启动配置，续训不会把未晋升的 latest 自动当成 best。
+
 - `--q-init`（默认开启，用 `--no-q-init` 关闭）：用网络给出的边价值 `Q(s,a)` 估计从未
   访问过的孩子。本作单状态有 114–600 个合法动作，只按先验排序时 P ≈ 1/350，PUCT 的
   探索项量级压不过价值差，搜索会退化成先验的弱锐化器；用 Q 初始化之后兄弟招是按模型
   排序的。**这是全合法展开能否可搜索的关键**，也因此 `--prior-top-k` 不再是必需品。
 - `--no-q-init` 之后才会退回 FPU：`--no-fpu` 关闭 FPU（默认开启）时未访问孩子按 0 处理。
   终局效用是零均值的 VP 差，取 0 已是中性假设；FPU 则把它初始化为父节点价值。
-- `--prior-top-k 16` / `--c-puct 1.0`：仍然先把全部合法动作打分、只保留先验最高的 K 个
-  孩子，用于压缩搜索宽度。这两个参数耦合，K 越小先验越尖、c 就该越小；`--prior-top-k 0`
-  退回全合法展开。**当前默认值是旧尺度下定的，还没有在新价值尺度上重新标定**，
-  见 [roadmap.md](roadmap.md) 的「近期」第 3 条。
+- CLI 默认 `--prior-top-k 32` / `--c-puct 0.25`：先给全部合法动作打分，再按行动类别保留候选压缩搜索宽度。`--prior-top-k 0` 退回全合法展开。这些参数需要用同一组对局验证，不保证搜索优于直接 policy。
 
 已知边界：
+
+- `avg_vp` 是所有角色的全桌均分；`collected_avg_vp` 是采集座位均分。`zero_vp_players` / `completed_games` / `filtered_games` 分别记录零分座位数、完整局数及过滤局数；被过滤对局仍计入真实 VP 指标。未评估的 arena 显示 `--`。
+- `game_vps` 保存逐局座位分数；CLI 默认在 `<ckpt-dir>/games` 保存 canonical 行动回放（可用 `--game-log-dir` 指定目录），便于追踪零分和截断局，避免只保留一个最小值而失去诊断现场。
+- 混合局采集所有使用当前 champion 的座位。每个对手座位分别按 heuristic / historical 概率抽签，指定保留座位按全局 game id 轮换，不再由每个 worker 从座位 0 重复起步。
 
 - replay window 不写盘。`--resume` 只恢复模型/优化器与 best 参考，buffer 从空开始重新积累。
 - `metrics.jsonl` 是追加写的，resume 不会截断它；按 `iteration` 去重即可。

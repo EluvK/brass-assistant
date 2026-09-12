@@ -122,8 +122,11 @@ struct Child {
 
 struct Node {
     player: usize,
+    /// Completed evaluations and in-flight reservations are tracked separately.
     visits: u32,
+    pending: u32,
     value_sum: [f64; MAX_PLAYERS],
+    initial_value: [f64; MAX_PLAYERS],
     children: Vec<Child>,
     prior: Vec<f64>,
     legal_candidate_ids: Vec<usize>,
@@ -135,7 +138,9 @@ impl Node {
         Node {
             player,
             visits: 0,
+            pending: 0,
             value_sum: [0.0; MAX_PLAYERS],
+            initial_value: [0.0; MAX_PLAYERS],
             children: Vec::new(),
             prior: Vec::new(),
             legal_candidate_ids: Vec::new(),
@@ -149,7 +154,7 @@ impl Node {
 
     fn q(&self, player: usize) -> f64 {
         if self.visits == 0 {
-            0.0
+            self.initial_value[player]
         } else {
             self.value_sum[player] / self.visits as f64
         }
@@ -214,6 +219,9 @@ pub fn search_net(
     // Independent simulation RNG (state.rng is setup-only and private).
     let mut sim_rng = ChaCha12Rng::from_rng(&mut rand::rng());
     let mut sims_left = sims;
+    // Reserve at least eight feedback waves when the budget permits. A single
+    // wave's leaf evaluations arrive too late to influence visit-based play.
+    let wave_size = cfg.batch_size.max(1).min((sims / 8).max(1));
 
     let mut requests: Vec<Request> = Vec::new();
     let mut request_by_node: std::collections::HashMap<usize, usize> =
@@ -245,6 +253,8 @@ pub fn search_net(
                 let results = flush_net(py, net_fn, &root_reqs)?;
                 for (req, res) in root_reqs.iter().zip(results.iter()) {
                     if let RequestKind::Expand { node_idx, .. } = req.kind {
+                        arena[node_idx].initial_value[..res.value.len()]
+                            .copy_from_slice(&res.value);
                         if let Some(p) = &res.priors {
                             apply_priors(
                                 &mut arena,
@@ -276,7 +286,7 @@ pub fn search_net(
         // The wave is bounded by SIMS parked (each needs a value), not by the
         // (deduplicated) request count — otherwise a frontier collapse would
         // keep every sim on one request and the wave would never flush.
-        while sims_left > 0 && parked.len() < cfg.batch_size {
+        while sims_left > 0 && parked.len() < wave_size {
             sims_left -= 1;
             let _ = sim_rng.random::<u64>(); // vary determinization per simulation
             let mut work = crate::ai::determinize::determinize(state, &mut sim_rng);
@@ -302,6 +312,7 @@ pub fn search_net(
             let results = flush_net(py, net_fn, &requests)?;
             for (req, res) in requests.iter().zip(results.iter()) {
                 if let RequestKind::Expand { node_idx, .. } = req.kind {
+                    arena[node_idx].initial_value[..res.value.len()].copy_from_slice(&res.value);
                     if let Some(p) = &res.priors {
                         apply_priors(
                             &mut arena,
@@ -367,13 +378,8 @@ pub fn search_net(
 /// A simulation walks down the arena, applying moves to `work`, until it parks
 /// at a terminal state, a leaf (depth cap), or an unexpanded node.
 ///
-/// **Approximation (intentional):** node visits are incremented DURING descent
-/// so PUCT exploration responds to progress within a wave, but `value_sum` is
-/// only added at the batch flush. During a wave, `q = value_sum/visits` is
-/// therefore transiently DEPRESSED for heavily-traversed nodes (their value_sum
-/// lags behind their visit count). This acts as a mild "virtual loss" that
-/// prevents the whole wave from collapsing onto the max-prior child; values are
-/// exact once the wave flushes, so the final visit statistics are correct.
+/// Reserve paths during descent; only completed feedback increments visits.
+/// Pending work must not dilute negative values toward an optimistic zero.
 fn descend(
     work: &mut GameState,
     arena: &mut Vec<Node>,
@@ -390,19 +396,12 @@ fn descend(
 
     loop {
         if count_visits {
-            arena[node_idx].visits += 1;
+            arena[node_idx].pending += 1;
         }
         if work.game_over {
             return ParkedOutcome::Terminal {
                 path,
                 value: terminal_value(work, work.player_count()),
-            };
-        }
-        let current_pid = work.current_player_id();
-        if node_idx > 0 && work.players[current_pid].is_bankrupt {
-            return ParkedOutcome::Terminal {
-                path,
-                value: bankrupt_terminal_value(work, work.player_count(), current_pid),
             };
         }
         if depth >= cfg.max_depth {
@@ -424,22 +423,6 @@ fn descend(
                     .collect()
             };
 
-            let pid = work.current_player_id();
-            let has_productive = moves.iter().any(|m| m.is_productive());
-            if !has_productive {
-                work.players[pid].consecutive_stalled_actions = work.players[pid]
-                    .consecutive_stalled_actions
-                    .saturating_add(1);
-                if node_idx > 0 && work.players[pid].consecutive_stalled_actions >= 2 {
-                    work.players[pid].is_bankrupt = true;
-                    return ParkedOutcome::Terminal {
-                        path,
-                        value: bankrupt_terminal_value(work, work.player_count(), pid),
-                    };
-                }
-            } else {
-                work.players[pid].consecutive_stalled_actions = 0;
-            }
             let mut children: Vec<Child> = Vec::new();
             let mut legal_candidate_ids: Vec<usize> = Vec::new();
             let mut candidate_features: Vec<Vec<f32>> = Vec::new();
@@ -498,33 +481,29 @@ fn descend(
 
         // Select the child maximizing the mover's OWN Q + PUCT.
         let pid = arena[node_idx].player;
-        let child_slot = select_child(arena, node_idx, pid, cfg);
-        let child_node = arena[node_idx].children[child_slot].node;
-        let mut mv = arena[node_idx].children[child_slot].mv.clone();
-        let cards = arena[node_idx].children[child_slot].cards.clone();
-
-        // The tree outlives one determinization: children were enumerated
-        // against the mover's hand at expansion time, but `determinize`
-        // re-samples hands every simulation, so the stored hand indices can
-        // name different cards. Rebind them to the cards the move was
-        // enumerated with; a hand with no equivalent card prunes the branch.
-        let hand = &work.players[pid].hand;
-        if !cards.is_empty() && declared_cards(hand, &mv) != cards {
-            *rewritten_applies += 1;
-            if !rebind_cards(&mut mv, &cards, hand) {
-                *failed_applies += 1;
+        let mut unavailable = vec![false; arena[node_idx].children.len()];
+        let child_node = loop {
+            let Some(child_slot) = select_child(arena, node_idx, pid, cfg, &unavailable) else {
                 return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
+            };
+            let child = &arena[node_idx].children[child_slot];
+            let mut mv = child.mv.clone();
+            let hand = &work.players[pid].hand;
+            if !child.cards.is_empty() && declared_cards(hand, &mv) != child.cards {
+                *rewritten_applies += 1;
+                if !rebind_cards(&mut mv, &child.cards, hand) {
+                    *failed_applies += 1;
+                    unavailable[child_slot] = true;
+                    continue;
+                }
             }
-        }
-
-        if crate::rules::apply_move(work, &mv).is_err() {
-            // The child is executable only in the determinization that created
-            // it: resource sources, network state or the opponent's beer may
-            // have changed. Count and end the line as a leaf so the search
-            // stays robust.
-            *failed_applies += 1;
-            return park(work, requests, request_by_node, path, |_| RequestKind::Leaf);
-        }
+            if crate::rules::apply_move(work, &mv).is_err() {
+                *failed_applies += 1;
+                unavailable[child_slot] = true;
+                continue;
+            }
+            break child.node;
+        };
         let tr = advance_turn(work);
         handle_turn_result(work, tr);
         arena[child_node].player = work.current_player_id();
@@ -642,9 +621,15 @@ fn rebind_cards(mv: &mut ResolvedMove, cards: &[Card], hand: &[Card]) -> bool {
     true
 }
 
-fn select_child(arena: &[Node], node_idx: usize, pid: usize, cfg: &NnMctsConfig) -> usize {
+fn select_child(
+    arena: &[Node],
+    node_idx: usize,
+    pid: usize,
+    cfg: &NnMctsConfig,
+    unavailable: &[bool],
+) -> Option<usize> {
     let node = &arena[node_idx];
-    let parent_visits = node.visits.max(1) as f64;
+    let parent_visits = (node.visits + node.pending).max(1) as f64;
     // Unvisited children. With `q_init` the network's own action-conditioned
     // value for that edge is the estimate, so siblings are ranked by the model
     // rather than by the prior alone. Otherwise fall back to first-play
@@ -657,19 +642,24 @@ fn select_child(arena: &[Node], node_idx: usize, pid: usize, cfg: &NnMctsConfig)
     };
     let mut best: Option<(usize, f64)> = None;
     for (i, child) in node.children.iter().enumerate() {
+        if unavailable[i] {
+            continue;
+        }
         let cn = &arena[child.node];
         // n = 0 for unvisited children (the standard PUCT denominator), so a
         // child that has never been expanded gets the full exploration bonus.
-        let nv = cn.visits as f64;
+        let nv = (cn.visits + cn.pending) as f64;
         let unvisited = if cfg.q_init { child.q_prior } else { fpu };
         let q = if cn.visits == 0 { unvisited } else { cn.q(pid) };
         let explore = cfg.c_puct * node.prior[i] * parent_visits.sqrt() / (1.0 + nv);
-        let uct = q + explore;
+        // A reservation always penalizes selection, regardless of Q's sign.
+        let reservation = cfg.c_puct * cn.pending as f64 / (1.0 + cn.visits as f64);
+        let uct = q + explore - reservation;
         if best.map_or(true, |(_, b)| uct > b) {
             best = Some((i, uct));
         }
     }
-    best.map(|(i, _)| i).unwrap_or(0)
+    best.map(|(i, _)| i)
 }
 
 /// Install a node's priors and per-edge Q estimates, optionally keeping only
@@ -753,6 +743,9 @@ fn apply_priors(
 
 fn add_value(arena: &mut Vec<Node>, path: &[usize], value: &[f64]) {
     for &n in path {
+        debug_assert!(arena[n].pending > 0);
+        arena[n].pending -= 1;
+        arena[n].visits += 1;
         for (p, v) in value.iter().enumerate() {
             arena[n].value_sum[p] += v;
         }
@@ -770,17 +763,6 @@ fn terminal_value(state: &GameState, n_players: usize) -> Vec<f64> {
     let mean = scores.iter().sum::<f64>() / n as f64;
     let scale = crate::bridge::VP_SCALE as f64;
     scores.iter().map(|s| (s - mean) / scale).collect()
-}
-
-fn bankrupt_terminal_value(state: &GameState, n_players: usize, bankrupt_pid: usize) -> Vec<f64> {
-    let n = n_players.max(1).min(state.players.len());
-    let mut scores: Vec<f64> = (0..n).map(|p| state.players[p].vp as f64).collect();
-    scores[bankrupt_pid] = 0.0;
-    let mean = scores.iter().sum::<f64>() / n as f64;
-    let scale = crate::bridge::VP_SCALE as f64;
-    let mut values: Vec<f64> = scores.iter().map(|s| (s - mean) / scale).collect();
-    values[bankrupt_pid] = -2.5;
-    values
 }
 
 /// Clamp a raw network value onto the terminal utility scale. An untrained or
@@ -1006,6 +988,15 @@ mod tests {
     use crate::state::GameState;
     use rand_chacha::ChaCha12Rng;
     use rand_chacha::rand_core::SeedableRng;
+
+    #[test]
+    fn pending_simulations_do_not_turn_negative_q_toward_zero() {
+        let mut node = super::Node::new(0);
+        node.visits = 2;
+        node.value_sum[0] = -2.0;
+        node.pending = 20;
+        assert_eq!(node.q(0), -1.0);
+    }
 
     #[test]
     fn terminal_value_is_a_zero_mean_vp_margin() {
