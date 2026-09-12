@@ -16,13 +16,20 @@ def test_constants_shape_consistency():
     assert be.MERCHANT_COUNT == 9
     assert be.SEAT_COUNT == 4
     assert be.TOKEN_COUNT == 102
-    assert be.STATE_TOKEN_SCHEMA_VERSION == 1
+    assert be.STATE_TOKEN_SCHEMA_VERSION == 2
     assert be.ACTION_SCHEMA_VERSION == 1
     assert be.ACTION_FEATURE_DIM == 3 + be.ACTION_NUMBERS + 3 * be.ACTION_REF_CAP
     assert len(be.BOARD_CELL_LOCATIONS) == be.BOARD_CELLS
     assert len(be.BOARD_CELL_SLOTS) == be.BOARD_CELLS
     assert len(be.CONNECTION_ENDPOINTS) == be.LINK_CELLS * 2
     assert len(be.CONNECTION_VIA_FARMS) == be.LINK_CELLS
+    assert len(be.MERCHANT_LOCATIONS) == be.MERCHANT_COUNT
+    assert be.F_MERCHANT == 15
+    assert be.MERCHANT_BUY == 0
+    assert be.MERCHANT_BEER == 5
+    assert be.MERCHANT_BONUS == 6
+    assert be.MERCHANT_IN_NET == 10
+    assert be.MERCHANT_DIST == 14
 
 
 def test_new_state_basics():
@@ -105,6 +112,57 @@ def test_state_tokens_shapes_and_determinism():
     # Every group is non-negative and finite.
     for arr in (cells, links, merchants, seats, global_vec):
         assert arr.min() >= 0.0 and np.isfinite(arr).all()
+
+
+def test_merchant_token_semantics():
+    # Verify spatial merchant locations are within location bounds and mapped correctly
+    assert len(be.MERCHANT_LOCATIONS) == be.MERCHANT_COUNT
+    for loc in be.MERCHANT_LOCATIONS:
+        assert 0 <= loc < be.LOCATION_COUNT
+    # Shrewsbury(1), Gloucester(2), Oxford(2), Warrington(2), Nottingham(2)
+    assert be.MERCHANT_LOCATIONS[0] == 20
+    assert be.MERCHANT_LOCATIONS[1] == be.MERCHANT_LOCATIONS[2] == 21
+    assert be.MERCHANT_LOCATIONS[3] == be.MERCHANT_LOCATIONS[4] == 22
+    assert be.MERCHANT_LOCATIONS[5] == be.MERCHANT_LOCATIONS[6] == 23
+    assert be.MERCHANT_LOCATIONS[7] == be.MERCHANT_LOCATIONS[8] == 24
+
+    # 4-player game at start
+    g4 = be.GameState(seed=123, players=4)
+    _, _, merchants4, _, _ = g4.state_tokens()
+
+    # 1. Check merchant bonus normalization
+    # Shrewsbury (slot 0): 4 VP -> 4.0 / 10.0 = 0.4
+    np.testing.assert_allclose(merchants4[0, be.MERCHANT_BONUS:be.MERCHANT_BONUS + 4], [0.4, 0.0, 0.0, 0.0])
+    # Gloucester (slot 1, 2): 1 Develop -> 1.0 / 2.0 = 0.5
+    for s in (1, 2):
+        np.testing.assert_allclose(merchants4[s, be.MERCHANT_BONUS:be.MERCHANT_BONUS + 4], [0.0, 0.0, 0.0, 0.5])
+    # Oxford (slot 3, 4): 2 Income -> 2.0 / 10.0 = 0.2
+    for s in (3, 4):
+        np.testing.assert_allclose(merchants4[s, be.MERCHANT_BONUS:be.MERCHANT_BONUS + 4], [0.0, 0.0, 0.2, 0.0])
+    # Warrington (slot 5, 6): 5 Money -> 5.0 / 20.0 = 0.25
+    for s in (5, 6):
+        np.testing.assert_allclose(merchants4[s, be.MERCHANT_BONUS:be.MERCHANT_BONUS + 4], [0.0, 0.25, 0.0, 0.0])
+    # Nottingham (slot 7, 8): 3 VP -> 3.0 / 10.0 = 0.3
+    for s in (7, 8):
+        np.testing.assert_allclose(merchants4[s, be.MERCHANT_BONUS:be.MERCHANT_BONUS + 4], [0.3, 0.0, 0.0, 0.0])
+
+    # 2. Check initial network membership and distance
+    # At start, no network exists for any player
+    for s in range(be.MERCHANT_COUNT):
+        assert np.all(merchants4[s, be.MERCHANT_IN_NET:be.MERCHANT_IN_NET + 4] == 0.0)
+        assert merchants4[s, be.MERCHANT_DIST] == 1.0
+        # Buy type is valid one-hot
+        assert np.sum(merchants4[s, be.MERCHANT_BUY:be.MERCHANT_BUY + 5]) == 1.0
+
+    # 3. 2-player game: slots 5..8 are inactive
+    g2 = be.GameState(seed=123, players=2)
+    _, _, merchants2, _, _ = g2.state_tokens()
+    # Inactive slots must preserve dist == 1.0 (not inverted to 0.0)
+    for s in range(be.MERCHANT_COUNT):
+        assert merchants2[s, be.MERCHANT_DIST] == 1.0
+    for s in range(5, be.MERCHANT_COUNT):
+        assert np.all(merchants2[s, be.MERCHANT_BUY:be.MERCHANT_BUY + 5] == 0.0)
+        assert merchants2[s, be.MERCHANT_BEER] == 0.0
 
 
 def test_tensor_bounds_with_built_tiles():

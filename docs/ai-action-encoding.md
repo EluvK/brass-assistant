@@ -41,7 +41,7 @@ cell → location、cell → slot 的映射由 Rust 导出（`board_cell_locatio
 | --- | --- | --- |
 | cell | 49 | 棋盘格：行业板块、资源、连通性 |
 | link | 39 | 连接：建成状态、归属、时代可建性 |
-| merchant | 9 | 商家：收货类型、啤酒存量 |
+| merchant | 9 | 商家：收货类型、啤酒存量、地点奖励、网络归属、图距离 |
 | seat | 4 | 玩家公开状态 + 手牌信息（§2.6） |
 | global | 1 | 时代、轮次、市场、行动队列 |
 
@@ -68,7 +68,17 @@ resource_cubes/6、level/8、vp/20、income/7。
 
 ### 2.3 merchant token（9）
 
-收货类型 one-hot(5)：Blank / Any / 棉纺厂 / 制造厂 / 陶器；`has_beer`。
+收货类型 one-hot(5)：Blank / Any / 棉纺厂 / 制造厂 / 陶器；`has_beer`(1)。
+
+商人奖励（Bonus，4 维归一化标量）：`[vp/10.0, money/20.0, income/10.0, develop/2.0]`。
+- Shrewsbury: `[0.4, 0, 0, 0]`（4 VP）
+- Gloucester: `[0, 0, 0, 0.5]`（免费研发 1 次）
+- Oxford: `[0, 0, 0.2, 0]`（收入 +2）
+- Warrington: `[0, 0.25, 0, 0]`（5 镑）
+- Nottingham: `[0.3, 0, 0, 0]`（3 VP）
+
+网络连通与图距离：`in_net[4]`（相对座位归属）、`dist_from_network`（到当前行动玩家网络的最短链路步数 / 6.0，已连通为 0.0）。
+总维度 $F_{\text{merchant}} = 15$。
 
 ### 2.4 token 身份
 
@@ -78,8 +88,9 @@ resource_cubes/6、level/8、vp/20、income/7。
 
 - 每组 token 额外加一个**组内位置 embedding**（cells 49 / links 39 / merchants 9 /
   seats 4），提供精确身份。
-- cells 与 links 再加一个**共享的 location embedding**：cell 用自己所属地点
-  （`BOARD_CELL_LOCATIONS`），link 用两端地点（`CONNECTION_ENDPOINTS`）的均值。
+- cells、links 与 merchants 再加一个**共享的 location embedding**：cell 用自己所属地点
+  （`BOARD_CELL_LOCATIONS`），link 用两端地点（`CONNECTION_ENDPOINTS`）的均值，
+  merchants 用对应槽位的所属商人地点（`MERCHANT_LOCATIONS`）。
   这样空间关系是显式的，而不是靠 id 碰巧学出来。
 
 ### 2.5 global token（1）
@@ -130,6 +141,10 @@ Rust 按组导出特征张量，Python 把每组线性投影到 `d_model`，加�
 | 板块收入 | 7 |
 | 槽位序号 | 4 |
 | 到我的网络的链接距离 | 6（不可达记 1.0） |
+| 商人 VP 奖励 | 10 |
+| 商人现金奖励 | 20 |
+| 商人收入奖励 | 10 |
+| 商人研发奖励 | 2 |
 | 现金 | 200 |
 | 收入格 | 99；收入等级为 `(level + 10) / 40` |
 | 手牌 bag | 8 |

@@ -16,7 +16,7 @@ from . import _engine as be
 # --- schema -----------------------------------------------------------------
 
 ACTION_SCHEMA_VERSION = 1
-STATE_TOKEN_SCHEMA_VERSION = 1
+STATE_TOKEN_SCHEMA_VERSION = 2
 ACTION_FEATURE_DIM = 55
 
 

@@ -1035,6 +1035,7 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BOARD_CELL_SLOTS", encode::board_cell_slots())?;
     m.add("CONNECTION_ENDPOINTS", encode::connection_endpoints())?;
     m.add("CONNECTION_VIA_FARMS", encode::connection_via_farms())?;
+    m.add("MERCHANT_LOCATIONS", encode::merchant_locations())?;
     // Token feature offsets (docs/ai-action-encoding.md §2), so no Python
     // consumer has to hardcode a plane index.
     for (name, value) in [
@@ -1061,6 +1062,9 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("LINK_TOUCHES_NET", encode::LINK_TOUCHES_NET),
         ("MERCHANT_BUY", encode::MERCHANT_BUY),
         ("MERCHANT_BEER", encode::MERCHANT_BEER),
+        ("MERCHANT_BONUS", encode::MERCHANT_BONUS),
+        ("MERCHANT_IN_NET", encode::MERCHANT_IN_NET),
+        ("MERCHANT_DIST", encode::MERCHANT_DIST),
         ("SEAT_MONEY", encode::SEAT_MONEY),
         ("SEAT_INCOME_SPACE", encode::SEAT_INCOME_SPACE),
         ("SEAT_INCOME_LEVEL", encode::SEAT_INCOME_LEVEL),

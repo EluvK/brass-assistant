@@ -78,6 +78,10 @@ class PolicyValueNet(nn.Module):
             "edge_locations",
             torch.tensor(be.CONNECTION_ENDPOINTS, dtype=torch.long).view(-1, 2),
         )
+        self.register_buffer(
+            "merchant_locations",
+            torch.tensor(be.MERCHANT_LOCATIONS, dtype=torch.long),
+        )
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d,
             nhead=self.cfg.heads,
@@ -158,6 +162,8 @@ class PolicyValueNet(nn.Module):
                     vec = vec + self.location_embed(self.cell_locations).unsqueeze(0)
                 elif name == "links":
                     vec = vec + self.location_embed(self.edge_locations).mean(dim=1).unsqueeze(0)
+                elif name == "merchants":
+                    vec = vec + self.location_embed(self.merchant_locations).unsqueeze(0)
             tokens.append(vec + self.type_embed.weight[i].view(1, 1, -1))
         seq = torch.cat(tokens, dim=1)
         seq = self.encoder(seq)

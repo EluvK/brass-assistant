@@ -45,6 +45,7 @@ BOARD_CELL_LOCATIONS: List[int]
 BOARD_CELL_SLOTS: List[int]
 CONNECTION_ENDPOINTS: List[int]
 CONNECTION_VIA_FARMS: List[int]
+MERCHANT_LOCATIONS: List[int]
 
 # Token feature offsets (docs/ai-action-encoding.md §2).
 CELL_OWNER: int
@@ -70,6 +71,9 @@ LINK_IN_NET: int
 LINK_TOUCHES_NET: int
 MERCHANT_BUY: int
 MERCHANT_BEER: int
+MERCHANT_BONUS: int
+MERCHANT_IN_NET: int
+MERCHANT_DIST: int
 SEAT_MONEY: int
 SEAT_INCOME_SPACE: int
 SEAT_INCOME_LEVEL: int

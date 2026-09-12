@@ -6,7 +6,7 @@
 //!
 //!   cells      (49, F_CELL)      47 city slots + 2 brewery farms
 //!   links      (39, F_LINK)      the 39 map connections
-//!   merchants  (9,  F_MERCHANT)  randomized buyer type + beer
+//!   merchants  (9,  F_MERCHANT)  randomized buyer type + beer + bonus + network + distance
 //!   seats      (4,  F_SEAT)      public state + hand information
 //!   global     (F_GLOBAL,)       era, round, markets, turn queue
 //!
@@ -15,8 +15,11 @@
 //! rotation. The network never has to recover its own seat identity.
 
 use crate::data::{Era, IndustryType};
-use crate::map::{ALL_LOCATIONS, CITY_COUNT, city_slots, connections};
-use crate::state::{BuyType, Card, GameState, loc_from_key};
+use crate::map::{
+    merchant_bonus_at, merchant_defs, ALL_LOCATIONS, CITY_COUNT, city_slots, connections,
+    MerchantBonus,
+};
+use crate::state::{loc_from_key, BuyType, Card, GameState};
 
 pub const LOCATION_COUNT: usize = ALL_LOCATIONS.len(); // 27
 pub const BOARD_CELLS: usize = 49; // 47 city slots + 2 farms
@@ -28,7 +31,7 @@ pub const INDUSTRY_COUNT: usize = 6;
 pub const CARD_SEMANTIC_COUNT: usize = 35; // 27 locations + 6 industries + 2 wilds
 pub const TOKEN_COUNT: usize = BOARD_CELLS + LINK_CELLS + MERCHANT_COUNT + SEAT_COUNT + 1; // 102
 
-pub const STATE_TOKEN_SCHEMA_VERSION: usize = 1;
+pub const STATE_TOKEN_SCHEMA_VERSION: usize = 2;
 
 // ---------------------------------------------------------------------------
 // cell features
@@ -71,7 +74,10 @@ pub const F_LINK: usize = 14;
 
 pub const MERCHANT_BUY: usize = 0; // 5: Blank/Any/Cotton/Manufacturer/Pottery
 pub const MERCHANT_BEER: usize = 5;
-pub const F_MERCHANT: usize = 6;
+pub const MERCHANT_BONUS: usize = 6; // 4: [vp/10, money/20, income/10, develop/2]
+pub const MERCHANT_IN_NET: usize = 10; // 4: relative to acting player
+pub const MERCHANT_DIST: usize = 14; // 1: links away from my network / 6
+pub const F_MERCHANT: usize = 15;
 
 // ---------------------------------------------------------------------------
 // seat features
@@ -128,6 +134,11 @@ const PLAYED_SCALE: f32 = 16.0;
 const SPENT_SCALE: f32 = 100.0;
 const LINK_SCALE: f32 = 14.0;
 const DECK_SCALE: f32 = 64.0;
+
+const MERCHANT_BONUS_VP_SCALE: f32 = 10.0;
+const MERCHANT_BONUS_MONEY_SCALE: f32 = 20.0;
+const MERCHANT_BONUS_INCOME_SCALE: f32 = 10.0;
+const MERCHANT_BONUS_DEVELOP_SCALE: f32 = 2.0;
 
 pub struct EncodedState {
     pub cells: Vec<f32>,
@@ -217,6 +228,18 @@ pub fn connection_via_farms() -> Vec<usize> {
         .iter()
         .map(|c| c.via_farm.map(|loc| loc as usize).unwrap_or(LOCATION_COUNT))
         .collect()
+}
+
+/// Location of each merchant slot (9 slots total).
+pub fn merchant_locations() -> Vec<usize> {
+    let mut out = Vec::with_capacity(MERCHANT_COUNT);
+    for def in merchant_defs() {
+        for _ in 0..def.slots {
+            out.push(def.loc as usize);
+        }
+    }
+    debug_assert_eq!(out.len(), MERCHANT_COUNT);
+    out
 }
 
 /// Location adjacency used for the distance-to-my-network feature. A via-farm
@@ -346,8 +369,13 @@ fn links_vec(state: &GameState, pid: usize, net_masks: &[u32; SEAT_COUNT]) -> Ve
     l
 }
 
-fn merchants_vec(state: &GameState) -> Vec<f32> {
+fn merchants_vec(state: &GameState, pid: usize, net_masks: &[u32; SEAT_COUNT]) -> Vec<f32> {
+    let n = state.player_count();
+    let distances = distance_from_network(net_masks[pid]);
     let mut m = vec![0.0f32; MERCHANT_COUNT * F_MERCHANT];
+    for i in 0..MERCHANT_COUNT {
+        m[i * F_MERCHANT + MERCHANT_DIST] = 1.0;
+    }
     for (i, merchant) in state.merchants.iter().enumerate().take(MERCHANT_COUNT) {
         let base = i * F_MERCHANT;
         let code = match merchant.buys {
@@ -363,6 +391,29 @@ fn merchants_vec(state: &GameState) -> Vec<f32> {
         };
         m[base + MERCHANT_BUY + code] = 1.0;
         m[base + MERCHANT_BEER] = merchant.has_beer as u8 as f32;
+
+        match merchant_bonus_at(merchant.loc) {
+            MerchantBonus::Vp(vp) => {
+                m[base + MERCHANT_BONUS] = vp as f32 / MERCHANT_BONUS_VP_SCALE;
+            }
+            MerchantBonus::Money(money) => {
+                m[base + MERCHANT_BONUS + 1] = money as f32 / MERCHANT_BONUS_MONEY_SCALE;
+            }
+            MerchantBonus::Income(inc) => {
+                m[base + MERCHANT_BONUS + 2] = inc as f32 / MERCHANT_BONUS_INCOME_SCALE;
+            }
+            MerchantBonus::Develop(dev) => {
+                m[base + MERCHANT_BONUS + 3] = dev as f32 / MERCHANT_BONUS_DEVELOP_SCALE;
+            }
+        }
+
+        let loc_idx = merchant.loc as usize;
+        for p in 0..n {
+            if net_masks[p] & (1u32 << loc_idx) != 0 {
+                m[base + MERCHANT_IN_NET + rel_seat(p, pid, n)] = 1.0;
+            }
+        }
+        m[base + MERCHANT_DIST] = distances[loc_idx];
     }
     m
 }
@@ -451,7 +502,7 @@ pub fn state_tokens(state: &GameState, perspective: usize) -> EncodedState {
     EncodedState {
         cells: cells_vec(state, pid, &net_masks),
         links: links_vec(state, pid, &net_masks),
-        merchants: merchants_vec(state),
+        merchants: merchants_vec(state, pid, &net_masks),
         seats: seats_vec(state, pid),
         global: global_vec(state, pid),
     }
@@ -523,6 +574,53 @@ mod tests {
             assert_eq!(t.cells[cell * F_CELL + CELL_DIST], 1.0);
             for p in 0..SEAT_COUNT {
                 assert_eq!(t.cells[cell * F_CELL + CELL_IN_NET + p], 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn merchant_locations_and_features_are_encoded() {
+        let locs = merchant_locations();
+        assert_eq!(locs.len(), MERCHANT_COUNT);
+        use crate::map::Loc;
+        assert_eq!(locs[0], Loc::Shrewsbury as usize);
+        assert_eq!(locs[1], Loc::Gloucester as usize);
+        assert_eq!(locs[2], Loc::Gloucester as usize);
+        assert_eq!(locs[3], Loc::Oxford as usize);
+        assert_eq!(locs[4], Loc::Oxford as usize);
+        assert_eq!(locs[5], Loc::Warrington as usize);
+        assert_eq!(locs[6], Loc::Warrington as usize);
+        assert_eq!(locs[7], Loc::Nottingham as usize);
+        assert_eq!(locs[8], Loc::Nottingham as usize);
+
+        let state_4p = GameState::new(ChaCha12Rng::seed_from_u64(123), 4);
+        let t_4p = state_tokens(&state_4p, 0);
+        // At start: all merchants are not in network, dist is 1.0
+        for i in 0..MERCHANT_COUNT {
+            let base = i * F_MERCHANT;
+            assert_eq!(t_4p.merchants[base + MERCHANT_DIST], 1.0);
+            for p in 0..SEAT_COUNT {
+                assert_eq!(t_4p.merchants[base + MERCHANT_IN_NET + p], 0.0);
+            }
+        }
+        // Verify bonus scaling
+        assert_eq!(t_4p.merchants[0 * F_MERCHANT + MERCHANT_BONUS], 4.0 / MERCHANT_BONUS_VP_SCALE);
+        assert_eq!(t_4p.merchants[1 * F_MERCHANT + MERCHANT_BONUS + 3], 1.0 / MERCHANT_BONUS_DEVELOP_SCALE);
+        assert_eq!(t_4p.merchants[3 * F_MERCHANT + MERCHANT_BONUS + 2], 2.0 / MERCHANT_BONUS_INCOME_SCALE);
+        assert_eq!(t_4p.merchants[5 * F_MERCHANT + MERCHANT_BONUS + 1], 5.0 / MERCHANT_BONUS_MONEY_SCALE);
+        assert_eq!(t_4p.merchants[7 * F_MERCHANT + MERCHANT_BONUS], 3.0 / MERCHANT_BONUS_VP_SCALE);
+
+        // 2p game: slots 5..MERCHANT_COUNT are inactive, but dist must still be 1.0
+        let state_2p = GameState::new(ChaCha12Rng::seed_from_u64(123), 2);
+        let t_2p = state_tokens(&state_2p, 0);
+        for i in 0..MERCHANT_COUNT {
+            let base = i * F_MERCHANT;
+            assert_eq!(t_2p.merchants[base + MERCHANT_DIST], 1.0);
+        }
+        for i in 5..MERCHANT_COUNT {
+            let base = i * F_MERCHANT;
+            for buy in 0..5 {
+                assert_eq!(t_2p.merchants[base + MERCHANT_BUY + buy], 0.0);
             }
         }
     }
