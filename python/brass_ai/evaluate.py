@@ -80,7 +80,7 @@ def _eval_game_worker(args):
     net = PolicyValueNet()
     net.load_state_dict(weights)
     net.eval()
-    mcts = RustISMCTS(net, RustMCTSConfig(**cfg_dict, device="cpu"))
+    mcts = RustISMCTS(net, RustMCTSConfig(**cfg_dict))
     mcts_pol = mcts_policy(mcts, sims)
     policies = [mcts_pol if p == seat else make_heuristic_policy() for p in range(players)]
     vps, ranking = play_game_with_policies(policies, seed=seed, players=players, max_moves=max_moves)
@@ -108,6 +108,7 @@ def _benchmark_net_vs_heuristic_parallel(
         "fpu": cfg.fpu,
         "fpu_reduction": cfg.fpu_reduction,
         "q_init": cfg.q_init,
+        "device": cfg.device,
     }
     n_workers = min(workers, games, os.cpu_count() or 1)
     jobs = [

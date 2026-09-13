@@ -219,12 +219,12 @@ def _arena_worker_fn(args):
     c_net = PolicyValueNet()
     c_net.load_state_dict(candidate_weights)
     c_net.eval()
-    c_mcts = RustISMCTS(c_net, RustMCTSConfig(**mcts_cfg_dict, device="cpu"))
+    c_mcts = RustISMCTS(c_net, RustMCTSConfig(**mcts_cfg_dict))
 
     o_net = PolicyValueNet()
     o_net.load_state_dict(opponent_weights)
     o_net.eval()
-    o_mcts = RustISMCTS(o_net, RustMCTSConfig(**mcts_cfg_dict, device="cpu"))
+    o_mcts = RustISMCTS(o_net, RustMCTSConfig(**mcts_cfg_dict))
 
     roles = [o_mcts.search] * players
     roles[seat] = c_mcts.search
@@ -280,6 +280,7 @@ def arena_winrate(
             "fpu": m_cfg.fpu,
             "fpu_reduction": m_cfg.fpu_reduction,
             "q_init": m_cfg.q_init,
+            "device": m_cfg.device,
         }
         selfplay_dict = {
             "store_snapshots": selfplay_cfg.store_snapshots,
@@ -369,7 +370,7 @@ def run_selfplay(
     pool: SelfPlayPool | None = None
     local_mcts: RustISMCTS | None = None
     if cfg.workers > 1:
-        pool = SelfPlayPool(n_workers=cfg.workers, device="cpu")
+        pool = SelfPlayPool(n_workers=cfg.workers, device=cfg.device)
     else:
         local_mcts = RustISMCTS(best_net, cfg.mcts)
     # `make_net_fn` closes over the module object, so a single adapter keeps

@@ -210,9 +210,15 @@ def trajectory_to_samples(
     for pid in range(4):
         if use_advantage:
             adv = float((traj.vps[pid] - mean_vp) / 50.0)
-            w = float(np.clip(np.exp(adv), 0.25, 3.0))
-            if traj.final_ranking and traj.final_ranking[0] == pid:
-                w *= winner_boost
+            if adv < 0.0 and (not traj.final_ranking or traj.final_ranking[0] != pid):
+                # Negative advantage (below average losing performance):
+                # Per Self-Imitation Learning, zero out policy loss so the network never
+                # reinforces suboptimal actions. Value heads still learn from the sample.
+                w = 0.0
+            else:
+                w = float(np.clip(np.exp(max(0.0, adv)), 1.0, 3.0))
+                if traj.final_ranking and traj.final_ranking[0] == pid:
+                    w *= winner_boost
             player_weights[pid] = w
         else:
             player_weights[pid] = 1.0
@@ -258,13 +264,19 @@ class VectorizedSelfPlay:
         env_count: int = 16,
         device: str = "cpu",
         temperature: float = 0.8,
+        temperature_final: float = 0.2,
+        temperature_warmup_moves: int = 12,
+        temperature_decay_moves: int = 24,
         heuristic_prob: float = 0.0,
         anchor_net: PolicyValueNet | None = None,
     ):
         self.net = net
         self.env_count = max(1, env_count)
         self.device = device
-        self.temperature = temperature
+        self.temperature = max(0.0, float(temperature))
+        self.temperature_final = max(0.0, float(temperature_final))
+        self.temperature_warmup_moves = max(0, int(temperature_warmup_moves))
+        self.temperature_decay_moves = max(0, int(temperature_decay_moves))
         self.heuristic_prob = max(0.0, min(1.0, float(heuristic_prob)))
         self.anchor_net = anchor_net
         self.net.eval()
@@ -411,8 +423,19 @@ class VectorizedSelfPlay:
             for b_idx, (env_idx, pid, era, snap) in enumerate(metadata):
                 st = active_states[env_idx]
                 canons = canonical_lists[b_idx]
+                n_moves = len(active_steps[env_idx])
+                if self.temperature <= 1e-4 or self.temperature == self.temperature_final:
+                    cur_temp = self.temperature
+                elif n_moves <= self.temperature_warmup_moves:
+                    cur_temp = self.temperature
+                elif n_moves >= self.temperature_warmup_moves + self.temperature_decay_moves:
+                    cur_temp = self.temperature_final
+                else:
+                    frac = (n_moves - self.temperature_warmup_moves) / max(1, self.temperature_decay_moves)
+                    cur_temp = self.temperature + frac * (self.temperature_final - self.temperature)
+
                 act_idx, log_prob, probs = choose_policy_action(
-                    logits[b_idx], masks[b_idx], temperature=self.temperature
+                    logits[b_idx], masks[b_idx], temperature=cur_temp
                 )
                 canon_move = canons[act_idx]
                 n_canons = len(canons)

@@ -68,7 +68,13 @@ def main() -> int:
     parser.add_argument("--env-count", type=int, default=16,
                         help="concurrent environments batched for GPU inference")
     parser.add_argument("--temperature", type=float, default=0.8,
-                        help="sampling temperature for policy rollout")
+                        help="initial sampling temperature for policy rollout")
+    parser.add_argument("--temperature-final", type=float, default=0.2,
+                        help="final sampling temperature for late-game rollout (default: 0.2)")
+    parser.add_argument("--temperature-warmup-moves", type=int, default=12,
+                        help="moves to hold initial temperature before decay (default: 12)")
+    parser.add_argument("--temperature-decay-moves", type=int, default=24,
+                        help="moves over which temperature decays to temperature-final (default: 24)")
     parser.add_argument("--heuristic-prob", type=float, default=0.25,
                         help="probability of assigning opponent seats to Rust 120-VP heuristic teachers (default: 0.25)")
     parser.add_argument("--kl-lambda", type=float, default=0.05,
@@ -138,6 +144,9 @@ def main() -> int:
         env_count=args.env_count,
         device=args.device,
         temperature=args.temperature,
+        temperature_final=args.temperature_final,
+        temperature_warmup_moves=args.temperature_warmup_moves,
+        temperature_decay_moves=args.temperature_decay_moves,
         heuristic_prob=args.heuristic_prob,
         anchor_net=anchor_net if args.kl_lambda > 0.0 else None,
     )
@@ -202,19 +211,34 @@ def main() -> int:
             print(f"[Gatekeeper] Win rate: {res.win_rate:.1%} | Avg VP: {res.candidate_avg_vp:.1f} vs Teacher: {res.teacher_avg_vp:.1f} "
                   f"({'PASSED' if res.passed else 'FAILED'}) in {time.time()-t_eval:.1f}s")
 
-            # Champion promotion: require passing teacher gatekeeper and improving candidate score
-            is_champion = res.passed and (res.candidate_avg_vp > best_eval_vp or best_eval_vp < 0.0)
-            if is_champion:
+            # Model progression & Anchor update:
+            # Whenever candidate score improves (or baseline established), update best.pt
+            # and roll anchor forward so KL divergence doesn't freeze learning.
+            # If it also passes teacher gatekeeper (win_rate >= 35% & avg_vp >= 120),
+            # it earns official Champion status.
+            improved = (best_eval_vp < 0.0) or (res.candidate_avg_vp > best_eval_vp)
+            if improved:
+                old_best = best_eval_vp
                 best_eval_vp = res.candidate_avg_vp
                 _atomic_save(trainer.state_dict(), args.ckpt_dir / "best.pt")
+
                 if args.kl_lambda > 0.0:
                     anchor_net.load_state_dict(net.state_dict())
                     runner.set_anchor_net(anchor_net)
-                    print(f"[*] New Champion promoted! Saved to {args.ckpt_dir / 'best.pt'} and updated anchor base.")
+                    anchor_msg = " and updated anchor base"
                 else:
-                    print(f"[*] New Champion promoted! Saved to {args.ckpt_dir / 'best.pt'}")
-            elif res.candidate_avg_vp > best_eval_vp and not res.passed:
-                print(f"[Gatekeeper] Score improved ({res.candidate_avg_vp:.1f} > {best_eval_vp:.1f}) but failed win_rate threshold ({res.win_rate:.1%} < 35.0%); promotion withheld.")
+                    anchor_msg = ""
+
+                if res.passed:
+                    print(f"[*] OFFICIAL CHAMPION PROMOTED! Passed teacher gatekeeper (win_rate={res.win_rate:.1%}, "
+                          f"Avg VP={best_eval_vp:.1f}){anchor_msg}. Saved to {args.ckpt_dir / 'best.pt'}.")
+                elif old_best < 0.0:
+                    print(f"[*] Established baseline evaluation: {best_eval_vp:.1f} VP (win_rate={res.win_rate:.1%}){anchor_msg}.")
+                else:
+                    print(f"[*] Score improved ({best_eval_vp:.1f} > {old_best:.1f}, win_rate={res.win_rate:.1%})! "
+                          f"Saved new best to {args.ckpt_dir / 'best.pt'}{anchor_msg}.")
+            else:
+                print(f"[Gatekeeper] No improvement ({res.candidate_avg_vp:.1f} <= best {best_eval_vp:.1f}).")
 
         # 3. Save latest checkpoint
         latest_payload = trainer.state_dict()
