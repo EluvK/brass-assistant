@@ -675,24 +675,43 @@ impl GameState {
     // --- setup -------------------------------------------------------------
 
     pub fn init_merchants(&mut self) {
-        // Take the active merchant-tile set for THIS player count, shuffle it,
-        // and deal one to each active merchant slot.
-        let mut mix: Vec<BuyType> = Vec::new();
-        for e in merchant_tile_mix(self.player_count()) {
-            mix.push(match e {
-                MerchantMixEntry::Blank => BuyType::Blank,
-                MerchantMixEntry::Any => BuyType::Any,
-                MerchantMixEntry::Buys(t) => BuyType::Industry(*t),
-            });
-        }
-        mix.shuffle(&mut self.rng);
+        // Experimental fixed merchant setup for ablation testing:
+        // - Shrewsbury (1 slot): Manufacturer
+        // - Gloucester (2 slots): CottonMill, Blank
+        // - Oxford (2 slots): Any, Blank
+        // - Warrington (2 slots): Pottery, Blank (3p+)
+        // - Nottingham (2 slots): CottonMill, Manufacturer (4p)
+        self.merchants.clear();
+
+        let fixed_slots = |loc: Loc| -> &'static [BuyType] {
+            match loc {
+                Loc::Shrewsbury => &[BuyType::Industry(IndustryType::Manufacturer)],
+                Loc::Gloucester => &[
+                    BuyType::Industry(IndustryType::CottonMill),
+                    BuyType::Blank,
+                ],
+                Loc::Oxford => &[
+                    BuyType::Any,
+                    BuyType::Blank,
+                ],
+                Loc::Warrington => &[
+                    BuyType::Industry(IndustryType::Pottery),
+                    BuyType::Blank,
+                ],
+                Loc::Nottingham => &[
+                    BuyType::Industry(IndustryType::CottonMill),
+                    BuyType::Industry(IndustryType::Manufacturer),
+                ],
+                _ => &[],
+            }
+        };
 
         for def in merchant_defs() {
             if def.min_players > self.player_count() {
                 continue;
             }
-            for _ in 0..def.slots {
-                let buys = mix.pop().unwrap_or(BuyType::Blank);
+            let buys_list = fixed_slots(def.loc);
+            for &buys in buys_list.iter().take(def.slots) {
                 self.merchants.push(MerchantTile {
                     loc: def.loc,
                     buys,
